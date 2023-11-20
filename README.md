@@ -16,4 +16,4 @@ As soon as you close your document in Obsidian, the session stops automatically.
 
 ## How to get started
 
-Visit [https://peerdraft.app] to create an account and get started.
+Visit [https://peerdraft.app](https://peerdraft.app) to create an account and get started.
