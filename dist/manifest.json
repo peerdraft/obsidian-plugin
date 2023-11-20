@@ -1,7 +1,7 @@
 {
 	"id": "peerdraft",
 	"name": "Peerdraft",
-	"version": "0.1.0",
+	"version": "1.0.0",
 	"minAppVersion": "1.4.16",
 	"description": "Secure real-time collaboration",
 	"author": "Taskbone",
