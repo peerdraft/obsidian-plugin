@@ -2,8 +2,6 @@
 
 **tl;dr** Peerdraft enables hassle-free collaboration in Obsidian with secure, one-time links. No account or Obsidian installation is needed for peers. Changes are exchanged directly, and sessions end upon document closure, ensuring privacy.
 
-![](https://raw.githubusercontent.com/peerdraft/obsidian-plugin/49873aac85f8444c5d61f5edaabde79a71354cf2/image.png)
-
 ## It just works
 
 Start a session from within Obsidian and you get a secret and unguessable link. Your peers can use this link to join with their browsers instantly. They don't need a Peerdraft account or install Obsidian.
