@@ -4,9 +4,9 @@
 
 ## It just works
 
-Start a session from within Obsidian and you get a secret and unguessable link. Your peers can use this link to join with their browsers instantly. They don't need a Peerdraft account or install Obsidian.
+Start a session from within Obsidian and you get a secret and unguessable link. Your peers can use this link to join with their browsers instantly. They don't need a Peerdraft account or Obsidian installed.
 
-## Your documents are save
+## Your documents are safe
 
 Your document and all edits are exchanged securly and directly between you and your peers. The Peerdraft servers are only used to establish the connections.
 
