@@ -17,7 +17,7 @@ export const addStatus = (file: TFile, plugin: Plugin, settings: Settings) => {
   })
 
   menu.addItem((item) => {
-    item.setTitle("Stop sharing session")
+    item.setTitle("Stop shared session")
     item.onClick(() => {
       delete syncedDocs[file.path]
 				stopSync(id)

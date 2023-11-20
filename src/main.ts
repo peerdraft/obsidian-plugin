@@ -43,7 +43,7 @@ export default class PeerDraftPlugin extends Plugin {
 					})
 
 					// copy link and notify user
-					navigator.clipboard.writeText(settings.basePath + '/' + id)
+					navigator.clipboard.writeText(settings.basePath + id)
 					new Notice("Session started for " + file.name + ". Link copied to Clipboard.")
 
 					// set status bar
@@ -80,7 +80,6 @@ export default class PeerDraftPlugin extends Plugin {
 		const settingsTab = createSettingsTab(plugin)
 		const settings = await getSettings(plugin)
 		if (!settings.name) {
-			console.log("hallo")
 			createSettingsModal(plugin).open()
 		}
 		plugin.addSettingTab(settingsTab)

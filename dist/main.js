@@ -12365,12 +12365,16 @@ var WebrtcConn = class {
     log("establishing connection to ", BOLD, remotePeerId);
     this.room = room;
     this.remotePeerId = remotePeerId;
+    this.glareToken = void 0;
     this.closed = false;
     this.connected = false;
     this.synced = false;
     this.peer = new import_simplepeer_min.default({ initiator, ...room.provider.peerOpts });
     this.peer.on("signal", (signal) => {
-      publishSignalingMessage(signalingConn, room, { to: remotePeerId, from: room.peerId, type: "signal", signal });
+      if (this.glareToken === void 0) {
+        this.glareToken = Date.now() + Math.random();
+      }
+      publishSignalingMessage(signalingConn, room, { to: remotePeerId, from: room.peerId, type: "signal", token: this.glareToken, signal });
     });
     this.peer.on("connect", () => {
       log("connected to ", BOLD, remotePeerId);
@@ -12618,6 +12622,23 @@ var SignalingConn = class extends WebsocketClient {
                 }
                 break;
               case "signal":
+                if (data.signal.type === "offer") {
+                  const existingConn = webrtcConns.get(data.from);
+                  if (existingConn) {
+                    const remoteToken = data.token;
+                    const localToken = existingConn.glareToken;
+                    if (localToken && localToken > remoteToken) {
+                      log("offer rejected: ", data.from);
+                      return;
+                    }
+                    existingConn.glareToken = void 0;
+                  }
+                }
+                if (data.signal.type === "answer") {
+                  log("offer answered by: ", data.from);
+                  const existingConn = webrtcConns.get(data.from);
+                  existingConn.glareToken = void 0;
+                }
                 if (data.to === peerId) {
                   setIfUndefined(webrtcConns, data.from, () => new WebrtcConn(this, false, data.from, room)).peer.signal(data.signal);
                   emitPeerChange();
@@ -12830,7 +12851,7 @@ var addStatus = (file, plugin, settings) => {
     });
   });
   menu.addItem((item) => {
-    item.setTitle("Stop sharing session");
+    item.setTitle("Stop shared session");
     item.onClick(() => {
       delete syncedDocs[file.path];
       stopSync(id2);
@@ -13431,7 +13452,7 @@ var PeerDraftPlugin = class extends import_obsidian3.Plugin {
           editorView.dispatch({
             effects: import_state.StateEffect.appendConfig.of(extension)
           });
-          navigator.clipboard.writeText(settings2.basePath + "/" + id2);
+          navigator.clipboard.writeText(settings2.basePath + id2);
           new import_obsidian3.Notice("Session started for " + file.name + ". Link copied to Clipboard.");
           addStatus(file, plugin, settings2);
         });
@@ -13466,7 +13487,6 @@ var PeerDraftPlugin = class extends import_obsidian3.Plugin {
     const settingsTab = createSettingsTab(plugin);
     const settings = await getSettings(plugin);
     if (!settings.name) {
-      console.log("hallo");
       createSettingsModal(plugin).open();
     }
     plugin.addSettingTab(settingsTab);

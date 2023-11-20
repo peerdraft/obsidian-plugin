@@ -1,8 +1,6 @@
 import esbuild from "esbuild";
 import process from "process";
 import builtins from "builtin-modules";
-import copy from "esbuild-plugin-copy";
-import copyStaticFiles from 'esbuild-copy-static-files'
 
 const banner =
 `/*
