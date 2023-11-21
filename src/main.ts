@@ -86,7 +86,11 @@ export default class PeerDraftPlugin extends Plugin {
 	}
 
 	onunload() {
-
+		Object.keys(syncedDocs).forEach(path => {
+			const file = this.app.vault.getAbstractFileByPath(path)
+			if (!file || !(file instanceof TFile)) return
+			stopSession(file, this)
+		});
 	}
 
 }

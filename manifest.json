@@ -3,7 +3,7 @@
 	"name": "Peerdraft",
 	"version": "1.0.1",
 	"minAppVersion": "1.4.16",
-	"description": "Secure real-time collaboration",
+	"description": "Secure real-time collaboration via secret link",
 	"author": "Taskbone",
 	"authorUrl": "https://peerdraft.app",
 	"fundingUrl": "https://peerdraft.app",

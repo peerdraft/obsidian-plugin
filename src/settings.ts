@@ -28,8 +28,6 @@ export const createSettingsTab = (plugin: Plugin) => {
       containerEl.empty();
 
       const settings = await getSettings(plugin)
-
-      containerEl.createEl("h1", { text: "What's your name?" });
       const setting = new Setting(containerEl)
 
       setting.setName("Name")
