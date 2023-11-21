@@ -19,3 +19,18 @@ As soon as you close your document in Obsidian, the session stops automatically.
 Visit [https://www.peerdraft.app](https://www.peerdraft.app) to create an account and get started.
 
 There is a free trail available after which you are required to pay for further use of the service.
+
+## How to use
+
+### Work on a document together
+
+* Open the document you want to work on together.
+* Run the command `Start shared session`. A secret link will be copied to your clipboard automatically.
+* Send this link to your collaborators and start working together.
+
+## Close a session
+
+The session will be closed automatically, when you close the document in Obsidian. You can also:
+
+* Run the command `Stop shared session` or
+* Click on the `Sharing [filename]` entry in the statusbar and select `stop shared session`.
