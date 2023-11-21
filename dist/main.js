@@ -12798,7 +12798,6 @@ var createSettingsTab = (plugin) => {
       const containerEl = this.containerEl;
       containerEl.empty();
       const settings = await getSettings(plugin);
-      containerEl.createEl("h1", { text: "What's your name?" });
       const setting = new import_obsidian.Setting(containerEl);
       setting.setName("Name");
       setting.setDesc("This name will be shown to your collaborators");
@@ -13492,6 +13491,12 @@ var PeerDraftPlugin = class extends import_obsidian3.Plugin {
     plugin.addSettingTab(settingsTab);
   }
   onunload() {
+    Object.keys(syncedDocs).forEach((path) => {
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (!file || !(file instanceof import_obsidian3.TFile))
+        return;
+      stopSession(file, this);
+    });
   }
 };
 var stopSession = (file, plugin) => {
