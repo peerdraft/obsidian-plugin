@@ -1,11 +1,11 @@
 {
 	"id": "peerdraft",
 	"name": "Peerdraft",
-	"version": "1.0.1",
+	"version": "1.0.2",
 	"minAppVersion": "1.4.16",
-	"description": "Secure real-time collaboration",
+	"description": "Secure real-time collaboration via secret link",
 	"author": "Taskbone",
-	"authorUrl": "https://peerdraft.app",
-	"fundingUrl": "https://peerdraft.app",
+	"authorUrl": "https://www.peerdraft.app",
+	"fundingUrl": "https://www.peerdraft.app",
 	"isDesktopOnly": true
 }
