@@ -4,11 +4,9 @@ import { around } from "monkey-around";
 import { Editor, MarkdownView, Notice, Plugin, TFile } from 'obsidian';
 import { syncedDocs } from './data';
 import { initDocument, stopSync } from './document';
+import { getOrCreateExtension } from "./editor";
 import { createSettingsModal, createSettingsTab, getSettings } from './settings';
 import { addStatus, removeStatus } from "./statusbar";
-import { getOrCreateExtension, removeExtensions } from "./editor";
-import { platform } from "os";
-import { createGzip } from "zlib";
 
 
 export default class PeerDraftPlugin extends Plugin {
@@ -35,11 +33,8 @@ export default class PeerDraftPlugin extends Plugin {
 		plugin.addCommand({
 			id: 'stop-session-with-active-document',
 			name: 'Stop shared session',
-			checkCallback: (checking: boolean) => {
-				// do the checks
-				const markdownView = plugin.app.workspace.getActiveViewOfType(MarkdownView);
-				if (!markdownView) return false;
-				const file = markdownView.file
+			editorCheckCallback: (checking, editor, ctx) => {
+				const file = ctx.file
 				if (!file) return false
 				const id = syncedDocs[file.path]
 				if (!id) return false

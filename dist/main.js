@@ -12779,102 +12779,6 @@ var stopSync = (id2) => {
   console.log("sync stopped");
 };
 
-// src/settings.ts
-var import_obsidian = require("obsidian");
-var DEFAULT_SETTINGS = {
-  basePath: "https://www.peerdraft.app/cm/",
-  name: "",
-  signaling: ["wss://signal.peerdraft.app"]
-};
-var getSettings = async (plugin) => {
-  const settings = Object.assign({}, DEFAULT_SETTINGS, await plugin.loadData());
-  return settings;
-};
-var saveSettings = async (settings, plugin) => {
-  await plugin.saveData(settings);
-};
-var createSettingsTab = (plugin) => {
-  return new class extends import_obsidian.PluginSettingTab {
-    async display() {
-      const containerEl = this.containerEl;
-      containerEl.empty();
-      const settings = await getSettings(plugin);
-      const setting = new import_obsidian.Setting(containerEl);
-      setting.setName("Name");
-      setting.setDesc("This name will be shown to your collaborators");
-      setting.addText((text2) => {
-        text2.setValue(settings.name);
-        text2.onChange(async (value) => {
-          settings.name = value;
-          await saveSettings(settings, plugin);
-        });
-      });
-    }
-  }(plugin.app, plugin);
-};
-var createSettingsModal = (plugin) => {
-  return new class extends import_obsidian.Modal {
-    async onOpen() {
-      const el = this.contentEl;
-      el.empty();
-      const settings = await getSettings(plugin);
-      el.createEl("h1", { text: "What's your name?" });
-      const setting = new import_obsidian.Setting(el);
-      setting.setName("Name");
-      setting.setDesc("This name will be shown to your collaborators");
-      setting.addText((text2) => {
-        text2.setValue(settings.name);
-        text2.onChange(async (value) => {
-          settings.name = value;
-          await saveSettings(settings, plugin);
-        });
-      });
-    }
-    onClose() {
-      this.contentEl.empty();
-    }
-  }(plugin.app);
-};
-
-// src/statusbar.ts
-var import_obsidian2 = require("obsidian");
-var addStatus = (file, plugin, settings) => {
-  const id2 = syncedDocs[file.path];
-  if (!id2)
-    return;
-  const menu = new import_obsidian2.Menu();
-  menu.addItem((item) => {
-    item.setTitle("Copy link");
-    item.onClick(() => {
-      navigator.clipboard.writeText(settings.basePath + id2);
-      new import_obsidian2.Notice("Link copied to clipboard.");
-    });
-  });
-  menu.addItem((item) => {
-    item.setTitle("Stop shared session");
-    item.onClick(() => {
-      delete syncedDocs[file.path];
-      stopSync(id2);
-      removeStatus(id2);
-      const notice = new import_obsidian2.Notice("Session stopped for " + file.name);
-    });
-  });
-  const status = plugin.addStatusBarItem();
-  status.addClass("mod-clickable");
-  status.createEl("span", { text: "Sharing '" + file.name + "'" });
-  status.onClickEvent((event) => {
-    menu.showAtMouseEvent(event);
-  });
-  statusBars[id2] = status;
-};
-var removeStatus = (id2) => {
-  const status = statusBars[id2];
-  if (!status)
-    return;
-  delete statusBars[id2];
-  status.remove();
-};
-
 // node_modules/y-codemirror.next/src/index.js
 var cmView4 = __toESM(require("@codemirror/view"), 1);
 var cmState4 = __toESM(require("@codemirror/state"), 1);
@@ -13423,6 +13327,102 @@ var getOrCreateExtension = (id2, settings) => {
   return extensions[id2];
 };
 
+// src/settings.ts
+var import_obsidian = require("obsidian");
+var DEFAULT_SETTINGS = {
+  basePath: "https://www.peerdraft.app/cm/",
+  name: "",
+  signaling: ["wss://signal.peerdraft.app"]
+};
+var getSettings = async (plugin) => {
+  const settings = Object.assign({}, DEFAULT_SETTINGS, await plugin.loadData());
+  return settings;
+};
+var saveSettings = async (settings, plugin) => {
+  await plugin.saveData(settings);
+};
+var createSettingsTab = (plugin) => {
+  return new class extends import_obsidian.PluginSettingTab {
+    async display() {
+      const containerEl = this.containerEl;
+      containerEl.empty();
+      const settings = await getSettings(plugin);
+      const setting = new import_obsidian.Setting(containerEl);
+      setting.setName("Name");
+      setting.setDesc("This name will be shown to your collaborators");
+      setting.addText((text2) => {
+        text2.setValue(settings.name);
+        text2.onChange(async (value) => {
+          settings.name = value;
+          await saveSettings(settings, plugin);
+        });
+      });
+    }
+  }(plugin.app, plugin);
+};
+var createSettingsModal = (plugin) => {
+  return new class extends import_obsidian.Modal {
+    async onOpen() {
+      const el = this.contentEl;
+      el.empty();
+      const settings = await getSettings(plugin);
+      el.createEl("h1", { text: "What's your name?" });
+      const setting = new import_obsidian.Setting(el);
+      setting.setName("Name");
+      setting.setDesc("This name will be shown to your collaborators");
+      setting.addText((text2) => {
+        text2.setValue(settings.name);
+        text2.onChange(async (value) => {
+          settings.name = value;
+          await saveSettings(settings, plugin);
+        });
+      });
+    }
+    onClose() {
+      this.contentEl.empty();
+    }
+  }(plugin.app);
+};
+
+// src/statusbar.ts
+var import_obsidian2 = require("obsidian");
+var addStatus = (file, plugin, settings) => {
+  const id2 = syncedDocs[file.path];
+  if (!id2)
+    return;
+  const menu = new import_obsidian2.Menu();
+  menu.addItem((item) => {
+    item.setTitle("Copy link");
+    item.onClick(() => {
+      navigator.clipboard.writeText(settings.basePath + id2);
+      new import_obsidian2.Notice("Link copied to clipboard.");
+    });
+  });
+  menu.addItem((item) => {
+    item.setTitle("Stop shared session");
+    item.onClick(() => {
+      delete syncedDocs[file.path];
+      stopSync(id2);
+      removeStatus(id2);
+      const notice = new import_obsidian2.Notice("Session stopped for " + file.name);
+    });
+  });
+  const status = plugin.addStatusBarItem();
+  status.addClass("mod-clickable");
+  status.createEl("span", { text: "Sharing '" + file.name + "'" });
+  status.onClickEvent((event) => {
+    menu.showAtMouseEvent(event);
+  });
+  statusBars[id2] = status;
+};
+var removeStatus = (id2) => {
+  const status = statusBars[id2];
+  if (!status)
+    return;
+  delete statusBars[id2];
+  status.remove();
+};
+
 // src/main.ts
 var PeerDraftPlugin = class extends import_obsidian3.Plugin {
   async onload() {
@@ -13445,11 +13445,8 @@ var PeerDraftPlugin = class extends import_obsidian3.Plugin {
     plugin.addCommand({
       id: "stop-session-with-active-document",
       name: "Stop shared session",
-      checkCallback: (checking) => {
-        const markdownView = plugin.app.workspace.getActiveViewOfType(import_obsidian3.MarkdownView);
-        if (!markdownView)
-          return false;
-        const file = markdownView.file;
+      editorCheckCallback: (checking, editor, ctx) => {
+        const file = ctx.file;
         if (!file)
           return false;
         const id2 = syncedDocs[file.path];
