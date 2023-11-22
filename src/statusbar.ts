@@ -9,10 +9,10 @@ export const addStatus = (file: TFile, plugin: Plugin, settings: Settings) => {
 
   const menu = new Menu()
   menu.addItem((item) => {
-    item.setTitle("Copy Link")
+    item.setTitle("Copy link")
     item.onClick(() => {
       navigator.clipboard.writeText(settings.basePath + id)
-      new Notice("Link copied to Clipboard.")
+      new Notice("Link copied to clipboard.")
     })
   })
 
