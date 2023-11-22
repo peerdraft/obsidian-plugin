@@ -1,12 +1,14 @@
 import { StateEffect } from "@codemirror/state";
 import { EditorView } from '@codemirror/view';
 import { around } from "monkey-around";
-import { MarkdownView, Notice, Plugin, TFile } from 'obsidian';
+import { Editor, MarkdownView, Notice, Plugin, TFile } from 'obsidian';
 import { syncedDocs } from './data';
 import { initDocument, stopSync } from './document';
 import { createSettingsModal, createSettingsTab, getSettings } from './settings';
 import { addStatus, removeStatus } from "./statusbar";
 import { getOrCreateExtension, removeExtensions } from "./editor";
+import { platform } from "os";
+import { createGzip } from "zlib";
 
 
 export default class PeerDraftPlugin extends Plugin {
@@ -18,37 +20,15 @@ export default class PeerDraftPlugin extends Plugin {
 		plugin.addCommand({
 			id: 'start-session-with-active-document',
 			name: 'Start shared session',
-			checkCallback: (checking: boolean) => {
-				// do the checks
-				const editor = plugin.app.workspace.activeEditor
-				if (!(editor && editor.editor)) return
-				const file = editor.file
+			editorCheckCallback: (checking, editor, ctx) => {
+				// checking
+				const file = ctx.file
 				if (!file) return false
 				const sharedAlready = syncedDocs[file.path]
 				if (sharedAlready) return false
 				if (checking) return true
-
-				// do the work
-				getSettings(plugin).then(settings => {
-					if (!(editor && editor.editor)) return
-					// init doc
-					const id = initDocument(editor.editor.getValue(), settings)
-					syncedDocs[file.path] = id
-
-					// bind to editor
-					const extension = getOrCreateExtension(id, settings)
-					const editorView = (editor.editor as any).cm as EditorView;
-					editorView.dispatch({
-						effects: StateEffect.appendConfig.of(extension)
-					})
-
-					// copy link and notify user
-					navigator.clipboard.writeText(settings.basePath + id)
-					new Notice("Session started for " + file.name + ". Link copied to Clipboard.")
-
-					// set status bar
-					addStatus(file, plugin, settings)
-				})
+				// do it
+				startSession(editor, file, plugin)
 			}
 		});
 
@@ -102,4 +82,24 @@ export const stopSession = (file: TFile, plugin: Plugin) => {
 	stopSync(id)
 	removeStatus(id)
 	const notice = new Notice("Session stopped for " + file.name)
+}
+
+export const startSession = async (editor: Editor, file: TFile, plugin: Plugin) => {
+	const settings = await getSettings(plugin)
+	const id = initDocument(editor.getValue(), settings)
+	syncedDocs[file.path] = id
+
+	// bind to editor
+	const extension = getOrCreateExtension(id, settings)
+	const editorView = (editor as any).cm as EditorView;
+	editorView.dispatch({
+		effects: StateEffect.appendConfig.of(extension)
+	})
+
+	// copy link and notify user
+	navigator.clipboard.writeText(settings.basePath + id)
+	new Notice("Session started for " + file.name + ". Link copied to Clipboard.")
+
+	// set status bar
+	addStatus(file, plugin, settings)
 }

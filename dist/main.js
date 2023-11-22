@@ -2950,6 +2950,7 @@ var require_simplepeer_min = __commonJS({
 var main_exports = {};
 __export(main_exports, {
   default: () => PeerDraftPlugin,
+  startSession: () => startSession,
   stopSession: () => stopSession
 });
 module.exports = __toCommonJS(main_exports);
@@ -12843,10 +12844,10 @@ var addStatus = (file, plugin, settings) => {
     return;
   const menu = new import_obsidian2.Menu();
   menu.addItem((item) => {
-    item.setTitle("Copy Link");
+    item.setTitle("Copy link");
     item.onClick(() => {
       navigator.clipboard.writeText(settings.basePath + id2);
-      new import_obsidian2.Notice("Link copied to Clipboard.");
+      new import_obsidian2.Notice("Link copied to clipboard.");
     });
   });
   menu.addItem((item) => {
@@ -13429,11 +13430,8 @@ var PeerDraftPlugin = class extends import_obsidian3.Plugin {
     plugin.addCommand({
       id: "start-session-with-active-document",
       name: "Start shared session",
-      checkCallback: (checking) => {
-        const editor = plugin.app.workspace.activeEditor;
-        if (!(editor && editor.editor))
-          return;
-        const file = editor.file;
+      editorCheckCallback: (checking, editor, ctx) => {
+        const file = ctx.file;
         if (!file)
           return false;
         const sharedAlready = syncedDocs[file.path];
@@ -13441,20 +13439,7 @@ var PeerDraftPlugin = class extends import_obsidian3.Plugin {
           return false;
         if (checking)
           return true;
-        getSettings(plugin).then((settings2) => {
-          if (!(editor && editor.editor))
-            return;
-          const id2 = initDocument(editor.editor.getValue(), settings2);
-          syncedDocs[file.path] = id2;
-          const extension = getOrCreateExtension(id2, settings2);
-          const editorView = editor.editor.cm;
-          editorView.dispatch({
-            effects: import_state.StateEffect.appendConfig.of(extension)
-          });
-          navigator.clipboard.writeText(settings2.basePath + id2);
-          new import_obsidian3.Notice("Session started for " + file.name + ". Link copied to Clipboard.");
-          addStatus(file, plugin, settings2);
-        });
+        startSession(editor, file, plugin);
       }
     });
     plugin.addCommand({
@@ -13507,6 +13492,19 @@ var stopSession = (file, plugin) => {
   stopSync(id2);
   removeStatus(id2);
   const notice = new import_obsidian3.Notice("Session stopped for " + file.name);
+};
+var startSession = async (editor, file, plugin) => {
+  const settings = await getSettings(plugin);
+  const id2 = initDocument(editor.getValue(), settings);
+  syncedDocs[file.path] = id2;
+  const extension = getOrCreateExtension(id2, settings);
+  const editorView = editor.cm;
+  editorView.dispatch({
+    effects: import_state.StateEffect.appendConfig.of(extension)
+  });
+  navigator.clipboard.writeText(settings.basePath + id2);
+  new import_obsidian3.Notice("Session started for " + file.name + ". Link copied to Clipboard.");
+  addStatus(file, plugin, settings);
 };
 /*! Bundled license information:
 
