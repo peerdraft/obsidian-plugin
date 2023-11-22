@@ -1,7 +1,7 @@
 {
 	"id": "peerdraft",
 	"name": "Peerdraft",
-	"version": "1.0.3",
+	"version": "1.0.5",
 	"minAppVersion": "1.4.16",
 	"description": "Secure real-time collaboration via secret link",
 	"author": "Peerdraft",
