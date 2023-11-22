@@ -4,7 +4,7 @@
 	"version": "1.0.3",
 	"minAppVersion": "1.4.16",
 	"description": "Secure real-time collaboration via secret link",
-	"author": "Taskbone",
+	"author": "Peerdraft",
 	"authorUrl": "https://www.peerdraft.app",
 	"isDesktopOnly": true
 }
