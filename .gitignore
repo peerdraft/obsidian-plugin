@@ -2,9 +2,7 @@
 node_modules
 
 # obsidian
-dist/data.json
-dist/.hotreload
-
+dist
 
 # Exclude macOS Finder (System Explorer) View States
 .DS_Store
