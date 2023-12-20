@@ -8,7 +8,7 @@ Start a session from within Obsidian and you get a secret and unguessable link. 
 
 ## Your documents are safe
 
-Your document and all edits are exchanged securly and directly between you and your peers. The Peerdraft servers are only used to establish the connections.
+Your document and all changes are exchanged securly and directly between you and your peers. The Peerdraft servers are only used to establish the connections.
 
 ## Close and forget
 
@@ -16,9 +16,7 @@ As soon as you close your document in Obsidian, the session stops automatically.
 
 ## How to get started
 
-Visit [https://www.peerdraft.app](https://www.peerdraft.app) to create an account and get started.
-
-There is a free trial available after which you are required to pay for further use of the service.
+Visit [https://www.peerdraft.app](https://www.peerdraft.app) to create an account and get started. There is a "Forever Free" plan available.
 
 ## How to use
 
