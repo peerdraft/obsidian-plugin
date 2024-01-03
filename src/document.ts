@@ -8,6 +8,7 @@ export const getOrCreateSyncData = (id: string, settings: { signaling: Array<str
     const doc = new Y.Doc()
     const provider = new WebrtcProvider(id, doc, { signaling: settings.signaling })
     const text = doc.getText("content")
+    doc.getText("owner").insert(0, provider.awareness.clientID.toFixed(0))
     syncObjects[id] = { doc, provider, content: text }
   }
   return syncObjects[id]
@@ -22,7 +23,7 @@ export const initDocument = (initial: string, settings: { signaling: Array<strin
 
 export const stopSync = (id: string) => {
   console.log("stopping sync for " + id)
-  const syncData= syncObjects[id]
+  const syncData = syncObjects[id]
   if (!syncData) return
   syncData.provider.awareness.destroy()
   syncData.provider.disconnect()
