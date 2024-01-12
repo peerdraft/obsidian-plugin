@@ -5,15 +5,20 @@ import { Editor, MarkdownView, Notice, Plugin, TFile } from 'obsidian';
 import { syncedDocs } from './data';
 import { initDocument, stopSync } from './document';
 import { getOrCreateExtension } from "./editor";
-import { createSettingsModal, createSettingsTab, getSettings } from './settings';
+import { createSettingsModal, createSettingsTab, getSettings, migrateSettings } from './settings';
 import { addStatus, removeStatus } from "./statusbar";
-
+import { setCookie } from "./cookie";
+import { refreshSubscriptionData } from "./subscription";
 
 export default class PeerDraftPlugin extends Plugin {
 
 	async onload() {
 
 		const plugin = this
+
+		await migrateSettings(plugin)
+		await setCookie(plugin)
+		await refreshSubscriptionData(plugin)
 
 		plugin.addCommand({
 			id: 'start-session-with-active-document',
