@@ -3,10 +3,10 @@ import * as Y from 'yjs'
 import { syncObjects } from './data'
 import { createRandomId } from './tools'
 
-export const getOrCreateSyncData = (id: string, settings: { signaling: Array<string> }) => {
+export const getOrCreateSyncData = (id: string, settings: { signaling: string }) => {
   if (!syncObjects[id]) {
     const doc = new Y.Doc()
-    const provider = new WebrtcProvider(id, doc, { signaling: settings.signaling })
+    const provider = new WebrtcProvider(id, doc, { signaling: [settings.signaling] })
     const text = doc.getText("content")
     doc.getText("owner").insert(0, provider.awareness.clientID.toFixed(0))
     syncObjects[id] = { doc, provider, content: text }
@@ -14,7 +14,7 @@ export const getOrCreateSyncData = (id: string, settings: { signaling: Array<str
   return syncObjects[id]
 }
 
-export const initDocument = (initial: string, settings: { signaling: Array<string> }) => {
+export const initDocument = (initial: string, settings: {signaling: string}) => {
   const id = createRandomId()
   const { content } = getOrCreateSyncData(id, settings)
   content.insert(0, initial)

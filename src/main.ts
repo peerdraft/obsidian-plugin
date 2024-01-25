@@ -2,12 +2,12 @@ import { StateEffect } from "@codemirror/state";
 import { EditorView } from '@codemirror/view';
 import { around } from "monkey-around";
 import { Editor, MarkdownView, Notice, Plugin, TFile } from 'obsidian';
+import { prepareCommunication } from "./cookie";
 import { syncedDocs } from './data';
 import { initDocument, stopSync } from './document';
 import { getOrCreateExtension } from "./editor";
 import { createSettingsModal, createSettingsTab, getSettings, migrateSettings } from './settings';
 import { addStatus, removeStatus } from "./statusbar";
-import { setCookie } from "./cookie";
 import { refreshSubscriptionData } from "./subscription";
 
 export default class PeerDraftPlugin extends Plugin {
@@ -17,7 +17,7 @@ export default class PeerDraftPlugin extends Plugin {
 		const plugin = this
 
 		await migrateSettings(plugin)
-		await setCookie(plugin)
+		await prepareCommunication(plugin)
 		await refreshSubscriptionData(plugin)
 
 		plugin.addCommand({

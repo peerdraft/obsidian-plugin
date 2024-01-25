@@ -1,9 +1,10 @@
 import { Modal, Plugin, PluginSettingTab, Setting, requestUrl } from "obsidian";
 import { createRandomId } from "./tools";
 import { refreshSubscriptionData } from "./subscription";
+import { showTextModal } from "./ui";
 
 export interface Settings {
-  signaling: Array<string>,
+  signaling: string,
   subscriptionAPI: string,
   connectAPI: string,
   basePath: string,
@@ -13,7 +14,8 @@ export interface Settings {
     type: "hobby" | "professional"
     email?: string
   },
-  duration: number
+  duration: number,
+  version: string
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -21,26 +23,35 @@ const DEFAULT_SETTINGS: Settings = {
   subscriptionAPI: "https://www.peerdraft.app/subscription",
   connectAPI: "https://www.peerdraft.app/subscription/connect",
   name: "",
-  signaling: ["wss://www.peerdraft.app/signal"],
+  signaling: "wss://www.peerdraft.app/signal",
   oid: createRandomId(),
   plan: {
     type: "hobby",
     email: ""
   },
-  duration: 0
+  duration: 0,
+  version: '',
 }
 
 const FORCE_SETTINGS: Partial<Settings> = {
   basePath: "https://www.peerdraft.app/cm/",
   subscriptionAPI: "https://www.peerdraft.app/subscription",
   connectAPI: "https://www.peerdraft.app/subscription/connect",
-  signaling: ["wss://www.peerdraft.app/signal"],
+  signaling: "wss://www.peerdraft.app/signal",
 }
 
 export const migrateSettings = async (plugin: Plugin) => {
   const oldSettings = await getSettings(plugin)
-  const newSettings = Object.assign({}, DEFAULT_SETTINGS, oldSettings, FORCE_SETTINGS)
+
+  const newSettings = Object.assign({}, DEFAULT_SETTINGS, oldSettings, FORCE_SETTINGS, {
+    version: plugin.manifest.version
+  })
   await saveSettings(newSettings, plugin)
+
+  if (oldSettings.version != newSettings.version) {
+    showTextModal(plugin.app, 'Peerdraft updated', 'A new version of Oeerdraft was installed. Please restart Obsidian before you use Peerdraft again.')
+  }
+
 }
 
 export const getSettings = async (plugin: Plugin) => {
