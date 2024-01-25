@@ -49,7 +49,7 @@ export const migrateSettings = async (plugin: Plugin) => {
   await saveSettings(newSettings, plugin)
 
   if (oldSettings.version != newSettings.version) {
-    showTextModal(plugin.app, 'Peerdraft updated', 'A new version of Oeerdraft was installed. Please restart Obsidian before you use Peerdraft again.')
+    showTextModal(plugin.app, 'Peerdraft updated', 'A new version of Peerdraft was installed. Please restart Obsidian before you use Peerdraft again.')
   }
 
 }
