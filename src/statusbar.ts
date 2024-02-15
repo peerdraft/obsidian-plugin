@@ -1,7 +1,8 @@
-import { Menu, Notice, Plugin, TFile } from "obsidian";
+import { Menu, Plugin, TFile } from "obsidian";
 import { statusBars, syncedDocs } from "./data";
 import { Settings } from "./settings";
 import { stopSync } from "./document";
+import { showNotice } from "./ui";
 
 export const addStatus = (file: TFile, plugin: Plugin, settings: Settings) => {
   const id = syncedDocs[file.path]
@@ -12,7 +13,7 @@ export const addStatus = (file: TFile, plugin: Plugin, settings: Settings) => {
     item.setTitle("Copy link")
     item.onClick(() => {
       navigator.clipboard.writeText(settings.basePath + id)
-      new Notice("Link copied to clipboard.")
+      showNotice("Link copied to clipboard.")
     })
   })
 
@@ -22,7 +23,7 @@ export const addStatus = (file: TFile, plugin: Plugin, settings: Settings) => {
       delete syncedDocs[file.path]
 				stopSync(id)
         removeStatus(id)
-				const notice = new Notice("Session stopped for " + file.name)
+				showNotice("Session stopped for " + file.name)
     })
   })
 

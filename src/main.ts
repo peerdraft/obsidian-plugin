@@ -1,5 +1,5 @@
 import { around } from "monkey-around";
-import { Editor, MarkdownView, Notice, Plugin, TFile } from 'obsidian';
+import { Editor, MarkdownView, Plugin, TFile } from 'obsidian';
 import { prepareCommunication } from "./cookie";
 import { syncedDocs } from './data';
 import { initDocument, stopSync } from './document';
@@ -7,6 +7,7 @@ import { createSettingsModal, createSettingsTab, getSettings, migrateSettings } 
 import { addStatus, removeStatus } from "./statusbar";
 import { refreshSubscriptionData } from "./subscription";
 import { addExtensionToEditor, removeExtensionsForSession } from "./editor";
+import { showNotice } from "./ui";
 
 export default class PeerDraftPlugin extends Plugin {
 
@@ -83,7 +84,7 @@ export const startSession = async (editor: Editor, file: TFile, plugin: Plugin) 
 
 	// copy link and notify user
 	navigator.clipboard.writeText(settings.basePath + id)
-	new Notice("Session started for " + file.name + ". Link copied to Clipboard.")
+	showNotice("Session started for " + file.name + ". Link copied to Clipboard.")
 
 	// set status bar
 	addStatus(file, plugin, settings)
@@ -97,6 +98,6 @@ export const stopSession = (file: TFile, plugin: Plugin) => {
 	stopSync(id)
 	removeStatus(id)
 	removeExtensionsForSession(id)
-	const notice = new Notice("Session stopped for " + file.name)
+	showNotice("Session stopped for " + file.name)
 }
 
