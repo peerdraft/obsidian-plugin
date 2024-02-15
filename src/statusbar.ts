@@ -1,8 +1,8 @@
 import { Menu, Plugin, TFile } from "obsidian";
 import { statusBars, syncedDocs } from "./data";
 import { Settings } from "./settings";
-import { stopSync } from "./document";
 import { showNotice } from "./ui";
+import { stopSession } from "./session";
 
 export const addStatus = (file: TFile, plugin: Plugin, settings: Settings) => {
   const id = syncedDocs[file.path]
@@ -20,10 +20,7 @@ export const addStatus = (file: TFile, plugin: Plugin, settings: Settings) => {
   menu.addItem((item) => {
     item.setTitle("Stop shared session")
     item.onClick(() => {
-      delete syncedDocs[file.path]
-				stopSync(id)
-        removeStatus(id)
-				showNotice("Session stopped for " + file.name)
+      stopSession(file)
     })
   })
 
