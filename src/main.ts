@@ -1,14 +1,12 @@
-import { StateEffect } from "@codemirror/state";
-import { EditorView } from '@codemirror/view';
 import { around } from "monkey-around";
 import { Editor, MarkdownView, Notice, Plugin, TFile } from 'obsidian';
 import { prepareCommunication } from "./cookie";
 import { syncedDocs } from './data';
 import { initDocument, stopSync } from './document';
-import { getOrCreateExtension } from "./editor";
 import { createSettingsModal, createSettingsTab, getSettings, migrateSettings } from './settings';
 import { addStatus, removeStatus } from "./statusbar";
 import { refreshSubscriptionData } from "./subscription";
+import { addExtensionToEditor, removeExtensionsForSession } from "./editor";
 
 export default class PeerDraftPlugin extends Plugin {
 
@@ -75,26 +73,13 @@ export default class PeerDraftPlugin extends Plugin {
 
 }
 
-export const stopSession = (file: TFile, plugin: Plugin) => {
-	const id = syncedDocs[file.path]
-	if (!id) return
-	delete syncedDocs[file.path]
-	stopSync(id)
-	removeStatus(id)
-	const notice = new Notice("Session stopped for " + file.name)
-}
-
 export const startSession = async (editor: Editor, file: TFile, plugin: Plugin) => {
 	const settings = await getSettings(plugin)
 	const id = initDocument(editor.getValue(), settings)
 	syncedDocs[file.path] = id
 
 	// bind to editor
-	const extension = getOrCreateExtension(id, settings)
-	const editorView = (editor as any).cm as EditorView;
-	editorView.dispatch({
-		effects: StateEffect.appendConfig.of(extension)
-	})
+	addExtensionToEditor(id, settings, editor)
 
 	// copy link and notify user
 	navigator.clipboard.writeText(settings.basePath + id)
@@ -103,3 +88,15 @@ export const startSession = async (editor: Editor, file: TFile, plugin: Plugin) 
 	// set status bar
 	addStatus(file, plugin, settings)
 }
+
+
+export const stopSession = (file: TFile, plugin: Plugin) => {
+	const id = syncedDocs[file.path]
+	if (!id) return
+	delete syncedDocs[file.path]
+	stopSync(id)
+	removeStatus(id)
+	removeExtensionsForSession(id)
+	const notice = new Notice("Session stopped for " + file.name)
+}
+

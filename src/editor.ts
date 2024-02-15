@@ -1,10 +1,13 @@
-import { Plugin, TFile } from 'obsidian';
+import { Editor } from 'obsidian';
 import { yCollab } from 'y-codemirror.next';
+import { Compartment } from "@codemirror/state";
 import { getOrCreateSyncData } from './document';
 import { Settings } from './settings';
 import { randomUint32 } from './tools';
 import Y from './yjs';
-import { extensions } from './data';
+import { StateEffect } from "@codemirror/state";
+import { EditorView } from '@codemirror/view';
+import { activeEditors } from './data';
 
 export const usercolors = [
   { dark: '#30bced', light: '#30bced33' },
@@ -19,20 +22,42 @@ export const usercolors = [
 
 export const userColor = usercolors[randomUint32() % usercolors.length]
 
-export const getOrCreateExtension = (id: string, settings: Settings) => {
-  if(!extensions[id]){
-    const syncData = getOrCreateSyncData(id, settings)
-    const undoManager = new Y.UndoManager(syncData.content)
-    syncData.provider.awareness.setLocalStateField('user', {
-      name: settings.name,
-      color: userColor.dark,
-      colorLight: userColor.light
-    })
-    extensions[id] = yCollab(syncData.content, syncData.provider.awareness, { undoManager })
+export const addExtensionToEditor = (id: string, settings: Settings, editor: Editor) => {
+  const extension = createExtensionForSession(id, settings)
+  const compartment = new Compartment()
+  const editorView = (editor as any).cm as EditorView;
+
+  if (!activeEditors[id]) {
+    activeEditors[id] = []
   }
-  return extensions[id]
+
+  activeEditors[id].push({
+    compartment,
+    editor: editorView
+  })
+
+  editorView.dispatch({
+    effects: StateEffect.appendConfig.of(compartment.of(extension))
+  })
 }
 
-export const removeExtensions = (fileToRemove: TFile, plugin: Plugin) => {
-  // doesn't do anything right now. Refresh of cm does not work properly on ending the provider
+export const removeExtensionsForSession = (id: string) => {
+  const actives = activeEditors[id]
+  if (!actives) return
+  for (const active of actives) {
+    active.editor.dispatch({
+      effects: active.compartment.reconfigure([])
+    })
+  }
+}
+
+export const createExtensionForSession = (id: string, settings: Settings) => {
+  const syncData = getOrCreateSyncData(id, settings)
+  const undoManager = new Y.UndoManager(syncData.content)
+  syncData.provider.awareness.setLocalStateField('user', {
+    name: settings.name,
+    color: userColor.dark,
+    colorLight: userColor.light
+  })
+  return yCollab(syncData.content, syncData.provider.awareness, { undoManager })
 }
