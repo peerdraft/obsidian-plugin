@@ -1,7 +1,7 @@
 import { Editor, Plugin, TFile } from "obsidian"
 import { getSettings } from "./settings"
 import { initDocument, stopSync } from "./document"
-import { syncedDocs } from "./data"
+import { syncObjects, syncedDocs } from "./data"
 import { addExtensionToEditor, removeExtensionsForSession } from "./editor"
 import { showNotice } from "./ui"
 import { addStatus, removeStatus } from "./statusbar"
@@ -10,6 +10,9 @@ export const startSession = async (editor: Editor, file: TFile, plugin: Plugin) 
 	const settings = await getSettings(plugin)
 	const id = initDocument(editor.getValue(), settings)
 	syncedDocs[file.path] = id
+
+	// monitor participants
+	notifyOnCollaboratorsChanged(id)
 
 	// bind to editor
 	addExtensionToEditor(id, settings, editor)
@@ -31,4 +34,21 @@ export const stopSession = (file: TFile) => {
 	removeStatus(id)
 	removeExtensionsForSession(id)
 	showNotice("Session stopped for " + file.name)
+}
+
+const notifyOnCollaboratorsChanged = (id: string) => {
+	const { provider } = syncObjects[id]
+	if (!provider) return;
+
+	provider.awareness.on('update', (msg: { added: Array<number>, updated: Array<number>, removed: Array<number> }) => {
+		const added = msg.added ?? [];
+		if (!added || added.length == 0) return;
+		const states = provider.awareness.getStates()
+		for (const key of added) {
+			const peer = states.get(key)
+			if (peer) {
+				showNotice(`${peer.user.name} joined`)
+			}
+		}
+	})
 }
