@@ -4,7 +4,8 @@ import { prepareCommunication } from "./cookie";
 import { syncedDocs } from './data';
 import { createSettingsModal, createSettingsTab, getSettings, migrateSettings } from './settings';
 import { refreshSubscriptionData } from "./subscription";
-import { startSession, stopSession } from "./session";
+import { joinSession, startSession, stopSession } from "./session";
+import { promptForMultipleTextInputs } from "./ui";
 
 export default class PeerDraftPlugin extends Plugin {
 
@@ -44,6 +45,22 @@ export default class PeerDraftPlugin extends Plugin {
 			}
 		});
 
+		plugin.addCommand({
+			id: 'join-session',
+			name: 'Join shared session',
+			callback: async () => {
+				// ask for url
+				const input = await promptForMultipleTextInputs(this.app, [{
+					description: "Enter your share URL",
+					name: "URL"
+				}])
+				if (!input || input.length < 1) return
+				const url = input.pop()?.value
+				if (!url) return
+				joinSession(url, this)
+			}
+		})
+
 		plugin.register(around(MarkdownView.prototype, {
 			onUnloadFile(next) {
 				return async function (file) {
@@ -52,6 +69,11 @@ export default class PeerDraftPlugin extends Plugin {
 				}
 			}
 		}))
+
+		this.app.vault.on('rename', (file, oldPath) => {
+			if (!syncedDocs[oldPath]) return
+			syncedDocs[file.path] = syncedDocs[oldPath]
+		})
 
 		const settingsTab = createSettingsTab(plugin)
 		const settings = await getSettings(plugin)

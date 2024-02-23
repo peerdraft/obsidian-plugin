@@ -1,9 +1,9 @@
-import { Editor, Plugin, TFile } from "obsidian"
+import { Editor, MarkdownView, Plugin, TFile } from "obsidian"
 import { getSettings } from "./settings"
-import { initDocument, stopSync } from "./document"
+import { createDocumentWithSyncId, initDocument, initDocumentToJoin, stopSync } from "./document"
 import { syncObjects, syncedDocs } from "./data"
 import { addExtensionToEditor, removeExtensionsForSession } from "./editor"
-import { showNotice } from "./ui"
+import { openFileInNewTab, showNotice } from "./ui"
 import { addStatus, removeStatus } from "./statusbar"
 
 export const startSession = async (editor: Editor, file: TFile, plugin: Plugin) => {
@@ -23,6 +23,63 @@ export const startSession = async (editor: Editor, file: TFile, plugin: Plugin) 
 
 	// set status bar
 	addStatus(file, plugin, settings)
+}
+
+export const joinSession = async (url: string, plugin: Plugin) => {
+	const id = url.split('/').pop()
+	if (!id || !id.match('^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')) {
+		showNotice("No valid peerdraft link")
+		return
+	}
+	if (syncObjects[id]) {
+		showNotice("Sync already active")
+		return
+	}
+
+	const fileData = await createDocumentWithSyncId(id, plugin.app)
+
+	if (!fileData) {
+		showNotice('Error: Could not create file for session.')
+		return
+	}
+
+	syncedDocs[fileData.file.path] = fileData.id
+
+	const settings = await getSettings(plugin)
+	const syncObj = initDocumentToJoin(fileData.id, settings)
+
+	syncObj.doc.once('update', async () => {
+		const leaf = await openFileInNewTab(fileData.file, plugin.app.workspace)
+		let editor: Editor | undefined
+		try {
+			editor = ((leaf.view) as MarkdownView).editor
+		} catch { }
+
+		if (!editor) return
+
+		editor.setValue(syncObj.content.toString())
+
+		notifyOnCollaboratorsChanged(fileData.id)
+		addExtensionToEditor(fileData.id, settings, editor)
+		addStatus(fileData.file, plugin, settings)
+		showNotice("Joined Session in " + fileData.file.name + ".")
+
+
+		const owner = syncObj.doc.getText("owner");
+
+		syncObj.provider.awareness.on("update", (msg: { removed: Array<number> }) => {
+			const removed = msg.removed ?? [];
+			if (!removed || removed.length < 1) return
+			const removedStrings = removed.map((id) => {
+				return id.toFixed(0);
+			});
+
+			if (removedStrings.includes(owner.toString())) {
+				showNotice("Shared session stopped by owner")
+				stopSession(fileData.file)
+			}
+		})
+	})
 }
 
 
