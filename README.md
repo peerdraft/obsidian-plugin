@@ -14,6 +14,10 @@ Your document and all changes are exchanged securly and directly between you and
 
 As soon as you close your document in Obsidian, the session stops automatically. Updates will not be shared anymore and the secret link stops working. When you start a new session, a new link will be created.
 
+## Obsidian-to-Obsidian sync available
+
+Your collaborators can use the web editor or the Peerdraft Obsidian plugin to join a session. If they join a session from within Obsidian, a new document will be created and kept in sync as long as the session is active and they don't close the document.
+
 ## How to get started
 
 Visit [https://www.peerdraft.app](https://www.peerdraft.app) to create an account and get started. There is a "Forever Free" plan available.
@@ -26,9 +30,13 @@ Visit [https://www.peerdraft.app](https://www.peerdraft.app) to create an accoun
 * Run the command `Start shared session`. A secret link will be copied to your clipboard automatically.
 * Send this link to your collaborators and start working together.
 
-## Close a session
+### Close a session
 
 The session will be closed automatically, when you close the document in Obsidian. You can also:
 
 * Run the command `Stop shared session` or
 * Click on the `Sharing [filename]` entry in the statusbar and select `stop shared session`.
+
+### Join a session
+
+If you received a link to a Peerdraft session from someone else, you can also use the `join shared session` command. After you entered the URL a new file will be created and you will join the session.
