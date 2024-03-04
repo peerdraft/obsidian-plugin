@@ -39,4 +39,4 @@ The session will be closed automatically, when you close the document in Obsidia
 
 ### Join a session
 
-If you received a link to a Peerdraft session from someone else, you can also use the `join shared session` command. After you entered the URL a new file will be created and you will join the session.
+When you received a link to a Peerdraft session from someone else, you can also use the `join shared session` command. After you entered the URL, a new file will be created and you will join the session.
