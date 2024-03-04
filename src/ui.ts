@@ -1,4 +1,4 @@
-import { App, Modal, Notice, Setting, TFile, Workspace } from "obsidian";
+import { App, Modal, Notice, Setting, TFile, Workspace, WorkspaceLeaf } from "obsidian";
 
 class ShowTextModal extends Modal {
 
@@ -97,4 +97,10 @@ export const openFileInNewTab = async (file: TFile, workspace: Workspace) => {
   const leaf = workspace.getLeaf('tab')
   await leaf.openFile(file)
   return leaf
+}
+
+export const pinLeaf = (leaf: WorkspaceLeaf) => {
+  leaf.setPinned(true)
+  console.log(leaf)
+  showNotice(`auto-pinned "${leaf.getDisplayText()}"`)
 }

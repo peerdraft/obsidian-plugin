@@ -20,16 +20,17 @@ export default class PeerDraftPlugin extends Plugin {
 		plugin.addCommand({
 			id: 'start-session-with-active-document',
 			name: 'Start shared session',
-			editorCheckCallback: (checking, editor, ctx) => {
-				// checking
-				const file = ctx.file
+			checkCallback(checking) {
+				const view = plugin.app.workspace.getActiveViewOfType(MarkdownView)
+				if (!view) return false;
+				const file = view.file
 				if (!file) return false
 				const sharedAlready = syncedDocs[file.path]
 				if (sharedAlready) return false
 				if (checking) return true
 				// do it
-				startSession(editor, file, plugin)
-			}
+				startSession(view, file, plugin)
+			},
 		});
 
 		plugin.addCommand({

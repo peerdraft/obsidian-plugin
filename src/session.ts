@@ -3,11 +3,13 @@ import { getSettings } from "./settings"
 import { createDocumentWithSyncId, initDocument, initDocumentToJoin, stopSync } from "./document"
 import { syncObjects, syncedDocs } from "./data"
 import { addExtensionToEditor, removeExtensionsForSession } from "./editor"
-import { openFileInNewTab, showNotice } from "./ui"
+import { openFileInNewTab, pinLeaf, showNotice } from "./ui"
 import { addStatus, removeStatus } from "./statusbar"
 
-export const startSession = async (editor: Editor, file: TFile, plugin: Plugin) => {
+export const startSession = async (view: MarkdownView, file: TFile, plugin: Plugin) => {
+
 	const settings = await getSettings(plugin)
+	const editor = view.editor
 	const id = initDocument(editor.getValue(), settings)
 	syncedDocs[file.path] = id
 
@@ -20,6 +22,7 @@ export const startSession = async (editor: Editor, file: TFile, plugin: Plugin) 
 	// copy link and notify user
 	navigator.clipboard.writeText(settings.basePath + id)
 	showNotice("Session started for " + file.name + ". Link copied to Clipboard.")
+	pinLeaf(view.leaf)
 
 	// set status bar
 	addStatus(file, plugin, settings)
@@ -63,7 +66,7 @@ export const joinSession = async (url: string, plugin: Plugin) => {
 		addExtensionToEditor(fileData.id, settings, editor)
 		addStatus(fileData.file, plugin, settings)
 		showNotice("Joined Session in " + fileData.file.name + ".")
-
+		pinLeaf(leaf)
 
 		const owner = syncObj.doc.getText("owner");
 
