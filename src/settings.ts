@@ -2,11 +2,14 @@ import { Modal, Plugin, PluginSettingTab, Setting, requestUrl } from "obsidian";
 import { createRandomId } from "./tools";
 import { refreshSubscriptionData } from "./subscription";
 import { showTextModal } from "./ui";
+import PeerdraftPlugin from "./peerdraftPlugin";
 
 export interface Settings {
   signaling: string,
+  sync: string,
   subscriptionAPI: string,
   connectAPI: string,
+  sessionAPI: string
   basePath: string,
   name: string,
   oid: string,
@@ -22,8 +25,10 @@ const DEFAULT_SETTINGS: Settings = {
   basePath: "https://www.peerdraft.app/cm/",
   subscriptionAPI: "https://www.peerdraft.app/subscription",
   connectAPI: "https://www.peerdraft.app/subscription/connect",
-  name: "",
+  sessionAPI: "https://www.peerdraft.app/session",
+  sync: "wss://www.peerdraft.app/sync",
   signaling: "wss://www.peerdraft.app/signal",
+  name: "",
   oid: createRandomId(),
   plan: {
     type: "hobby",
@@ -34,13 +39,23 @@ const DEFAULT_SETTINGS: Settings = {
 }
 
 const FORCE_SETTINGS: Partial<Settings> = {
+  /*
+  basePath: "http://localhost:5173/cm/",
+  subscriptionAPI: "http://localhost:5173/subscription",
+  connectAPI: "http://localhost:5173/subscription/connect",
+  sessionAPI: "http://localhost:5173/session",
+  sync: "ws://localhost:5173/sync",
+  signaling: "ws://localhost:5173/signal",
+  */
   basePath: "https://www.peerdraft.app/cm/",
   subscriptionAPI: "https://www.peerdraft.app/subscription",
   connectAPI: "https://www.peerdraft.app/subscription/connect",
-  signaling: "wss://www.peerdraft.app/signal",
+  sessionAPI: "https://www.peerdraft.app/session",
+  sync: "wss://www.peerdraft.app/sync",
+  signaling: "wss://www.peerdraft.app/signal"
 }
 
-export const migrateSettings = async (plugin: Plugin) => {
+export const migrateSettings = async (plugin: PeerdraftPlugin) => {
   const oldSettings = await getSettings(plugin)
 
   const newSettings = Object.assign({}, DEFAULT_SETTINGS, oldSettings, FORCE_SETTINGS, {
@@ -59,11 +74,12 @@ export const getSettings = async (plugin: Plugin) => {
   return settings
 }
 
-export const saveSettings = async (settings: Settings, plugin: Plugin) => {
+export const saveSettings = async (settings: Settings, plugin: PeerdraftPlugin) => {
   await plugin.saveData(settings)
+  plugin.settings = settings
 }
 
-export const renderSettings = async (el: HTMLElement, plugin: Plugin) => {
+export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) => {
   el.empty();
 
   const settings = await getSettings(plugin)
@@ -111,7 +127,6 @@ export const renderSettings = async (el: HTMLElement, plugin: Plugin) => {
       .addButton(button => {
         button.setButtonText("Connect")
         button.onClick(async (e) => {
-          console.log("trying to get sub")
           const data = await requestUrl({
             url: settings.connectAPI,
             method: 'POST',
@@ -122,7 +137,6 @@ export const renderSettings = async (el: HTMLElement, plugin: Plugin) => {
             })
             
           }).json
-          console.log(data)
           if (data && data.plan) {
             settings.plan = data.plan
             saveSettings(settings, plugin),
@@ -162,7 +176,7 @@ export const renderSettings = async (el: HTMLElement, plugin: Plugin) => {
 
 }
 
-export const createSettingsTab = (plugin: Plugin) => {
+export const createSettingsTab = (plugin: PeerdraftPlugin) => {
   return new class extends PluginSettingTab {
     async display() {
       await renderSettings(this.containerEl, plugin)
@@ -170,7 +184,7 @@ export const createSettingsTab = (plugin: Plugin) => {
   }(plugin.app, plugin)
 }
 
-export const createSettingsModal = (plugin: Plugin) => {
+export const createSettingsModal = (plugin: PeerdraftPlugin) => {
   return new class extends Modal {
 
     async onOpen() {

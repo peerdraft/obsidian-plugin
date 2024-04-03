@@ -27,16 +27,16 @@ Visit [https://www.peerdraft.app](https://www.peerdraft.app) to create an accoun
 ### Work on a document together
 
 * Open the document you want to work on together.
-* Run the command `Start shared session`. A secret link will be copied to your clipboard automatically.
+* Run the command `Start working together on this document`. A secret link will be copied to your clipboard automatically.
 * Send this link to your collaborators and start working together.
 
 ### Close a session
 
 The session will be closed automatically, when you close the document in Obsidian. You can also:
 
-* Run the command `Stop shared session` or
+* Run the command `Start working together on this document` OR
 * Click on the `Sharing [filename]` entry in the statusbar and select `stop shared session`.
 
 ### Join a session
 
-When you received a link to a Peerdraft session from someone else, you can also use the `join shared session` command. After you entered the URL, a new file will be created and you will join the session.
+When you received a link to a Peerdraft session from someone else, you can also use the `Join session and add document from someone else` command. After you entered the URL, a new file will be created and you can start working together.

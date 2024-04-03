@@ -1,8 +1,9 @@
 import { Platform, Plugin } from "obsidian";
 import { getSettings, saveSettings } from "./settings";
 import { session } from '@electron/remote';
+import PeerdraftPlugin from "./main";
 
-export const prepareCommunication = async (plugin: Plugin) => {
+export const prepareCommunication = async (plugin: PeerdraftPlugin) => {
 
   const settings = await getSettings(plugin)
   if (Platform.isDesktopApp) {    

@@ -99,8 +99,20 @@ export const openFileInNewTab = async (file: TFile, workspace: Workspace) => {
   return leaf
 }
 
+
+
 export const pinLeaf = (leaf: WorkspaceLeaf) => {
   leaf.setPinned(true)
-  console.log(leaf)
   showNotice(`auto-pinned "${leaf.getDisplayText()}"`)
 }
+
+export const usercolors = [
+  { dark: '#30bced', light: '#30bced33' },
+  { dark: '#6eeb83', light: '#6eeb8333' },
+  { dark: '#ffbc42', light: '#ffbc4233' },
+  { dark: '#ecd444', light: '#ecd44433' },
+  { dark: '#ee6352', light: '#ee635233' },
+  { dark: '#9ac2c9', light: '#9ac2c933' },
+  { dark: '#8acb88', light: '#8acb8833' },
+  { dark: '#1be7ff', light: '#1be7ff33' }
+]
