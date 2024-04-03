@@ -79,3 +79,13 @@ export const promptForURL = (app: App) => {
     }
   })
 }
+
+export const promptForName = (app: App) => {
+  return promptForText(app, {
+    description: "This name will be shown to your collaborators",
+    header: "What's your name?",
+    initial: {
+      text: ""
+    }
+  })
+}

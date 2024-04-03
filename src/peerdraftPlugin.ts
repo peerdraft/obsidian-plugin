@@ -1,5 +1,5 @@
 import { MarkdownView, Plugin, TFile, TFolder } from "obsidian"
-import { Settings, createSettingsModal, createSettingsTab, getSettings, migrateSettings } from "./settings"
+import { Settings, createSettingsModal, createSettingsTab, getSettings, migrateSettings, saveSettings } from "./settings"
 import { PeerdraftRecord } from "./utils/peerdraftRecord"
 import { PeerdraftLeaf } from "./workspace/peerdraftLeaf"
 import { PermanentShareStore } from "./permanentShareStore"
@@ -8,7 +8,7 @@ import { SharedDocument } from "./sharedEntities/sharedDocument"
 import { getLeafsByPath, updatePeerdraftWorkspace } from "./workspace/peerdraftWorkspace"
 import { SharedFolder } from "./sharedEntities/sharedFolder"
 import { promptForSessionType } from "./ui/chooseSessionType"
-import { promptForURL } from "./ui/enterText"
+import { promptForName, promptForURL } from "./ui/enterText"
 import { SharedEntity } from "./sharedEntities/sharedEntity"
 import { prepareCommunication } from "./cookie"
 
@@ -254,8 +254,13 @@ export default class PeerdraftPlugin extends Plugin {
 
 		const settingsTab = createSettingsTab(plugin)
 		const settings = await getSettings(plugin)
+
 		if (!settings.name) {
-			createSettingsModal(plugin).open()
+			const name = await promptForName(plugin.app)
+			if (name && name.text) {
+				this.settings.name = name.text
+				saveSettings(this.settings, plugin)
+			}
 		}
 		plugin.addSettingTab(settingsTab)
 	}
