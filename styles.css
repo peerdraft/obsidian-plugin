@@ -1,4 +1,8 @@
 .cm-ySelectionInfo {
   font-size: 1em !important;
-  opacity: 100 !important;
+  opacity: 0.6 !important;
+}
+
+.cm-ySelectionInfo:hover {
+  opacity: 1 !important;
 }
