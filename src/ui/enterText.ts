@@ -72,7 +72,7 @@ export const promptForText = (app: App, opts: OPTS) => {
 
 export const promptForURL = (app: App) => {
   return promptForText(app, {
-    description: "Enter the URL you received to start collaborating.",
+    description: "Enter the URL you received to start working together.",
     header: "Enter your Peerdraft URL",
     initial: {
       text: ""
