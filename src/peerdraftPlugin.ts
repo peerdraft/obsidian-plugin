@@ -1,19 +1,18 @@
 import { MarkdownView, Plugin, TFile, TFolder } from "obsidian"
-import { Settings, createSettingsModal, createSettingsTab, getSettings, migrateSettings, saveSettings } from "./settings"
-import { PeerdraftRecord } from "./utils/peerdraftRecord"
-import { PeerdraftLeaf } from "./workspace/peerdraftLeaf"
+import { ActiveStreamClient } from "./activeStreamClient"
+import { prepareCommunication } from "./cookie"
 import { PermanentShareStore } from "./permanentShareStore"
 import { ServerAPI } from "./serverAPI"
+import { Settings, createSettingsTab, getSettings, migrateSettings, saveSettings } from "./settings"
 import { SharedDocument } from "./sharedEntities/sharedDocument"
-import { getLeafsByPath, updatePeerdraftWorkspace } from "./workspace/peerdraftWorkspace"
+import { fromShareURL } from "./sharedEntities/sharedEntityFactory"
 import { SharedFolder } from "./sharedEntities/sharedFolder"
+import { showNotice } from "./ui"
 import { promptForSessionType } from "./ui/chooseSessionType"
 import { promptForName, promptForURL } from "./ui/enterText"
-import { SharedEntity } from "./sharedEntities/sharedEntity"
-import { prepareCommunication } from "./cookie"
-import { fromShareURL } from "./sharedEntities/sharedEntityFactory"
-import { ActiveStreamClient } from "./activeStreamClient"
-import { showNotice } from "./ui"
+import { PeerdraftRecord } from "./utils/peerdraftRecord"
+import { PeerdraftLeaf } from "./workspace/peerdraftLeaf"
+import { getLeafsByPath, updatePeerdraftWorkspace } from "./workspace/peerdraftWorkspace"
 
 export default class PeerdraftPlugin extends Plugin {
 
@@ -38,11 +37,7 @@ export default class PeerdraftPlugin extends Plugin {
 			permanentSessionUrl: plugin.settings.sessionAPI
 		})
 
-		// TEST
-
 		plugin.activeStreamClient = new ActiveStreamClient(plugin.settings.actives)
-
-		// _______________
 
 		plugin.pws.on('add', (key, leaf) => {
 			SharedDocument.findByPath(leaf.path)?.addExtensionToLeaf(key)
