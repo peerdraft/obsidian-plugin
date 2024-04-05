@@ -11,6 +11,9 @@ import { promptForSessionType } from "./ui/chooseSessionType"
 import { promptForName, promptForURL } from "./ui/enterText"
 import { SharedEntity } from "./sharedEntities/sharedEntity"
 import { prepareCommunication } from "./cookie"
+import { fromShareURL } from "./sharedEntities/sharedEntityFactory"
+import { ActiveStreamClient } from "./activeStreamClient"
+import { showNotice } from "./ui"
 
 export default class PeerdraftPlugin extends Plugin {
 
@@ -18,6 +21,7 @@ export default class PeerdraftPlugin extends Plugin {
 	pws: PeerdraftRecord<PeerdraftLeaf>
 	permanentShareStore: PermanentShareStore
 	serverAPI: ServerAPI
+	activeStreamClient: ActiveStreamClient
 
 	async onload() {
 
@@ -34,7 +38,14 @@ export default class PeerdraftPlugin extends Plugin {
 			permanentSessionUrl: plugin.settings.sessionAPI
 		})
 
+		// TEST
+
+		plugin.activeStreamClient = new ActiveStreamClient(plugin.settings.actives)
+
+		// _______________
+
 		plugin.pws.on('add', (key, leaf) => {
+			SharedDocument.findByPath(leaf.path)?.addExtensionToLeaf(key)
 			leaf.on("changePath", (oldPath) => {
 				const doc = SharedDocument.findByPath(oldPath)
 				if (doc) {
@@ -74,21 +85,20 @@ export default class PeerdraftPlugin extends Plugin {
 				}))
 			}
 		)
-		
-		/*
-		plugin.registerEvent(plugin.app.workspace.on('file-menu', (menu, file) => {
-			if (file instanceof TFolder) {
-				menu.addItem((item) => {
-					item.setTitle('Share Folder')
-					item.setIcon('users')
-					item.onClick(() => {
-						console.log("clicked " + file.path)
-						SharedFolder.fromTFolder(file, plugin)
+
+		if (plugin.settings.plan.type === "team") {
+			plugin.registerEvent(plugin.app.workspace.on('file-menu', (menu, file) => {
+				if (file instanceof TFolder) {
+					menu.addItem((item) => {
+						item.setTitle('Share Folder')
+						item.setIcon('users')
+						item.onClick(() => {
+							SharedFolder.fromTFolder(file, plugin)
+						})
 					})
-				})
-			}
-		}))
-		*/
+				}
+			}))
+		}
 
 		plugin.addCommand({
 			id: "share",
@@ -102,23 +112,22 @@ export default class PeerdraftPlugin extends Plugin {
 				if (doc) return false
 				if (checking) return true
 				// do it
-
-				SharedDocument.fromView(view, plugin, { isPermanent: false }).then(doc => {
-					if (!doc) {
-						return console.log("ERROR creating sharedDoc")
-					}
-				})
-
-				/*
-				promptForSessionType(plugin.app).then(result => {
-					if (!result) return
-					SharedDocument.fromView(view, plugin, { isPermanent: result.permanent }).then(doc => {
+				if (plugin.settings.plan.type === "team") {
+					promptForSessionType(plugin.app).then(result => {
+						if (!result) return
+						SharedDocument.fromView(view, plugin, { isPermanent: result.permanent }).then(doc => {
+							if (!doc) {
+								return showNotice("ERROR creating sharedDoc")
+							}
+						})
+					})
+				} else {
+					SharedDocument.fromView(view, plugin, { isPermanent: false }).then(doc => {
 						if (!doc) {
-							return console.log("ERROR creating sharedDoc")
+							return showNotice("ERROR creating sharedDoc")
 						}
 					})
-				})
-				*/
+				}
 			}
 		})
 
@@ -129,7 +138,6 @@ export default class PeerdraftPlugin extends Plugin {
 				const file = ctx.file
 				if (!file) return false
 				const doc = SharedDocument.findByPath(file.path)
-				console.log(doc)
 				if (!doc || doc.isPermanent) return false
 				if (checking) return true
 				doc.destroy()
@@ -142,112 +150,21 @@ export default class PeerdraftPlugin extends Plugin {
 			callback: async () => {
 				const url = await promptForURL(plugin.app)
 				if (url && url.text) {
-					await SharedEntity.fromShareURL(url.text, plugin)
+					await fromShareURL(url.text, plugin)
 				}
 			}
 		})
 
-		/*
-
-		plugin.addCommand({
-			id: 'start-session-with-active-document',
-			name: 'Start shared session',
-			checkCallback(checking) {
-				const view = plugin.app.workspace.getActiveViewOfType(MarkdownView)
-				if (!view) return false;
-				const file = view.file
-				if (!file) return false
-				const sharedAlready = syncedDocs[file.path]
-				if (sharedAlready) return false
-				if (checking) return true
-				// do it
-				startSession(view, file, plugin)
-			},
-		});
-
-		plugin.addCommand({
-			id: 'stop-session-with-active-document',
-			name: 'Stop shared session',
-			editorCheckCallback: (checking, editor, ctx) => {
-				const file = ctx.file
-				if (!file) return false
-				const id = syncedDocs[file.path]
-				if (!id) return false
-				if (checking) return true
-				endSharing(file.path, plugin).then(() => {
-					stopSession(file, plugin)
-				})
-			}
-		});
-
-		plugin.addCommand({
-			id: 'join-session',
-			name: 'Join shared session',
-			callback: async () => {
-				// ask for url
-				const input = await promptForMultipleTextInputs(this.app, [{
-					description: "Enter your share URL",
-					name: "URL"
-				}])
-				if (!input || input.length < 1) return
-				const url = input.pop()?.value
-				if (!url) return
-				joinSession(url, this)
-			}
-		})
-
-		plugin.addCommand({
-			id: 'share',
-			name: 'Share this document',
-			checkCallback(checking) {
-				const view = plugin.app.workspace.getActiveViewOfType(MarkdownView)
-				if (!view) return false;
-				const file = view.file
-				if (!file) return false
-				const sharedAlready = syncedDocs[file.path]
-				if (sharedAlready) return false
-				if (checking) return true
-
-				// do it
-
-				shareFile(view, file, plugin)
-			},
-		});
-
-
-		plugin.addCommand({
-			id: 'add-shared',
-			name: 'Add a shared file from someone else',
-			callback: async () => {
-				// ask for url
-				const input = await promptForMultipleTextInputs(this.app, [{
-					description: "Enter your share URL",
-					name: "URL"
-				}])
-				if (!input || input.length < 1) return
-				const url = input.pop()?.value
-				if (!url) return
-				addSharedFile(url, plugin)
-			}
-		})
-		*/
-
-		/*
-		plugin.register(around(MarkdownView.prototype, {
-			onUnloadFile(next) {
-				return async function (file) {
-					stopSession(file)
-					return next.call(this, file)
-				}
-			}
-		}))
-		**/
-
-		this.registerEvent(this.app.vault.on('rename', (file, oldPath) => {
+		this.registerEvent(this.app.vault.on('rename', async (file, oldPath) => {
 			if (file instanceof TFile) {
 				const doc = SharedDocument.findByPath(oldPath)
 				if (doc) {
-					doc.setNewFileLocation(file)
+					await doc.setNewFileLocation(file)
+				}
+			} else if (file instanceof TFolder) {
+				const folder = SharedFolder.findByPath(oldPath)
+				if (folder) {
+					await folder.setNewFolderLocation(file)
 				}
 			}
 		}))
@@ -266,9 +183,14 @@ export default class PeerdraftPlugin extends Plugin {
 	}
 
 	onunload() {
-		SharedDocument.getAll().map((doc) => {
+		SharedDocument.getAll().forEach((doc) => {
 			doc.destroy()
 		})
+		SharedFolder.getAll().forEach(folder => {
+			folder.destroy()
+		})
+		this.activeStreamClient.destroy()
+		this.permanentShareStore.close()
 	}
 
 }

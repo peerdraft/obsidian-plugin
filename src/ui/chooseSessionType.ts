@@ -25,7 +25,7 @@ class ChooseSessionTypeModal extends Modal {
     }).setDesc("A fleeting session automatically closes when you close the document or disconnect.")
 
     new Setting(this.contentEl).addButton(button => {
-      button.setButtonText("Create permanent share")
+      button.setButtonText("Share permanently")
       button.setCta()
       button.onClick(() => {
         this.close()

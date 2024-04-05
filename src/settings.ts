@@ -10,11 +10,12 @@ export interface Settings {
   subscriptionAPI: string,
   connectAPI: string,
   sessionAPI: string
+  actives: string,
   basePath: string,
   name: string,
   oid: string,
   plan: {
-    type: "hobby" | "professional"
+    type: "hobby" | "professional" | "team"
     email?: string
   },
   duration: number,
@@ -22,12 +23,13 @@ export interface Settings {
 }
 
 const DEFAULT_SETTINGS: Settings = {
-  basePath: "https://www.peerdraft.app/cm/",
+  basePath: "https://www.peerdraft.app",
   subscriptionAPI: "https://www.peerdraft.app/subscription",
   connectAPI: "https://www.peerdraft.app/subscription/connect",
   sessionAPI: "https://www.peerdraft.app/session",
   sync: "wss://www.peerdraft.app/sync",
   signaling: "wss://www.peerdraft.app/signal",
+  actives: "wss://www.peerdraft.app/actives",
   name: "",
   oid: createRandomId(),
   plan: {
@@ -40,19 +42,21 @@ const DEFAULT_SETTINGS: Settings = {
 
 const FORCE_SETTINGS: Partial<Settings> = {
   /*
-  basePath: "http://localhost:5173/cm/",
+  basePath: "http://localhost:5173",
   subscriptionAPI: "http://localhost:5173/subscription",
   connectAPI: "http://localhost:5173/subscription/connect",
   sessionAPI: "http://localhost:5173/session",
   sync: "ws://localhost:5173/sync",
   signaling: "ws://localhost:5173/signal",
+  actives: "ws://localhost:5173/actives"
   */
-  basePath: "https://www.peerdraft.app/cm/",
+  basePath: "https://www.peerdraft.app",
   subscriptionAPI: "https://www.peerdraft.app/subscription",
   connectAPI: "https://www.peerdraft.app/subscription/connect",
   sessionAPI: "https://www.peerdraft.app/session",
   sync: "wss://www.peerdraft.app/sync",
-  signaling: "wss://www.peerdraft.app/signal"
+  signaling: "wss://www.peerdraft.app/signal",
+  actives: "wss://www.peerdraft.app/actives",
 }
 
 export const migrateSettings = async (plugin: PeerdraftPlugin) => {

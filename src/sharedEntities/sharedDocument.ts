@@ -12,11 +12,9 @@ import { PermanentShareDocument } from '../permanentShareStore';
 import { getLeafIdsByPath } from '../workspace/peerdraftWorkspace';
 import { SharedEntity } from './sharedEntity';
 import * as path from 'path';
-import { WebrtcProvider } from 'y-webrtc';
 
 export class SharedDocument extends SharedEntity {
 
-  private static _sharedDocuments: Array<SharedDocument> = []
   private static _userColor = usercolors[randomUint32() % usercolors.length]
 
   private _isPermanent: boolean
@@ -50,7 +48,7 @@ export class SharedDocument extends SharedEntity {
     // @ts-expect-error
     doc.addExtensionToLeaf(view.leaf.id)
 
-    navigator.clipboard.writeText(plugin.settings.basePath + doc.shareId)
+    navigator.clipboard.writeText(plugin.settings.basePath + "/cm/" + doc.shareId)
     showNotice("Collaboration started for " + doc.path + ". Link copied to Clipboard.")
 
     return doc
@@ -63,7 +61,7 @@ export class SharedDocument extends SharedEntity {
     }, plugin)
     doc._isPermanent = true
     doc._shareId = pd.shareId
-    console.log("permenent share added " + pd.path)
+    doc.startWebSocketSync()
     return doc
   }
 
@@ -79,75 +77,46 @@ export class SharedDocument extends SharedEntity {
       return
     }
 
-    // TODO: Check if permanent
-    // Assume p2p here
+    const isPermanent = await plugin.serverAPI.isSessionPermanent(id)
 
-    const isPermanent = false
+    const initialFileName = `_peerdraft_session_${id}_${generateRandomString()}.md`
+    const parent = plugin.app.fileManager.getNewFileParent('', initialFileName)
+    const filePath = path.join(parent.path, initialFileName)
+    const file = await plugin.app.vault.create(filePath, '')
 
-    if (!isPermanent) {
-      const initialFileName = `_peerdraft_session_${id}_${generateRandomString()}.md`
-      const parent = plugin.app.fileManager.getNewFileParent('', initialFileName)
-      const filePath = path.join(parent.path, initialFileName)
-      const file = await plugin.app.vault.create(filePath, '')
+    const doc = new SharedDocument({
+      path: file.path,
+      id
+    }, plugin)
 
-      const doc = new SharedDocument({
-        path: file.path,
-        id
-      }, plugin)
-
-      doc.startWebRTCSync()
-      const leaf = await openFileInNewTab(file, plugin.app.workspace)
-      doc.addStatusBarEntry()
-      // @ts-expect-error
-      doc.addExtensionToLeaf(leaf.id)
-      pinLeaf(leaf)
-      showNotice("Joined Session in " + doc.path + ".")
-
-      return doc
-
+    doc.startWebRTCSync()
+    if (isPermanent) {
+      doc._isPermanent = true
+      await plugin.permanentShareStore.add(doc)
+      doc.startWebSocketSync()
     }
 
+    const leaf = await openFileInNewTab(file, plugin.app.workspace)
+    doc.addStatusBarEntry()
+    // @ts-expect-error
+    doc.addExtensionToLeaf(leaf.id)
+    pinLeaf(leaf)
+    showNotice("Joined Session in " + doc.path + ".")
+
+    return doc
+
   }
 
-  startWebRTCSync(): WebrtcProvider {
-    return super.startWebRTCSync((provider) => {
-      console.log("register")
-      provider.awareness.on("update", (msg: { added: Array<number>, updated: Array<number>, removed: Array<number> }) => {
-        const removed = msg.removed ?? [];
-        if (removed && removed.length > 0) {
-          const removedStrings = removed.map((id) => {
-            return id.toFixed(0);
-          });
-
-          const owner = this.getOwnerFragment().toString()
-          if (owner != provider.awareness.clientID.toString()) {
-            if (removedStrings.includes(owner)) {
-              showNotice("Shared session for " + this.path + " stopped by owner")
-              this.destroy()
-            }
-          }
-        }
-
-        const added = msg.added ?? [];
-        if (added && added.length > 0) {
-          const states = provider.awareness.getStates()
-          for (const key of added) {
-            const peer = states.get(key)
-            if (peer) {
-              showNotice(`${peer.user.name} joined`)
-            }
-          }
-        }
-      })
-    })
-  }
-
-  static async fromTFile(file: TFile, plugin: PeerDraftPlugin) {
+  static async fromTFile(file: TFile, opts: { id?: string, permanent?: boolean }, plugin: PeerDraftPlugin) {
 
     const doc = new SharedDocument({ path: file.path }, plugin)
-    // await doc.setPermanent()
-    doc._shareId = createRandomId()
-
+    if (opts.id) {
+      doc._shareId = opts.id
+    }
+    if (opts.permanent) {
+      await doc.setPermanent()
+      doc.startWebSocketSync()
+    }
     const leafIds = getLeafIdsByPath(file.path, plugin.pws)
 
     if (leafIds.length > 0) {
@@ -164,31 +133,16 @@ export class SharedDocument extends SharedEntity {
   }
 
   static findByPath(path: string) {
-    const docs = this._sharedDocuments.filter(doc => {
-      return doc.path === path
-    })
-    if (docs.length >= 1) {
-      return docs[0]
-    } else {
-      return
-    }
+    return super.findByPath(path) as SharedDocument | undefined
   }
 
   static findById(id: string) {
-    const docs = this._sharedDocuments.filter(doc => {
-      return doc.shareId === id
-    })
-    if (docs.length >= 1) {
-      return docs[0]
-    } else {
-      return
-    }
+    return super.findById(id) as SharedDocument | undefined
   }
 
   static getAll() {
-    return Object.assign([], this._sharedDocuments) as Array<SharedDocument>
+    return super.getAll() as Array<SharedDocument>
   }
-
 
   private constructor(opts: {
     path?: string,
@@ -201,7 +155,7 @@ export class SharedDocument extends SharedEntity {
       if ((file instanceof TFile)) {
         this._file = file
       } else {
-        console.log("FILE NOT FOUND")
+        showNotice("ERROR creating sharedDoc")
       }
     }
     if (opts.id) {
@@ -209,7 +163,7 @@ export class SharedDocument extends SharedEntity {
     }
     this.yDoc = new Y.Doc()
 
-    SharedDocument._sharedDocuments.push(this)
+    SharedDocument._sharedEntites.push(this)
     this._extensions = new PeerdraftRecord<Compartment>()
 
     this._extensions.on("delete", () => {
@@ -225,21 +179,77 @@ export class SharedDocument extends SharedEntity {
     })
   }
 
-  setNewFileLocation(file: TFile) {
+  startWebRTCSync() {
+    return super.startWebRTCSync((provider) => {
+      provider.awareness.on("update", (msg: { added: Array<number>, removed: Array<number> }) => {
+        const removed = msg.removed ?? [];
+        if (removed && removed.length > 0) {
+          const removedStrings = removed.map((id) => {
+            return id.toFixed(0);
+          });
+
+          const owner = this.getOwnerFragment().toString()
+          if (owner != provider.awareness.clientID.toString()) {
+            if (removedStrings.includes(owner) && !this.isPermanent) {
+              showNotice("Shared session for " + this.path + " stopped by owner")
+              this.destroy()
+            }
+          }
+        }
+
+        const added = msg.added ?? [];
+        if (added && added.length > 0) {
+          const states = provider.awareness.getStates()
+          for (const key of added) {
+            const peer = states.get(key)
+            if (peer) {
+              showNotice(`${peer.user.name} works on ${this.path}`)
+            }
+          }
+        }
+      })
+
+      const handleTimeout = () => {
+        if (this._extensions.size > 0 || getLeafIdsByPath(this.path, this.plugin.pws).length > 0) {
+          this._webRTCTimeout = window.setTimeout(handleTimeout, 60000)
+          return
+        }
+        this.stopWebRTCSync()
+      }
+
+      this._webRTCTimeout = window.setTimeout(handleTimeout, 60000)
+      provider.doc.on('update', async (update: Uint8Array, origin: any, doc: Y.Doc, tr: Y.Transaction) => {
+        if (this._webRTCTimeout != null) {
+          window.clearTimeout(this._webRTCTimeout)
+        }
+        this._webRTCTimeout = window.setTimeout(handleTimeout, 60000)
+      })
+    })
+  }
+
+  async setNewFileLocation(file: TFile) {
+    const oldPath = this._path
     this._file = file
     this._path = file.path
     if (this.statusBarEntry) {
       this.removeStatusStatusBarEntry()
       this.addStatusBarEntry()
     }
+    const dbEntry = await this.plugin.permanentShareStore.getDocByPath(oldPath)
+    if (dbEntry) {
+      this.plugin.permanentShareStore.removeDoc(oldPath)
+      this.plugin.permanentShareStore.add(this)
+    }
   }
 
   async setPermanent() {
     if (!this._isPermanent) {
-      const data = await this.plugin.serverAPI.createPermanentSession()
-      if (!data) return
+      if (!this.shareId) {
+        const data = await this.plugin.serverAPI.createPermanentSession()
+        if (!data) return
+        this._shareId = data.id
+      }
       this._isPermanent = true
-      this._shareId = data.id
       await this.plugin.permanentShareStore.add(this)
     }
   }
@@ -260,24 +270,18 @@ export class SharedDocument extends SharedEntity {
     return this.yDoc.getText("owner")
   }
 
-
-  startLocalSync() {
-
-  }
-
-  stopLocalSync() {
-
-  }
-
-  async addExtensionToLeaf(leafId: string) {
+  addExtensionToLeaf(leafId: string) {
     // only makes sense if we have a webrct provider to sync with
-    const webRTCProcider = await this.startWebRTCSync()
+    const webRTCProvider = this.startWebRTCSync()
+    if (!webRTCProvider) return
     // already there
     if (this._extensions.get(leafId)) return
     // need a pleaf
     const pLeaf = this.plugin.pws.get(leafId)
     if (!pLeaf) return
+
     // path needs to match
+
     if (pLeaf.path != this._path) return
     if (pLeaf.isPreview) {
       pLeaf.once("changeIsPreview", () => {
@@ -294,13 +298,13 @@ export class SharedDocument extends SharedEntity {
     editor.setValue(this.getValue())
 
     const undoManager = new Y.UndoManager(this.getContentFragment())
-    webRTCProcider.awareness.setLocalStateField('user', {
+    webRTCProvider.awareness.setLocalStateField('user', {
       name: this.plugin.settings.name,
       color: SharedDocument._userColor.dark,
       colorLight: SharedDocument._userColor.light
     })
 
-    const extension = yCollab(this.getContentFragment(), webRTCProcider.awareness, { undoManager })
+    const extension = yCollab(this.getContentFragment(), webRTCProvider.awareness, { undoManager })
     const compartment = new Compartment()
 
     const editorView = (editor as any).cm as EditorView;
@@ -337,21 +341,13 @@ export class SharedDocument extends SharedEntity {
     this._extensions.delete(leafId)
   }
 
-  startUpdateInBackground() {
-
-  }
-
-  stopUpdateInBackground() {
-
-  }
-
   addStatusBarEntry() {
     if (this.statusBarEntry) return
     const menu = new Menu()
     menu.addItem((item) => {
       item.setTitle("Copy link")
       item.onClick(() => {
-        navigator.clipboard.writeText(this.plugin.settings.basePath + this.shareId)
+        navigator.clipboard.writeText(this.plugin.settings.basePath + "/cm/" + this.shareId)
         showNotice("Link copied to clipboard.")
       })
     })
@@ -387,10 +383,8 @@ export class SharedDocument extends SharedEntity {
       this.removeExtensionFromLeaf(key)
     }
     this._extensions.destroy()
-    this.stopWebRTCSync()
-    this.stopWebSocketSync()
-    this.stopLocalSync()
+    super.destroy()
     this.removeStatusStatusBarEntry()
-    SharedDocument._sharedDocuments.splice(SharedDocument._sharedDocuments.indexOf(this), 1)
+    SharedDocument._sharedEntites.splice(SharedDocument._sharedEntites.indexOf(this), 1)
   }
 }

@@ -1,12 +1,15 @@
 import Dexie, { Table } from "dexie"
 import { SharedDocument } from "./sharedEntities/sharedDocument"
 import { createRandomId } from "./tools"
+import { SharedEntity } from "./sharedEntities/sharedEntity"
+import { SharedFolder } from "./sharedEntities/sharedFolder"
+import { cpSync } from "fs"
 
 export interface PermanentShareDocument {
   path: string, persistenceId: string, shareId: string 
 }
 
-export interface PermanentShareDirectory {
+export interface PermanentShareFolder {
   path: string, persistenceId: string, shareId: string 
 }
 
@@ -14,31 +17,66 @@ export class PermanentShareStore {
 
   oid: string
   documentTable: Table<PermanentShareDocument, string>
-  directoryTable: Table<PermanentShareDirectory, string>
+  folderTable: Table<PermanentShareFolder, string>
+  db: Dexie
 
   constructor(oid: string) {
     this.oid = oid
-    const db = new Dexie('peerdraft_' + this.oid)
-    db.version(1).stores({
+    this.db = new Dexie('peerdraft_' + this.oid)
+    this.db.version(2).stores({
       sharedDocs: "path,persistenceId,shareId",
+      sharedFolders: "path,persistenceId,shareId"
     })
-    this.documentTable = db._allTables["sharedDocs"] as Table<PermanentShareDocument, string>
+    this.documentTable = this.db._allTables["sharedDocs"] as Table<PermanentShareDocument, string>
+    this.folderTable = this.db._allTables["sharedFolders"] as Table<PermanentShareFolder, string>
   }
 
-  add(doc: SharedDocument) {
-    return this.documentTable.add({
-      path: doc.path,
-      shareId: doc.shareId,
-      persistenceId: createRandomId()
-    })
+  close(){
+    this.db.close()
+  }
+
+  add(doc: SharedEntity) {
+    console.log("add")
+    console.log(doc)
+    console.log(doc instanceof SharedDocument)
+    if(doc instanceof SharedDocument){
+      return this.documentTable.add({
+        path: doc.path,
+        shareId: doc.shareId,
+        persistenceId: createRandomId()
+      })
+    }
+    if(doc instanceof SharedFolder){
+      return this.folderTable.add({
+        path: doc.path,
+        shareId: doc.shareId,
+        persistenceId: createRandomId()
+      })
+    }
   }
 
   removeDoc(path: string) {
     return this.documentTable.delete(path)
   }
 
+  async getDocByPath(path: string) {
+    return this.documentTable.get(path)
+  }
+
   getAllDocs() {
     return this.documentTable.toArray()
+  }
+
+  removeFolder(path: string) {
+    return this.folderTable.delete(path)
+  }
+
+  getAllFolders() {
+    return this.folderTable.toArray()
+  }
+
+  async getFolderByPath(path: string) {
+    return this.folderTable.get(path)
   }
 
 }

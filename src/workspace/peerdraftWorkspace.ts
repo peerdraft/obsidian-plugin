@@ -46,6 +46,6 @@ export const getLeafsByPath = (path: string, pws: PeerdraftRecord<PeerdraftLeaf>
 
 export const getLeafIdsByPath = (path: string, pws: PeerdraftRecord<PeerdraftLeaf>) => {
   return pws.keys.filter((key) => {
-    pws.get(key).path === path
+    return pws.get(key).path === path
   })
 }
