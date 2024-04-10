@@ -2,6 +2,7 @@ import * as time from 'lib0/time'
 import { ObservableV2 } from 'lib0/observable'
 import * as math from 'lib0/math'
 import { SharedDocument } from './sharedEntities/sharedDocument'
+import { SharedFolder } from './sharedEntities/sharedFolder'
 
 type ClientMessage = {
   type: "add" | "remove" | "full",
@@ -25,6 +26,7 @@ const handleMessage = (data: string) => {
   const message = JSON.parse(data) as ServerMessage
   for (const id of message.docs) {
     SharedDocument.findById(id)?.startWebRTCSync()
+    SharedFolder.findById(id)?.startWebRTCSync()
   }
 }
 

@@ -20,6 +20,8 @@ export class PermanentShareStore {
   folderTable: Table<PermanentShareFolder, string>
   db: Dexie
 
+  keepOpen: boolean = true
+
   constructor(oid: string) {
     this.oid = oid
     this.db = new Dexie('peerdraft_' + this.oid)
@@ -27,18 +29,22 @@ export class PermanentShareStore {
       sharedDocs: "path,persistenceId,shareId",
       sharedFolders: "path,persistenceId,shareId"
     })
+    this.db.on("close", () => {
+      if(this.keepOpen) {
+        this.db.open()
+      }
+    })
     this.documentTable = this.db._allTables["sharedDocs"] as Table<PermanentShareDocument, string>
     this.folderTable = this.db._allTables["sharedFolders"] as Table<PermanentShareFolder, string>
+    
   }
 
   close(){
+    this.keepOpen = false
     this.db.close()
   }
 
   add(doc: SharedEntity) {
-    console.log("add")
-    console.log(doc)
-    console.log(doc instanceof SharedDocument)
     if(doc instanceof SharedDocument){
       return this.documentTable.add({
         path: doc.path,

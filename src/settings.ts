@@ -19,6 +19,7 @@ export interface Settings {
     email?: string
   },
   duration: number,
+  debug: boolean,
   version: string
 }
 
@@ -37,6 +38,7 @@ const DEFAULT_SETTINGS: Settings = {
     email: ""
   },
   duration: 0,
+  debug: false,
   version: '',
 }
 

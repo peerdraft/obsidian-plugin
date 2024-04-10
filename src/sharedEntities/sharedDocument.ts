@@ -12,6 +12,7 @@ import { PermanentShareDocument } from '../permanentShareStore';
 import { getLeafIdsByPath } from '../workspace/peerdraftWorkspace';
 import { SharedEntity } from './sharedEntity';
 import * as path from 'path';
+import { IndexeddbPersistence } from 'y-indexeddb';
 
 export class SharedDocument extends SharedEntity {
 
@@ -24,6 +25,8 @@ export class SharedDocument extends SharedEntity {
 
   private statusBarEntry?: HTMLElement
 
+  protected static _sharedEntites: Array<SharedDocument> = new Array<SharedDocument>()
+
   static async fromView(view: MarkdownView, plugin: PeerDraftPlugin, opts = { isPermanent: false }) {
     if (!view.file) return
     if (this.findByPath(view.file.path)) return
@@ -34,6 +37,7 @@ export class SharedDocument extends SharedEntity {
     doc.yDoc.getText("content").insert(0, view.editor.getValue())
     if (opts.isPermanent) {
       await doc.setPermanent()
+      doc.startIndexedDBSync()
       doc.startWebSocketSync()
     } else {
       doc._shareId = createRandomId()
@@ -54,14 +58,19 @@ export class SharedDocument extends SharedEntity {
     return doc
   }
 
-  static fromPermanentShareDocument(pd: PermanentShareDocument, plugin: PeerDraftPlugin) {
+  static async fromPermanentShareDocument(pd: PermanentShareDocument, plugin: PeerDraftPlugin) {
     if (this.findByPath(pd.path)) return
     const doc = new SharedDocument({
       path: pd.path
     }, plugin)
     doc._isPermanent = true
     doc._shareId = pd.shareId
-    doc.startWebSocketSync()
+    const local = await doc.startIndexedDBSync()
+    if (local) {
+      if (local.synced || await local.whenSynced) {
+        doc.startWebSocketSync()
+      }
+    }
     return doc
   }
 
@@ -94,6 +103,7 @@ export class SharedDocument extends SharedEntity {
       doc._isPermanent = true
       await plugin.permanentShareStore.add(doc)
       doc.startWebSocketSync()
+      doc.startIndexedDBSync()
     }
 
     const leaf = await openFileInNewTab(file, plugin.app.workspace)
@@ -108,6 +118,8 @@ export class SharedDocument extends SharedEntity {
   }
 
   static async fromTFile(file: TFile, opts: { id?: string, permanent?: boolean }, plugin: PeerDraftPlugin) {
+    const existing = SharedDocument.findByPath(file.path)
+    if (existing) return existing
 
     const doc = new SharedDocument({ path: file.path }, plugin)
     if (opts.id) {
@@ -116,6 +128,7 @@ export class SharedDocument extends SharedEntity {
     if (opts.permanent) {
       await doc.setPermanent()
       doc.startWebSocketSync()
+      doc.startIndexedDBSync()
     }
     const leafIds = getLeafIdsByPath(file.path, plugin.pws)
 
@@ -178,10 +191,13 @@ export class SharedDocument extends SharedEntity {
       }
     })
   }
-
+  
+  get file () {
+    return this._file
+  }
   startWebRTCSync() {
     return super.startWebRTCSync((provider) => {
-      provider.awareness.on("update", (msg: { added: Array<number>, removed: Array<number> }) => {
+      provider.awareness.on("update", async (msg: { added: Array<number>, removed: Array<number> }) => {
         const removed = msg.removed ?? [];
         if (removed && removed.length > 0) {
           const removedStrings = removed.map((id) => {
@@ -192,7 +208,7 @@ export class SharedDocument extends SharedEntity {
           if (owner != provider.awareness.clientID.toString()) {
             if (removedStrings.includes(owner) && !this.isPermanent) {
               showNotice("Shared session for " + this.path + " stopped by owner")
-              this.destroy()
+              await this.unshare()
             }
           }
         }
@@ -268,6 +284,14 @@ export class SharedDocument extends SharedEntity {
 
   getOwnerFragment() {
     return this.yDoc.getText("owner")
+  }
+
+  async startIndexedDBSync() {
+    if (this._indexedDBProvider) return this._indexedDBProvider
+    const id = (await this.plugin.permanentShareStore.getDocByPath(this.path))?.persistenceId
+    if (!id) return
+    this._indexedDBProvider = new IndexeddbPersistence(SharedEntity.DB_PERSISTENCE_PREFIX + id, this.yDoc)
+    return this._indexedDBProvider
   }
 
   addExtensionToLeaf(leafId: string) {
@@ -354,8 +378,8 @@ export class SharedDocument extends SharedEntity {
 
     menu.addItem((item) => {
       item.setTitle("Stop shared session")
-      item.onClick(() => {
-        this.destroy()
+      item.onClick(async () => {
+        await this.unshare()
       })
     })
 
@@ -372,6 +396,18 @@ export class SharedDocument extends SharedEntity {
     if (!this.statusBarEntry) return
     this.statusBarEntry.remove()
     this.statusBarEntry = undefined
+  }
+
+  async unshare() {
+    const dbEntry = await this.plugin.permanentShareStore.getDocByPath(this.path)
+    if (dbEntry) {
+      this.plugin.permanentShareStore.removeDoc(this.path)
+    }
+    if (this._indexedDBProvider) {
+      await this._indexedDBProvider.clearData()
+      await this._indexedDBProvider.destroy()
+    }
+    this.destroy()
   }
 
 
