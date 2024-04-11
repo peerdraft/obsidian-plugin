@@ -66,7 +66,7 @@ export abstract class SharedEntity {
       }
       return this._webRTCProvider
     }
-    const webRTCProcider = new WebrtcProvider(this._shareId, this.yDoc, { signaling: [this.plugin.settings.signaling], peerOpts: { iceServers: [{ urls: 'stun:freeturn.net:5349' }, { urls: 'turns:freeturn.tel:5349', username: 'free', credential: 'free' }, { urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:global.stun.twilio.com:3478?transport=udp' }] } })
+    const webRTCProcider = new WebrtcProvider(this._shareId, this.yDoc, { signaling: [this.plugin.settings.signaling], peerOpts: { iceServers: [{ urls: 'stun:freeturn.net:5349' }, { urls: 'turns:freeturn.net:5349', username: 'free', credential: 'free' }, { urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:global.stun.twilio.com:3478?transport=udp' }] } })
     this._webRTCProvider = webRTCProcider
     if (init) {
       init(webRTCProcider)
