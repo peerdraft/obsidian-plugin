@@ -38,7 +38,7 @@ messageHandlers[messageSync] = (
     provider
   )
   if (
-    emitSynced && syncMessageType === syncProtocol.messageYjsUpdate &&
+    emitSynced && syncMessageType === syncProtocol.messageYjsSyncStep2 &&
     !provider.synced
   ) {
     provider.synced = true

@@ -104,14 +104,12 @@ export abstract class SharedEntity {
 
 
     webSocketProvider.once('sync', (state) => {
-      // disconnect after initial update from Server
       if (state) {
         webSocketProvider.disconnect()
       }
     })
 
     webSocketProvider.doc.on('update', async (update: Uint8Array, origin: any, doc: Y.Doc, tr: Y.Transaction) => {
-      // connect after local changes
       if (tr.local) {
         if (!webSocketProvider.wsconnected) {
           webSocketProvider.connect()

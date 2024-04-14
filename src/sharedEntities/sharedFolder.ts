@@ -80,14 +80,14 @@ export class SharedFolder extends SharedEntity {
     }))
 
     const folder = new SharedFolder(root, { id: data.id }, plugin)
+    
+    await plugin.permanentShareStore.add(folder)
+    await folder.startWebSocketSync()
+    await folder.startIndexedDBSync()
 
     for (const doc of docs) {
       folder.addDocument(doc)
     }
-    
-    await plugin.permanentShareStore.add(folder)
-    await folder.startIndexedDBSync()
-    await folder.startWebSocketSync()
 
     navigator.clipboard.writeText(plugin.settings.basePath + '/team/' + folder.shareId)
     showNotice(`Folder ${folder.path} with ${docs.length} documents shared. URL copied to your clipboard.`)

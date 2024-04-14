@@ -34,11 +34,10 @@ export class SharedDocument extends SharedEntity {
     const doc = new SharedDocument({
       path: view.file.path
     }, plugin)
-    doc.yDoc.getText("content").insert(0, view.editor.getValue())
     if (opts.isPermanent) {
       await doc.setPermanent()
-      doc.startIndexedDBSync()
-      doc.startWebSocketSync()
+      await doc.startWebSocketSync()
+      await doc.startIndexedDBSync()
     } else {
       doc._shareId = createRandomId()
       doc.addStatusBarEntry()
@@ -49,6 +48,7 @@ export class SharedDocument extends SharedEntity {
       doc.getOwnerFragment().insert(0, doc._webRTCProvider.awareness.clientID.toFixed(0))
     }
 
+    doc.yDoc.getText("content").insert(0, view.editor.getValue())
     // @ts-expect-error
     doc.addExtensionToLeaf(view.leaf.id)
 
