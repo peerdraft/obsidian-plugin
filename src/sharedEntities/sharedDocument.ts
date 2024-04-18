@@ -13,6 +13,7 @@ import { getLeafIdsByPath } from '../workspace/peerdraftWorkspace';
 import { SharedEntity } from './sharedEntity';
 import * as path from 'path';
 import { IndexeddbPersistence } from 'y-indexeddb';
+import { addIsSharedClass, removeIsSharedClass } from 'src/workspace/explorerView';
 
 export class SharedDocument extends SharedEntity {
 
@@ -36,7 +37,7 @@ export class SharedDocument extends SharedEntity {
     }, plugin)
     if (opts.isPermanent) {
       await doc.setPermanent()
-      await doc.startWebSocketSync()
+      doc.startWebSocketSync()
       await doc.startIndexedDBSync()
     } else {
       doc._shareId = createRandomId()
@@ -118,6 +119,7 @@ export class SharedDocument extends SharedEntity {
   }
 
   static async fromTFile(file: TFile, opts: { id?: string, permanent?: boolean }, plugin: PeerDraftPlugin) {
+    if(!['md', 'MD'].contains(file.extension)) return
     const existing = SharedDocument.findByPath(file.path)
     if (existing) return existing
 
@@ -142,6 +144,7 @@ export class SharedDocument extends SharedEntity {
       const content = await plugin.app.vault.read(file)
       doc.getContentFragment().insert(0, content)
     }
+    showNotice(`Inititialized share for ${file.path}`)
     return doc
   }
 
@@ -190,11 +193,14 @@ export class SharedDocument extends SharedEntity {
         this.plugin.app.vault.modify(this._file, this.getContentFragment().toString())
       }
     })
+
+    addIsSharedClass(this.path, this.plugin)
   }
-  
-  get file () {
+
+  get file() {
     return this._file
   }
+
   startWebRTCSync() {
     return super.startWebRTCSync((provider) => {
       provider.awareness.on("update", async (msg: { added: Array<number>, removed: Array<number> }) => {
@@ -219,28 +225,36 @@ export class SharedDocument extends SharedEntity {
           for (const key of added) {
             const peer = states.get(key)
             if (peer) {
-              showNotice(`${peer.user.name} works on ${this.path}`)
+              showNotice(`${peer.user?.name} works on ${this.path}`)
             }
           }
         }
       })
 
-      const handleTimeout = () => {
-        if (this._extensions.size > 0 || getLeafIdsByPath(this.path, this.plugin.pws).length > 0) {
-          this._webRTCTimeout = window.setTimeout(handleTimeout, 60000)
-          return
-        }
-        this.stopWebRTCSync()
-      }
+      /*
+      if (!this._webRTCTimeout) {
 
-      this._webRTCTimeout = window.setTimeout(handleTimeout, 60000)
-      provider.doc.on('update', async (update: Uint8Array, origin: any, doc: Y.Doc, tr: Y.Transaction) => {
-        if (this._webRTCTimeout != null) {
-          window.clearTimeout(this._webRTCTimeout)
+        const handleTimeout = () => {
+          if (this._extensions.size > 0 || getLeafIdsByPath(this.path, this.plugin.pws).length > 0) {
+            this._webRTCTimeout = window.setTimeout(handleTimeout, 60000)
+          } else {
+            this.stopWebRTCSync()
+          }
         }
+
         this._webRTCTimeout = window.setTimeout(handleTimeout, 60000)
-      })
+
+        provider.doc.on('update', async (update: Uint8Array, origin: any, doc: Y.Doc, tr: Y.Transaction) => {
+          if (this._webRTCTimeout != null) {
+            window.clearTimeout(this._webRTCTimeout)
+          }
+          this._webRTCTimeout = window.setTimeout(handleTimeout, 60000)
+        })
+      }
+      */
+
     })
+
   }
 
   async setNewFileLocation(file: TFile) {
@@ -256,6 +270,7 @@ export class SharedDocument extends SharedEntity {
       this.plugin.permanentShareStore.removeDoc(oldPath)
       this.plugin.permanentShareStore.add(this)
     }
+    addIsSharedClass(this.path, this.plugin)
   }
 
   async setPermanent() {
@@ -408,6 +423,7 @@ export class SharedDocument extends SharedEntity {
       await this._indexedDBProvider.destroy()
     }
     this.destroy()
+    removeIsSharedClass(this.path, this.plugin)
   }
 
 

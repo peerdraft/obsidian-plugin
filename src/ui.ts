@@ -25,8 +25,8 @@ export const showTextModal = (app: App, title: string, text: string) => {
   new ShowTextModal(app, title, text).open()
 }
 
-export const showNotice = (text: string) => {
-	new Notice(text)
+export const showNotice = (text: string, duration?: number | undefined) => {
+	new Notice(text, duration)
 }
 
 

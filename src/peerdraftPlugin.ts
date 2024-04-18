@@ -51,7 +51,7 @@ export default class PeerdraftPlugin extends Plugin {
 					doc.removeExtensionFromLeaf(key)
 					const leafs = getLeafsByPath(oldPath, plugin.pws)
 					if (leafs.length === 0 && !doc.isPermanent) {
-						doc.destroy()
+						doc.unshare()
 					}
 				}
 				SharedDocument.findByPath(leaf.path)?.addExtensionToLeaf(key)
@@ -93,13 +93,55 @@ export default class PeerdraftPlugin extends Plugin {
 		if (plugin.settings.plan.type === "team") {
 			plugin.registerEvent(plugin.app.workspace.on('file-menu', (menu, file) => {
 				if (file instanceof TFolder) {
-					menu.addItem((item) => {
-						item.setTitle('Share Folder')
-						item.setIcon('users')
-						item.onClick(() => {
-							SharedFolder.fromTFolder(file, plugin)
+					// Not shared folder && not within shared folder
+					const sharedFolder = SharedFolder.findByPath(file.path)
+					if (!sharedFolder) {
+						if (!SharedFolder.getSharedFolderForSubPath(file.path)) {
+							menu.addItem((item) => {
+								item.setTitle('Share Folder')
+								item.setIcon('users')
+								item.onClick(() => {
+									SharedFolder.fromTFolder(file, plugin)
+								})
+							})
+						}
+					} else {
+						menu.addItem(item => {
+							item.setTitle('Copy Peerdraft URL')
+							item.setIcon('users')
+							item.onClick(() => {
+								navigator.clipboard.writeText(plugin.settings.basePath + '/team/' + sharedFolder.shareId)
+							})
 						})
-					})
+						menu.addItem(item => {
+							item.setTitle('Stop syncing this folder')
+							item.setIcon('refresh-cw-off')
+							item.onClick(async () => {
+								await sharedFolder.unshare()
+							})
+						})
+					}
+				} else {
+					const sharedDocument = SharedDocument.findByPath(file.path)
+					const sharedFolder = SharedFolder.getSharedFolderForSubPath(file.path)
+					if (sharedDocument) {
+						menu.addItem(item => {
+							item.setTitle('Copy Peerdraft URL')
+							item.setIcon('users')
+							item.onClick(() => {
+								navigator.clipboard.writeText(plugin.settings.basePath + '/cm/' + sharedDocument.shareId)
+							})
+						})
+						if (!sharedFolder) {
+							menu.addItem(item => {
+								item.setTitle('Stop syncing this document')
+								item.setIcon('refresh-cw-off')
+								item.onClick(async () => {
+									await sharedDocument.unshare()
+								})
+							})
+						}
+					}
 				}
 			}))
 		}
@@ -144,7 +186,7 @@ export default class PeerdraftPlugin extends Plugin {
 				const doc = SharedDocument.findByPath(file.path)
 				if (!doc || doc.isPermanent) return false
 				if (checking) return true
-				doc.unshare().then(() => {})
+				doc.unshare().then(() => { })
 			}
 		});
 
@@ -159,7 +201,7 @@ export default class PeerdraftPlugin extends Plugin {
 			}
 		})
 
-		if(plugin.settings.debug) {
+		if (plugin.settings.debug) {
 			plugin.addCommand({
 				id: "clearDatabase",
 				name: "DEBUG: clear database (Nothing will be shared after this!)",
@@ -171,8 +213,8 @@ export default class PeerdraftPlugin extends Plugin {
 						}
 						for (const folder of SharedFolder.getAll()) {
 							folder.unshare()
-						} 
-						if(db.name?.startsWith("peerdraft_")){
+						}
+						if (db.name?.startsWith("peerdraft_")) {
 							window.indexedDB.deleteDatabase(db.name)
 						}
 					}
@@ -191,20 +233,24 @@ export default class PeerdraftPlugin extends Plugin {
 				const newPathInFolder = SharedFolder.getSharedFolderForSubPath(file.path)
 
 				if (oldPathInFolder && newPathInFolder) {
-					if(oldPathInFolder === newPathInFolder) {
+					if (oldPathInFolder === newPathInFolder) {
 						oldPathInFolder.updatePath(oldPath, file.path)
 					} else {
-						const doc = await SharedDocument.fromTFile(file, { permanent: true}, plugin)
-						newPathInFolder.addDocument(doc)
+						const doc = await SharedDocument.fromTFile(file, { permanent: true }, plugin)
+						if (doc) {
+							newPathInFolder.addDocument(doc)
+						}
 					}
 				} else if (oldPathInFolder && !newPathInFolder) {
-					if(doc) {
+					if (doc) {
 						// oldPathInFolder.removeDocument(doc)
 						// doc.unshare()
 					}
-				} else if (!oldPathInFolder && newPathInFolder){
-					const doc = await SharedDocument.fromTFile(file, { permanent: true}, plugin)
-					newPathInFolder.addDocument(doc)
+				} else if (!oldPathInFolder && newPathInFolder) {
+					const doc = await SharedDocument.fromTFile(file, { permanent: true }, plugin)
+					if (doc) {
+						newPathInFolder.addDocument(doc)
+					}
 				}
 			} else if (file instanceof TFolder) {
 				const folder = SharedFolder.findByPath(oldPath)
@@ -218,7 +264,7 @@ export default class PeerdraftPlugin extends Plugin {
 			plugin.log("register delete for " + file.path)
 			const folder = SharedFolder.getSharedFolderForSubPath(file.path)
 			if (!folder) {
-				if (file instanceof TFile){
+				if (file instanceof TFile) {
 					const doc = SharedDocument.findByPath(file.path)
 					if (doc) {
 						await doc.unshare()
@@ -256,7 +302,9 @@ export default class PeerdraftPlugin extends Plugin {
 					const doc = await SharedDocument.fromTFile(file, {
 						permanent: true
 					}, plugin)
-					folder.addDocument(doc)
+					if (doc) {
+						folder.addDocument(doc)
+					}
 				})))
 			}
 		)

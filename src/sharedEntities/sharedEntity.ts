@@ -55,23 +55,21 @@ export abstract class SharedEntity {
     return Object.assign([], this._sharedEntites) as Array<SharedEntity>
   }
 
-  constructor(protected plugin: PeerDraftPlugin) { }
+  constructor(protected plugin: PeerDraftPlugin) {}
 
   startWebRTCSync(init?: (provider: WebrtcProvider) => any) {
     this.plugin.log(`WebRTC for ${this.path}: start`)
     if (!this.shareId) return
     if (this._webRTCProvider) {
-      if (!this._webRTCProvider.connected) {
-        this._webRTCProvider.connect()
-      }
+      this._webRTCProvider.connect()
       return this._webRTCProvider
     }
-    const webRTCProcider = new WebrtcProvider(this._shareId, this.yDoc, { signaling: [this.plugin.settings.signaling], peerOpts: { iceServers: [{ urls: 'stun:freeturn.net:5349' }, { urls: 'turns:freeturn.net:5349', username: 'free', credential: 'free' }, { urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:global.stun.twilio.com:3478?transport=udp' }] } })
-    this._webRTCProvider = webRTCProcider
+    const webRTCProvider = new WebrtcProvider(this._shareId, this.yDoc, { signaling: [this.plugin.settings.signaling], peerOpts: { iceServers: [{ urls: 'stun:freeturn.net:5349' }, { urls: 'turns:freeturn.net:5349', username: 'free', credential: 'free' }, { urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:global.stun.twilio.com:3478?transport=udp' }] } })
+    this._webRTCProvider = webRTCProvider
     if (init) {
-      init(webRTCProcider)
+      init(webRTCProvider)
     }
-    return webRTCProcider
+    return webRTCProvider
   }
 
   stopWebRTCSync() {
@@ -83,7 +81,11 @@ export abstract class SharedEntity {
     this._webRTCProvider = undefined
   }
 
-  async startWebSocketSync() {
+  async syncWebSocketOnce (timeout: number = 10000) {
+
+  }
+
+  startWebSocketSync() {
     if (!this.shareId) return
     if (this._webSocketProvider) {
       if (!this._webSocketProvider.wsconnected) {

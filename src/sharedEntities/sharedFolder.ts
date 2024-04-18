@@ -8,11 +8,12 @@ import PeerDraftPlugin from "src/main";
 import { SharedDocument } from "./sharedDocument";
 import { PermanentShareFolder } from "src/permanentShareStore";
 import { IndexeddbPersistence } from "y-indexeddb";
+import { addIsSharedClass, removeIsSharedClass } from "src/workspace/explorerView";
 
 
 const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: SharedFolder, plugin: PeerDraftPlugin) => {
 
-  if(tx.local) return
+  if (tx.local) return
 
   const changedKeys = ev.changes.keys
 
@@ -43,7 +44,7 @@ const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: Share
       const file = plugin.app.vault.getAbstractFileByPath(document.path)
       if (!file) return
       plugin.app.vault.delete(file)
-      
+
     }
   })
 }
@@ -73,24 +74,25 @@ export class SharedFolder extends SharedEntity {
     }
 
     const docs = await Promise.all(files.map((file) => {
-      showNotice(`Inititializing share for ${file.path}`)
       return SharedDocument.fromTFile(file, {
         permanent: true
       }, plugin)
     }))
 
     const folder = new SharedFolder(root, { id: data.id }, plugin)
-    
+
     await plugin.permanentShareStore.add(folder)
     await folder.startWebSocketSync()
     await folder.startIndexedDBSync()
 
     for (const doc of docs) {
-      folder.addDocument(doc)
+      if (doc) {
+        folder.addDocument(doc)
+      }
     }
 
     navigator.clipboard.writeText(plugin.settings.basePath + '/team/' + folder.shareId)
-    showNotice(`Folder ${folder.path} with ${docs.length} documents shared. URL copied to your clipboard.`)
+    showNotice(`Folder ${folder.path} with ${docs.length} documents shared. URL copied to your clipboard.`, 0)
 
     return folder
   }
@@ -122,7 +124,7 @@ export class SharedFolder extends SharedEntity {
     if (this.findByPath(psf.path)) return
     const tFolder = plugin.app.vault.getAbstractFileByPath(psf.path)
     if (!(tFolder instanceof TFolder)) return
-    const folder = new SharedFolder(tFolder, {id: psf.shareId}, plugin)
+    const folder = new SharedFolder(tFolder, { id: psf.shareId }, plugin)
     const local = await folder.startIndexedDBSync()
     if (local) {
       if (local.synced || await local.whenSynced) {
@@ -163,6 +165,7 @@ export class SharedFolder extends SharedEntity {
       handleUpdate(ev, tx, this, plugin)
     })
     SharedFolder._sharedEntites.push(this)
+    addIsSharedClass(this.path, plugin)
   }
 
   getDocsFragment() {
@@ -269,7 +272,7 @@ export class SharedFolder extends SharedEntity {
     return super.startWebRTCSync((provider) => {
 
       const handleTimeout = () => {
-        this.stopWebRTCSync()
+        // this.stopWebRTCSync()
       }
 
       this._webRTCTimeout = window.setTimeout(handleTimeout, 60000)
@@ -299,7 +302,11 @@ export class SharedFolder extends SharedEntity {
       await this._indexedDBProvider.clearData()
       await this._indexedDBProvider.destroy()
     }
+    this.getDocsFragment().forEach((path: string, shareId: string) => {
+      SharedDocument.findById(shareId)?.unshare()
+    })
     this.destroy()
+    removeIsSharedClass(this.path, this.plugin)
   }
 
   destroy() {
