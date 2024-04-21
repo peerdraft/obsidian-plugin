@@ -1,6 +1,6 @@
 {
 	"name": "peerdraft",
-	"version": "2.1.1",
+	"version": "2.1.2",
 	"description": "Secure real-time collaboration via secret link",
 	"main": "main.js",
 	"scripts": {
