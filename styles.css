@@ -6,3 +6,10 @@
 .cm-ySelectionInfo:hover {
   opacity: 1 !important;
 }
+
+.pd-explorer-shared:before {
+  content: "↖ ";
+  background: rgb(20, 184, 166);
+  border-radius: 4px;
+  margin-right: 0.5em;
+}
