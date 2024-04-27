@@ -13,6 +13,8 @@ import { promptForName, promptForURL } from "./ui/enterText"
 import { PeerdraftRecord } from "./utils/peerdraftRecord"
 import { PeerdraftLeaf } from "./workspace/peerdraftLeaf"
 import { getLeafsByPath, updatePeerdraftWorkspace } from "./workspace/peerdraftWorkspace"
+import { PeerdraftWebsocketProvider } from "./peerdraftWebSocketProvider"
+import * as path from "path"
 
 export default class PeerdraftPlugin extends Plugin {
 
@@ -21,6 +23,7 @@ export default class PeerdraftPlugin extends Plugin {
 	permanentShareStore: PermanentShareStore
 	serverAPI: ServerAPI
 	activeStreamClient: ActiveStreamClient
+	serverSync: PeerdraftWebsocketProvider
 
 	async onload() {
 
@@ -75,18 +78,19 @@ export default class PeerdraftPlugin extends Plugin {
 
 		plugin.app.workspace.onLayoutReady(
 			async () => {
-				const permanentlySharedDocs = await plugin.permanentShareStore.getAllDocs()
-				for (const doc of permanentlySharedDocs) {
-					SharedDocument.fromPermanentShareDocument(doc, plugin)
-				}
 				const permanentlySharedFolders = await plugin.permanentShareStore.getAllFolders()
 				for (const folder of permanentlySharedFolders) {
 					SharedFolder.fromPermanentShareFolder(folder, plugin)
+				}
+				const permanentlySharedDocs = await plugin.permanentShareStore.getAllDocs()
+				for (const doc of permanentlySharedDocs) {
+					SharedDocument.fromPermanentShareDocument(doc, plugin)
 				}
 				updatePeerdraftWorkspace(plugin.app.workspace, plugin.pws)
 				plugin.registerEvent(plugin.app.workspace.on("layout-change", () => {
 					updatePeerdraftWorkspace(plugin.app.workspace, plugin.pws)
 				}))
+				this.serverSync = new PeerdraftWebsocketProvider(this.settings.sync)
 			}
 		)
 
@@ -161,14 +165,14 @@ export default class PeerdraftPlugin extends Plugin {
 				if (plugin.settings.plan.type === "team") {
 					promptForSessionType(plugin.app).then(result => {
 						if (!result) return
-						SharedDocument.fromView(view, plugin, { isPermanent: result.permanent }).then(doc => {
+						SharedDocument.fromView(view, plugin, { permanent: result.permanent }).then(doc => {
 							if (!doc) {
 								return showNotice("ERROR creating sharedDoc")
 							}
 						})
 					})
 				} else {
-					SharedDocument.fromView(view, plugin, { isPermanent: false }).then(doc => {
+					SharedDocument.fromView(view, plugin, { permanent: false }).then(doc => {
 						if (!doc) {
 							return showNotice("ERROR creating sharedDoc")
 						}
@@ -236,15 +240,27 @@ export default class PeerdraftPlugin extends Plugin {
 					if (oldPathInFolder === newPathInFolder) {
 						oldPathInFolder.updatePath(oldPath, file.path)
 					} else {
-						const doc = await SharedDocument.fromTFile(file, { permanent: true }, plugin)
+						const newDoc = await SharedDocument.fromTFile(file, { permanent: true }, plugin)
+						if (newDoc) {
+							newPathInFolder.addDocument(newDoc)
+						}
 						if (doc) {
-							newPathInFolder.addDocument(doc)
+							// oldPathInFolder.removeDocument(doc)
+							// doc.unshare()
 						}
 					}
 				} else if (oldPathInFolder && !newPathInFolder) {
 					if (doc) {
+						showNotice("It is not possible to remove a document from a shared folder right now. Created a copy.")
 						// oldPathInFolder.removeDocument(doc)
-						// doc.unshare()
+						await SharedFolder.getOrCreatePath(path.dirname(oldPath), plugin)
+						const file = await plugin.app.vault.create(oldPath, '')
+						if (!file) {
+							showNotice("Error creating file " + oldPath + ".")
+							return
+						}
+						doc.setNewFileLocation(file)
+						doc.syncWithServer()
 					}
 				} else if (!oldPathInFolder && newPathInFolder) {
 					const doc = await SharedDocument.fromTFile(file, { permanent: true }, plugin)
@@ -262,9 +278,13 @@ export default class PeerdraftPlugin extends Plugin {
 
 		plugin.registerEvent(plugin.app.vault.on('delete', async (file) => {
 			plugin.log("register delete for " + file.path)
-			const folder = SharedFolder.getSharedFolderForSubPath(file.path)
-			if (!folder) {
-				if (file instanceof TFile) {
+			if (file instanceof TFolder) {
+				const folder = SharedFolder.findByPath(file.path)
+				folder?.unshare()
+				return
+			} else if (file instanceof TFile) {
+				const folder = SharedFolder.getSharedFolderForSubPath(file.path)
+				if (!folder) {
 					const doc = SharedDocument.findByPath(file.path)
 					if (doc) {
 						await doc.unshare()
@@ -297,8 +317,8 @@ export default class PeerdraftPlugin extends Plugin {
 					const folder = SharedFolder.getSharedFolderForSubPath(file.path)
 					if (!folder) return
 					if (folder.isFileInSyncObject(file)) return
-
 					if (SharedDocument.findByPath(file.path)) return
+					if (await this.permanentShareStore.getDocByPath(file.path)) return
 					const doc = await SharedDocument.fromTFile(file, {
 						permanent: true
 					}, plugin)
@@ -308,7 +328,6 @@ export default class PeerdraftPlugin extends Plugin {
 				})))
 			}
 		)
-
 
 		const settingsTab = createSettingsTab(plugin)
 		const settings = await getSettings(plugin)

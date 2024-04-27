@@ -1,6 +1,6 @@
 import { MarkdownView, Menu, TFile } from 'obsidian'
 import * as Y from 'yjs'
-import { createRandomId, generateRandomString, randomUint32 } from '../tools'
+import { calculateHash, createRandomId, generateRandomString, randomUint32 } from '../tools'
 import { Compartment } from "@codemirror/state";
 import PeerDraftPlugin from '../main';
 import { openFileInNewTab, pinLeaf, showNotice, usercolors } from '../ui';
@@ -14,6 +14,7 @@ import { SharedEntity } from './sharedEntity';
 import * as path from 'path';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import { addIsSharedClass, removeIsSharedClass } from 'src/workspace/explorerView';
+import { SharedFolder } from './sharedFolder';
 
 export class SharedDocument extends SharedEntity {
 
@@ -28,49 +29,45 @@ export class SharedDocument extends SharedEntity {
 
   protected static _sharedEntites: Array<SharedDocument> = new Array<SharedDocument>()
 
-  static async fromView(view: MarkdownView, plugin: PeerDraftPlugin, opts = { isPermanent: false }) {
+  static async fromView(view: MarkdownView, plugin: PeerDraftPlugin, opts = { permanent: false }) {
     if (!view.file) return
     if (this.findByPath(view.file.path)) return
-
-    const doc = new SharedDocument({
-      path: view.file.path
-    }, plugin)
-    if (opts.isPermanent) {
-      await doc.setPermanent()
-      doc.startWebSocketSync()
-      await doc.startIndexedDBSync()
-    } else {
-      doc._shareId = createRandomId()
-      doc.addStatusBarEntry()
-      pinLeaf(view.leaf)
+    const doc = await this.fromTFile(view.file, opts, plugin)
+    if (doc) {
+      doc.startWebRTCSync()
+      if (doc.isPermanent && doc._webRTCProvider) {
+        doc.getOwnerFragment().insert(0, doc._webRTCProvider.awareness.clientID.toFixed(0))
+      }
+      navigator.clipboard.writeText(plugin.settings.basePath + "/cm/" + doc.shareId)
+      showNotice("Collaboration started for " + doc.path + ". Link copied to Clipboard.")
     }
-    doc.startWebRTCSync()
-    if (!opts.isPermanent && doc._webRTCProvider) {
-      doc.getOwnerFragment().insert(0, doc._webRTCProvider.awareness.clientID.toFixed(0))
-    }
-
-    doc.yDoc.getText("content").insert(0, view.editor.getValue())
-    // @ts-expect-error
-    doc.addExtensionToLeaf(view.leaf.id)
-
-    navigator.clipboard.writeText(plugin.settings.basePath + "/cm/" + doc.shareId)
-    showNotice("Collaboration started for " + doc.path + ". Link copied to Clipboard.")
-
     return doc
   }
 
   static async fromPermanentShareDocument(pd: PermanentShareDocument, plugin: PeerDraftPlugin) {
     if (this.findByPath(pd.path)) return
+    let fileAlreadyThere = false
+    // check if path exists
+    const file = plugin.app.vault.getAbstractFileByPath(pd.path)
+    if (!file) {
+      showNotice("File " + pd.path + " not found. Creating it now.")
+      await SharedFolder.getOrCreatePath(path.dirname(pd.path), plugin)
+      const file = await plugin.app.vault.create(pd.path, '')
+      if (!file) {
+        showNotice("Error creating file " + pd.path + ".")
+        return
+      }
+      fileAlreadyThere = true
+    }
+
     const doc = new SharedDocument({
       path: pd.path
     }, plugin)
     doc._isPermanent = true
     doc._shareId = pd.shareId
-    const local = await doc.startIndexedDBSync()
-    if (local) {
-      if (local.synced || await local.whenSynced) {
-        doc.startWebSocketSync()
-      }
+    await doc.startIndexedDBSync()
+    if (fileAlreadyThere) {
+      doc.syncWithServer()
     }
     return doc
   }
@@ -103,9 +100,10 @@ export class SharedDocument extends SharedEntity {
     if (isPermanent) {
       doc._isPermanent = true
       await plugin.permanentShareStore.add(doc)
-      doc.startWebSocketSync()
-      doc.startIndexedDBSync()
+      await doc.startIndexedDBSync()
+      doc.syncWithServer()
     }
+
 
     const leaf = await openFileInNewTab(file, plugin.app.workspace)
     doc.addStatusBarEntry()
@@ -118,32 +116,54 @@ export class SharedDocument extends SharedEntity {
 
   }
 
-  static async fromTFile(file: TFile, opts: { id?: string, permanent?: boolean }, plugin: PeerDraftPlugin) {
-    if(!['md', 'MD'].contains(file.extension)) return
+  static async fromIdAndPath(id: string, path: string, plugin: PeerDraftPlugin) {
+    const existingDoc = SharedDocument.findById(id)
+    if (existingDoc) {
+      showNotice("This share is already active: " + existingDoc.path)
+      return
+    }
+    await plugin.app.vault.create(path, '')
+    const doc = new SharedDocument({
+      id, path
+    }, plugin)
+
+    doc.syncWithServer()
+    await doc.setPermanent()
+    await doc.startIndexedDBSync()
+    
+  }
+
+
+
+  static async fromTFile(file: TFile, opts: { permanent?: boolean }, plugin: PeerDraftPlugin) {
+    if (!['md', 'MD'].contains(file.extension)) return
     const existing = SharedDocument.findByPath(file.path)
     if (existing) return existing
 
     const doc = new SharedDocument({ path: file.path }, plugin)
-    if (opts.id) {
-      doc._shareId = opts.id
-    }
-    if (opts.permanent) {
-      await doc.setPermanent()
-      doc.startWebSocketSync()
-      doc.startIndexedDBSync()
-    }
     const leafIds = getLeafIdsByPath(file.path, plugin.pws)
 
     if (leafIds.length > 0) {
       const content = (plugin.app.workspace.getLeafById(leafIds[0]).view as MarkdownView).editor.getValue()
       doc.getContentFragment().insert(0, content)
-      for (const id of leafIds) {
-        doc.addExtensionToLeaf(id)
-      }
     } else {
       const content = await plugin.app.vault.read(file)
       doc.getContentFragment().insert(0, content)
     }
+
+    if (opts.permanent) {
+      await doc.initServerYDoc()
+      await doc.setPermanent()
+      // doc.startWebSocketSync()
+      doc.startIndexedDBSync()
+    } else {
+      doc._shareId = createRandomId()
+    }
+
+    for (const id of leafIds) {
+      doc.addExtensionToLeaf(id)
+    }
+
     showNotice(`Inititialized share for ${file.path}`)
     return doc
   }
@@ -177,11 +197,18 @@ export class SharedDocument extends SharedEntity {
     if (opts.id) {
       this._shareId = opts.id
     }
+
+
     this.yDoc = new Y.Doc()
+    this.yDoc.on("update", (update: Uint8Array, origin: any, yDoc: Y.Doc, tr: Y.Transaction) => {
+      if (tr.local && this.isPermanent) {
+        plugin.serverSync.sendUpdate(this, update)
+      }
+    })
+
 
     SharedDocument._sharedEntites.push(this)
     this._extensions = new PeerdraftRecord<Compartment>()
-
     this._extensions.on("delete", () => {
       if (this._extensions.size === 0 && this._webRTCProvider) {
         this._webRTCProvider.awareness.setLocalState({})
@@ -199,6 +226,11 @@ export class SharedDocument extends SharedEntity {
 
   get file() {
     return this._file
+  }
+
+  calculateHash() {
+    const text = this.getContentFragment().toString()
+    return calculateHash(text)
   }
 
   startWebRTCSync() {
@@ -270,16 +302,12 @@ export class SharedDocument extends SharedEntity {
       this.plugin.permanentShareStore.removeDoc(oldPath)
       this.plugin.permanentShareStore.add(this)
     }
+    removeIsSharedClass(oldPath, this.plugin)
     addIsSharedClass(this.path, this.plugin)
   }
 
   async setPermanent() {
     if (!this._isPermanent) {
-      if (!this.shareId) {
-        const data = await this.plugin.serverAPI.createPermanentSession()
-        if (!data) return
-        this._shareId = data.id
-      }
       this._isPermanent = true
       await this.plugin.permanentShareStore.add(this)
     }
@@ -305,7 +333,9 @@ export class SharedDocument extends SharedEntity {
     if (this._indexedDBProvider) return this._indexedDBProvider
     const id = (await this.plugin.permanentShareStore.getDocByPath(this.path))?.persistenceId
     if (!id) return
-    this._indexedDBProvider = new IndexeddbPersistence(SharedEntity.DB_PERSISTENCE_PREFIX + id, this.yDoc)
+    const provider = new IndexeddbPersistence(SharedEntity.DB_PERSISTENCE_PREFIX + id, this.yDoc)
+    this._indexedDBProvider = provider
+    if (!provider.synced) await provider.whenSynced
     return this._indexedDBProvider
   }
 
@@ -368,6 +398,7 @@ export class SharedDocument extends SharedEntity {
   removeExtensionFromLeaf(leafId: string) {
     const leaf = this.plugin.app.workspace.getLeafById(leafId)
     if (leaf) {
+      try {
       const editor = (leaf.view as MarkdownView).editor
       const editorView = (editor as any).cm as EditorView;
       const compartment = this._extensions.get(leafId)
@@ -376,6 +407,9 @@ export class SharedDocument extends SharedEntity {
           effects: compartment.reconfigure([])
         })
       }
+    } catch (error) {
+      console.log("editor already gone")
+    }
     }
     this._extensions.delete(leafId)
   }
@@ -420,7 +454,6 @@ export class SharedDocument extends SharedEntity {
     }
     if (this._indexedDBProvider) {
       await this._indexedDBProvider.clearData()
-      await this._indexedDBProvider.destroy()
     }
     this.destroy()
     removeIsSharedClass(this.path, this.plugin)

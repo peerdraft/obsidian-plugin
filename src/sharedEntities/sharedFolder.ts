@@ -1,8 +1,8 @@
-import { TFile, TFolder } from "obsidian";
+import { TAbstractFile, TFile, TFolder } from "obsidian";
 import * as path from 'path'
 import * as Y from 'yjs'
 import { showNotice } from "../ui";
-import { generateRandomString } from "../tools";
+import { calculateHash, generateRandomString, serialize } from "../tools";
 import { SharedEntity } from "./sharedEntity";
 import PeerDraftPlugin from "src/main";
 import { SharedDocument } from "./sharedDocument";
@@ -10,27 +10,29 @@ import { PermanentShareFolder } from "src/permanentShareStore";
 import { IndexeddbPersistence } from "y-indexeddb";
 import { addIsSharedClass, removeIsSharedClass } from "src/workspace/explorerView";
 
-
 const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: SharedFolder, plugin: PeerDraftPlugin) => {
 
-  if (tx.local) return
+  if (!([plugin.serverSync, folder.webRTCProvider?.room].contains(tx.origin))) return
 
   const changedKeys = ev.changes.keys
 
   changedKeys.forEach(async (data, key) => {
 
-
     if (data.action === "add") {
-      const value = tx.doc.getMap("documents").get(key) as string
-      const file = await folder.getOrCreateFile(value)
-      plugin.log("Creating Remote File " + file?.path + "   " + key)
+      const relativePath = tx.doc.getMap("documents").get(key) as string
+      const absolutePath = path.join(folder.path, relativePath)
+      const file = plugin.app.vault.getAbstractFileByPath(absolutePath)
       if (file) {
-        await SharedDocument.fromTFile(file, { id: key, permanent: true }, plugin)
+        showNotice("Peerdraft: Error with file " + file.path)
+      } else {
+        showNotice("Creating new shared document: " + absolutePath)
+        await SharedFolder.getOrCreatePath(path.parse(absolutePath).dir, plugin)
+        await SharedDocument.fromIdAndPath(key, absolutePath, plugin)
       }
     } else if (data.action === "update") {
       const newPath = tx.doc.getMap("documents").get(key) as string
       const document = SharedDocument.findById(key)
-      if (!document) return
+      if (!document) return 
       plugin.log("Update " + document.path + "   " + key)
       const folder = SharedFolder.getSharedFolderForSubPath(document.path)
       if (!folder) return
@@ -66,30 +68,25 @@ export class SharedFolder extends SharedEntity {
       }
     }
 
-    const data = await plugin.serverAPI.createPermanentSession()
-
-    if (!data || !data.id) {
-      showNotice("Error creating share")
-      return
-    }
-
     const docs = await Promise.all(files.map((file) => {
       return SharedDocument.fromTFile(file, {
         permanent: true
       }, plugin)
     }))
 
-    const folder = new SharedFolder(root, { id: data.id }, plugin)
-
-    await plugin.permanentShareStore.add(folder)
-    await folder.startWebSocketSync()
-    await folder.startIndexedDBSync()
+    const folder = new SharedFolder(root, plugin)
 
     for (const doc of docs) {
       if (doc) {
         folder.addDocument(doc)
       }
     }
+
+    await folder.initServerYDoc()
+
+    await plugin.permanentShareStore.add(folder)
+    await folder.startIndexedDBSync()
+    folder.startWebRTCSync()
 
     navigator.clipboard.writeText(plugin.settings.basePath + '/team/' + folder.shareId)
     showNotice(`Folder ${folder.path} with ${docs.length} documents shared. URL copied to your clipboard.`, 0)
@@ -110,25 +107,41 @@ export class SharedFolder extends SharedEntity {
 
     const folder = await plugin.app.vault.createFolder(folderPath)
 
-    const sFolder = new SharedFolder(folder, { id }, plugin)
+    const sFolder = new SharedFolder(folder, plugin)
+    sFolder._shareId = id
 
-    sFolder.startWebSocketSync()
-    sFolder.startWebRTCSync()
-    sFolder.startIndexedDBSync()
     await plugin.permanentShareStore.add(sFolder)
-
+    await sFolder.startIndexedDBSync()
+    if (sFolder.indexedDBProvider) {
+      if (!sFolder.indexedDBProvider.synced) await sFolder.indexedDBProvider.whenSynced
+      sFolder.syncWithServer()
+      sFolder.startWebRTCSync()
+    }
     return sFolder
   }
 
   static async fromPermanentShareFolder(psf: PermanentShareFolder, plugin: PeerDraftPlugin) {
     if (this.findByPath(psf.path)) return
-    const tFolder = plugin.app.vault.getAbstractFileByPath(psf.path)
-    if (!(tFolder instanceof TFolder)) return
-    const folder = new SharedFolder(tFolder, { id: psf.shareId }, plugin)
+    let tFolder: void | null | TAbstractFile
+    tFolder = plugin.app.vault.getAbstractFileByPath(psf.path)
+    if (tFolder instanceof TFile) {
+      showNotice("Expected " + psf.path + " to be a folder, a but is a file?")
+      return
+    }
+    if (!(tFolder instanceof TFolder)) {
+      showNotice("Shared folder " + psf.path + " not found. Creating it now.")
+      tFolder = await this.getOrCreatePath(psf.path, plugin)
+    }
+    if (!(tFolder instanceof TFolder)) {
+      showNotice("Could not create folder " + psf.path + ".")
+      return
+    }
+    const folder = new SharedFolder(tFolder, plugin)
+    folder._shareId = psf.shareId
     const local = await folder.startIndexedDBSync()
     if (local) {
       if (local.synced || await local.whenSynced) {
-        await folder.startWebSocketSync()
+        folder.syncWithServer()
         folder.startWebRTCSync()
       }
     }
@@ -155,14 +168,18 @@ export class SharedFolder extends SharedEntity {
     }
   }
 
-  private constructor(root: TFolder, opts: { id: string }, plugin: PeerDraftPlugin) {
+  private constructor(root: TFolder, plugin: PeerDraftPlugin) {
     super(plugin)
     this.root = root
     this._path = root.path
     this.yDoc = new Y.Doc()
-    this._shareId = opts.id
     this.getDocsFragment().observe((ev, tx) => {
       handleUpdate(ev, tx, this, plugin)
+    })
+    this.yDoc.on("update", (update: Uint8Array, origin: any, yDoc: Y.Doc, tr: Y.Transaction) => {
+      if (tr.local && this.shareId) {
+        plugin.serverSync.sendUpdate(this, update)
+      }
     })
     SharedFolder._sharedEntites.push(this)
     addIsSharedClass(this.path, plugin)
@@ -171,6 +188,7 @@ export class SharedFolder extends SharedEntity {
   getDocsFragment() {
     return this.yDoc.getMap('documents')
   }
+  
 
   getDocByRelativePath(dir: string) {
     for (const entry of this.getDocsFragment().entries() as IterableIterator<[key: string, value: string]>) {
@@ -187,6 +205,11 @@ export class SharedFolder extends SharedEntity {
       this.getDocsFragment().set(id, newPathRelative)
     }
     return id
+  }
+
+  calculateHash(): string {
+    const serialized = serialize(Array.from(this.getDocsFragment()))
+    return calculateHash(serialized)
   }
 
   addDocument(doc: SharedDocument) {

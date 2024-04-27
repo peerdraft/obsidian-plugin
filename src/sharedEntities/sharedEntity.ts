@@ -2,18 +2,16 @@ import PeerDraftPlugin from 'src/main'
 import { WebrtcProvider } from 'y-webrtc'
 import { IndexeddbPersistence } from "y-indexeddb"
 import * as Y from 'yjs'
-import { WebsocketProvider } from 'src/webSocketProvider'
+import { createRandomId } from 'src/tools'
 export abstract class SharedEntity {
 
   static DB_PERSISTENCE_PREFIX = "peerdraft_persistence_"
 
-  protected yDoc: Y.Doc
+  yDoc: Y.Doc
   protected _shareId: string
 
   protected _webRTCProvider?: WebrtcProvider
   protected _webRTCTimeout: number | null = null
-  private _webSocketProvider?: WebsocketProvider
-  private _webSocketTimeout: number | null = null
 
   protected _indexedDBProvider?: IndexeddbPersistence
 
@@ -27,6 +25,14 @@ export abstract class SharedEntity {
 
   get path() {
     return this._path
+  }
+
+  get indexedDBProvider() {
+    return this._indexedDBProvider
+  }
+
+  get webRTCProvider(){
+    return this._webRTCProvider
   }
 
   static findByPath(path: string) {
@@ -57,6 +63,28 @@ export abstract class SharedEntity {
 
   constructor(protected plugin: PeerDraftPlugin) {}
 
+  abstract calculateHash (): string
+
+  initServerYDoc() {
+    return new Promise<string>(resolve => {
+      const tempId = createRandomId()
+      const handler = (serverTempId: string, id: string, checksum: string) => {
+        if (serverTempId === tempId) {
+          this.plugin.serverSync.off('new-doc-confirmed', handler)
+          this._shareId = id
+          resolve(checksum)
+        }
+      }
+      this.plugin.serverSync.on('new-doc-confirmed', handler)
+      this.plugin.serverSync.sendNewDocument(this, tempId)
+    })
+  }
+
+  syncWithServer() {
+    this.plugin.serverSync.sendSyncStep1(this)
+  }
+
+
   startWebRTCSync(init?: (provider: WebrtcProvider) => any) {
     this.plugin.log(`WebRTC for ${this.path}: start`)
     if (!this.shareId) return
@@ -81,65 +109,6 @@ export abstract class SharedEntity {
     this._webRTCProvider = undefined
   }
 
-  async syncWebSocketOnce (timeout: number = 10000) {
-
-  }
-
-  startWebSocketSync() {
-    if (!this.shareId) return
-    if (this._webSocketProvider) {
-      if (!this._webSocketProvider.wsconnected) {
-        this._webSocketProvider.connect()
-      }
-      return this._webSocketProvider
-    }
-    const webSocketProvider = new WebsocketProvider(this.plugin.settings.sync, this.shareId, this.yDoc, {
-      connect: false,
-      maxBackoffTime: 300000,
-      resyncInterval: -1
-    })
-    this._webSocketProvider = webSocketProvider
-
-    webSocketProvider.on('status', (event: any) => {
-      this.plugin.log(`WebSocket for ${this.path}: ${event.status}`)
-    })
-
-
-    webSocketProvider.once('sync', (state) => {
-      if (state) {
-        webSocketProvider.disconnect()
-      }
-    })
-
-    webSocketProvider.doc.on('update', async (update: Uint8Array, origin: any, doc: Y.Doc, tr: Y.Transaction) => {
-      if (tr.local) {
-        if (!webSocketProvider.wsconnected) {
-          webSocketProvider.connect()
-        }
-        // disconnect after 30 seconds of inactivity
-        if (this._webSocketTimeout != null) {
-          window.clearTimeout(this._webSocketTimeout)
-        }
-        this._webSocketTimeout = window.setTimeout(() => {
-          webSocketProvider.disconnect()
-        }, 30000)
-      }
-    })
-
-    webSocketProvider.connect()
-    this.plugin.activeStreamClient.add([this.shareId])
-    return webSocketProvider
-  }
-
-  async stopWebSocketSync() {
-    if (!this._webSocketProvider) return
-    this.plugin.log(`WebSocket Sync for ${this.path}: stop`)
-    this._webSocketProvider.disconnect()
-    this._webSocketProvider.destroy()
-    this.plugin.activeStreamClient.remove([this.shareId])
-    this._webSocketProvider = undefined
-  }
-
   async stopIndexedDBSync() {
     if (!this._indexedDBProvider) return
     await this._indexedDBProvider.destroy()
@@ -147,7 +116,6 @@ export abstract class SharedEntity {
 
   destroy() {
     this.stopWebRTCSync()
-    this.stopWebSocketSync()
   }
 
 }
