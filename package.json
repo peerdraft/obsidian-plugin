@@ -14,6 +14,7 @@
 	"devDependencies": {
 		"@electron/remote": "^2.1.1",
 		"@types/node": "^16.11.6",
+		"@types/xxhashjs": "^0.2.4",
 		"@typescript-eslint/eslint-plugin": "5.29.0",
 		"@typescript-eslint/parser": "5.29.0",
 		"builtin-modules": "3.3.0",
@@ -24,6 +25,7 @@
 		"obsidian": "latest",
 		"tslib": "2.4.0",
 		"typescript": "5.4.4",
+		"xxhashjs": "^0.2.2",
 		"y-codemirror.next": "^0.3.2",
 		"y-indexeddb": "^9.0.12",
 		"y-webrtc": "^10.2.5",
