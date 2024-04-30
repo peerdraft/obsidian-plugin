@@ -21,6 +21,8 @@ export const SYNC_STEP_2 = 1
 export const UPDATE = 3
 export const NEW_DOCUMENT = 4
 export const NEW_DOCUMENT_CONFIRMED = 5
+export const GET_DOCUMENT_AS_UPDATE = 6
+export const SEND_DOCUMENT_AS_UPDATE = 7
 
 const messageReconnectTimeout = 30000
 
@@ -37,7 +39,7 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
     websocket.onmessage = (event) => {
       provider.wsLastMessageReceived = time.getUnixTime()
       const data = new Uint8Array(event.data)
-      if (data.length == 0 ) return
+      if (data.length == 0) return
       const decoder = decoding.createDecoder(data)
       const messageType = decoding.readVarUint(decoder)
       if (messageType === MESSAGE_MULTIPLEX_SYNC) {
@@ -70,6 +72,12 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
             }
           }
             break;
+          case SEND_DOCUMENT_AS_UPDATE: {
+            const id = decoding.readVarString(decoder)
+            const update = decoding.readVarUint8Array(decoder)
+            const checksum = decoding.readVarString(decoder)
+            provider.emit("document-received", [id, update, checksum])
+          } break;
           default:
             console.log("unreachable")
             break;
@@ -141,7 +149,7 @@ type Events = {
   "connection-error": (event: Event, provider: PeerdraftWebsocketProvider) => void
   "connection-close": (event: Event, provider: PeerdraftWebsocketProvider) => void
   status: (status: { status: string }) => void
-  // 'other-document-received': (id: string, update: Uint8Array, checksum: string) => void
+  'document-received': (id: string, update: Uint8Array, checksum: string) => void
   // 'sync-confirmed': (id: string, checksum: string) => void
   'new-doc-confirmed': (tempId: string, id: string, checksum: string) => void
   // 'my-update-sent': (id: string, update: Uint8Array, checksum: string) => void
@@ -244,10 +252,33 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
     this.sendMessage(encoding.toUint8Array(encoder))
   }
 
+  sendGetDocumentAsUpdate(id: string) {
+    const encoder = encoding.createEncoder()
+    encoding.writeVarUint(encoder, MESSAGE_MULTIPLEX_SYNC)
+    encoding.writeVarUint(encoder, GET_DOCUMENT_AS_UPDATE),
+      encoding.writeVarString(encoder, id)
+    this.sendMessage(encoding.toUint8Array(encoder))
+  }
+
   sendMessage(buf: ArrayBuffer) {
     if (this.wsconnected && this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(buf)
     }
+  }
+
+  requestDocument(docId: string) {
+    return new Promise<Y.Doc>(resolve => {
+      const handler = (serverId: string, update: Uint8Array) => {
+        if (docId == serverId) {
+          this.off('document-received', handler)
+          const doc = new Y.Doc()
+          Y.applyUpdate(doc, update)
+          resolve(doc)
+        }
+      }
+      this.on('document-received', handler)
+      this.sendGetDocumentAsUpdate(docId)
+    })
   }
 
   destroy() {

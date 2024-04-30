@@ -86,24 +86,51 @@ export class SharedDocument extends SharedEntity {
 
     const isPermanent = await plugin.serverAPI.isSessionPermanent(id)
 
-    const initialFileName = `_peerdraft_session_${id}_${generateRandomString()}.md`
-    const parent = plugin.app.fileManager.getNewFileParent('', initialFileName)
-    const filePath = path.join(parent.path, initialFileName)
-    const file = await plugin.app.vault.create(filePath, '')
+    const yDoc = new Y.Doc()
+
+    showNotice("Trying to initiate sync...")
 
     const doc = new SharedDocument({
-      path: file.path,
-      id
+      id,
+      yDoc
     }, plugin)
 
     doc.startWebRTCSync()
     if (isPermanent) {
-      doc._isPermanent = true
-      await plugin.permanentShareStore.add(doc)
-      await doc.startIndexedDBSync()
       doc.syncWithServer()
     }
 
+    // wait for first update to make sure it works and to get the filename
+
+    await new Promise<void>((resolve) => {
+      yDoc.once("update", () => {
+        resolve()
+      })
+    })
+
+    const docFilename = doc.yDoc.getText("originalFilename").toString()
+    let initialFileName = `_peerdraft_session_${id}_${generateRandomString()}.md`
+    if (docFilename != '') {
+      const fileExists = plugin.app.vault.getAbstractFileByPath(docFilename)
+      if (!fileExists) {
+        initialFileName = docFilename
+      } else {
+        initialFileName = `_peerdraft_${generateRandomString()}_${docFilename}`
+      }
+    }
+    
+    const parent = plugin.app.fileManager.getNewFileParent('', initialFileName)
+    const filePath = path.join(parent.path, initialFileName)
+    const file = await plugin.app.vault.create(filePath, doc.getValue())
+    addIsSharedClass(file.path, plugin)
+    doc._file = file
+    doc._path = file.path
+
+    if (isPermanent) {
+      doc._isPermanent = true
+      await plugin.permanentShareStore.add(doc)
+      await doc.startIndexedDBSync()
+    }
 
     const leaf = await openFileInNewTab(file, plugin.app.workspace)
     doc.addStatusBarEntry()
@@ -111,7 +138,6 @@ export class SharedDocument extends SharedEntity {
     doc.addExtensionToLeaf(leaf.id)
     pinLeaf(leaf)
     showNotice("Joined Session in " + doc.path + ".")
-
     return doc
 
   }
@@ -130,7 +156,7 @@ export class SharedDocument extends SharedEntity {
     doc.syncWithServer()
     await doc.setPermanent()
     await doc.startIndexedDBSync()
-    
+
   }
 
 
@@ -150,6 +176,8 @@ export class SharedDocument extends SharedEntity {
       const content = await plugin.app.vault.read(file)
       doc.getContentFragment().insert(0, content)
     }
+
+    doc.yDoc.getText("originalFilename").insert(0, file.name)
 
     if (opts.permanent) {
       await doc.initServerYDoc()
@@ -182,7 +210,8 @@ export class SharedDocument extends SharedEntity {
 
   private constructor(opts: {
     path?: string,
-    id?: string
+    id?: string,
+    yDoc?: Y.Doc
   }, plugin: PeerDraftPlugin) {
     super(plugin)
     if (opts.path) {
@@ -199,13 +228,12 @@ export class SharedDocument extends SharedEntity {
     }
 
 
-    this.yDoc = new Y.Doc()
+    this.yDoc = opts.yDoc ?? new Y.Doc()
     this.yDoc.on("update", (update: Uint8Array, origin: any, yDoc: Y.Doc, tr: Y.Transaction) => {
       if (tr.local && this.isPermanent) {
         plugin.serverSync.sendUpdate(this, update)
       }
     })
-
 
     SharedDocument._sharedEntites.push(this)
     this._extensions = new PeerdraftRecord<Compartment>()
@@ -256,12 +284,13 @@ export class SharedDocument extends SharedEntity {
           const states = provider.awareness.getStates()
           for (const key of added) {
             const peer = states.get(key)
-            if (peer) {
-              showNotice(`${peer.user?.name} works on ${this.path}`)
+            if (peer && this.path && key != this._webRTCProvider?.awareness.clientID) {
+              showNotice(`${peer.user?.name} is working on ${this.path}`, 10000)
             }
           }
         }
       })
+
 
       /*
       if (!this._webRTCTimeout) {
@@ -399,17 +428,17 @@ export class SharedDocument extends SharedEntity {
     const leaf = this.plugin.app.workspace.getLeafById(leafId)
     if (leaf) {
       try {
-      const editor = (leaf.view as MarkdownView).editor
-      const editorView = (editor as any).cm as EditorView;
-      const compartment = this._extensions.get(leafId)
-      if (compartment) {
-        editorView.dispatch({
-          effects: compartment.reconfigure([])
-        })
+        const editor = (leaf.view as MarkdownView).editor
+        const editorView = (editor as any).cm as EditorView;
+        const compartment = this._extensions.get(leafId)
+        if (compartment) {
+          editorView.dispatch({
+            effects: compartment.reconfigure([])
+          })
+        }
+      } catch (error) {
+        console.log("editor already gone")
       }
-    } catch (error) {
-      console.log("editor already gone")
-    }
     }
     this._extensions.delete(leafId)
   }
