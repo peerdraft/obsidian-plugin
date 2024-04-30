@@ -34,7 +34,7 @@ Visit [https://www.peerdraft.app](https://www.peerdraft.app) to create an accoun
 
 The session will be closed automatically, when you close the document in Obsidian. You can also:
 
-* Run the command `Start working together on this document` OR
+* Run the command `Stop working together on this document` OR
 * Click on the `Sharing [filename]` entry in the statusbar and select `stop shared session`.
 
 ### Join a session
