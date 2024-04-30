@@ -32,7 +32,7 @@ const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: Share
     } else if (data.action === "update") {
       const newPath = tx.doc.getMap("documents").get(key) as string
       const document = SharedDocument.findById(key)
-      if (!document) return 
+      if (!document) return
       plugin.log("Update " + document.path + "   " + key)
       const folder = SharedFolder.getSharedFolderForSubPath(document.path)
       if (!folder) return
@@ -82,6 +82,8 @@ export class SharedFolder extends SharedEntity {
       }
     }
 
+    folder.yDoc.getText("originalFoldername").insert(0, root.name)
+
     await folder.initServerYDoc()
 
     await plugin.permanentShareStore.add(folder)
@@ -101,7 +103,18 @@ export class SharedFolder extends SharedEntity {
       return
     }
 
-    const initialRootName = `_peerdraft_team_folder_${generateRandomString()}`
+    let initialRootName = `_peerdraft_team_folder_${generateRandomString()}`
+    const preFetchedDoc = await plugin.serverSync.requestDocument(id)
+    const docFoldername = preFetchedDoc.getText("originalFoldername").toString()
+    if (docFoldername != '') {
+      const folderExists = plugin.app.vault.getAbstractFileByPath(docFoldername)
+      if (!folderExists) {
+        initialRootName = docFoldername
+      } else {
+        initialRootName = `_peerdraft_${generateRandomString()}_${docFoldername}`
+      }
+    }
+
     const parent = plugin.app.fileManager.getNewFileParent('', initialRootName)
     const folderPath = path.join(parent.path, initialRootName)
 
@@ -188,7 +201,7 @@ export class SharedFolder extends SharedEntity {
   getDocsFragment() {
     return this.yDoc.getMap('documents')
   }
-  
+
 
   getDocByRelativePath(dir: string) {
     for (const entry of this.getDocsFragment().entries() as IterableIterator<[key: string, value: string]>) {
