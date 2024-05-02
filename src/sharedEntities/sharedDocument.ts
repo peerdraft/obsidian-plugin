@@ -37,6 +37,9 @@ export class SharedDocument extends SharedEntity {
       doc.startWebRTCSync()
       if (doc.isPermanent && doc._webRTCProvider) {
         doc.getOwnerFragment().insert(0, doc._webRTCProvider.awareness.clientID.toFixed(0))
+      } else {
+        doc.addStatusBarEntry()
+        pinLeaf(view.leaf)
       }
       navigator.clipboard.writeText(plugin.settings.basePath + "/cm/" + doc.shareId)
       showNotice("Collaboration started for " + doc.path + ". Link copied to Clipboard.")
@@ -158,8 +161,6 @@ export class SharedDocument extends SharedEntity {
     await doc.startIndexedDBSync()
 
   }
-
-
 
   static async fromTFile(file: TFile, opts: { permanent?: boolean }, plugin: PeerDraftPlugin) {
     if (!['md', 'MD'].contains(file.extension)) return
