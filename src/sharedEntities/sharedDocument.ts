@@ -15,6 +15,8 @@ import * as path from 'path';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import { addIsSharedClass, removeIsSharedClass } from 'src/workspace/explorerView';
 import { SharedFolder } from './sharedFolder';
+import { Mutex } from 'async-mutex';
+import { diff, diffCleanupEfficiency } from 'diff-match-patch-es'
 
 export class SharedDocument extends SharedEntity {
 
@@ -28,6 +30,8 @@ export class SharedDocument extends SharedEntity {
   private statusBarEntry?: HTMLElement
 
   protected static _sharedEntites: Array<SharedDocument> = new Array<SharedDocument>()
+
+  private mutex = new Mutex
 
   static async fromView(view: MarkdownView, plugin: PeerDraftPlugin, opts = { permanent: false }) {
     if (!view.file) return
@@ -244,11 +248,62 @@ export class SharedDocument extends SharedEntity {
       }
     })
 
-    this.getContentFragment().observe(() => {
+    this.getContentFragment().observe(async () => {
       if (this._file && this._extensions.size === 0) {
-        this.plugin.app.vault.modify(this._file, this.getContentFragment().toString())
+        this.mutex.runExclusive(async () => {
+          const yDocContent = this.getValue()
+          const fileContent = await this.plugin.app.vault.read(this._file)
+          if (yDocContent != fileContent) {
+            await this.plugin.app.vault.modify(this._file, yDocContent)
+          }
+        })
       }
     })
+
+    this.plugin.registerEvent(this.plugin.app.vault.on("modify", async (file) => {
+      // only react to changes of this file, and only if it didn't happen within the editor.
+      // The editor extension takes care of updates in that case.
+      if (this.file === file && this._extensions.size === 0) {
+        // check if document and content actually are out of sync
+        this.mutex.runExclusive(async () => {
+          const yDocContent = this.getValue()
+          const fileContent = await this.plugin.app.vault.read(this._file)
+          if (yDocContent != fileContent) {
+            const diffs = diff(yDocContent, fileContent)
+            diffCleanupEfficiency(diffs)
+            const content = this.getContentFragment()
+            let pos = 0
+            this.yDoc.transact(() => {
+              for (const diff of diffs) {
+                const text = diff[1] as string
+                const length = text.length
+                switch (diff[0]) {
+                  // keep
+                  case 0:
+                    {
+                      pos+=length
+                    }
+                    break;
+                  // remove
+                  case -1:
+                    {
+                      content.delete(pos, length)
+                    }
+                    break;
+                  // add
+                  case 1:
+                    {
+                      content.insert(pos, text)
+                      pos+=length
+                    }
+                    break;
+                }
+              }
+            })
+          }
+        })
+      }
+    }))
 
     addIsSharedClass(this.path, this.plugin)
   }
