@@ -200,10 +200,6 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
         messageReconnectTimeout <
         time.getUnixTime() - this.wsLastMessageReceived
       ) {
-        // no message received in a long time - not even your own awareness
-        // updates (which are updated every 15 seconds)
-        // TODO ADD PING/PONG HERE
-        console.log("--HERE--");
         (this.ws!).close()
       }
     }, messageReconnectTimeout / 10))
