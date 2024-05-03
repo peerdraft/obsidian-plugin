@@ -76,6 +76,7 @@ export class SharedDocument extends SharedEntity {
     if (fileAlreadyThere) {
       doc.syncWithServer()
     }
+    plugin.activeStreamClient.add([doc.shareId])
     return doc
   }
 
@@ -125,7 +126,7 @@ export class SharedDocument extends SharedEntity {
         initialFileName = `_peerdraft_${generateRandomString()}_${docFilename}`
       }
     }
-    
+
     const parent = plugin.app.fileManager.getNewFileParent('', initialFileName)
     const filePath = path.join(parent.path, initialFileName)
     const file = await plugin.app.vault.create(filePath, doc.getValue())
@@ -137,6 +138,7 @@ export class SharedDocument extends SharedEntity {
       doc._isPermanent = true
       await plugin.permanentShareStore.add(doc)
       await doc.startIndexedDBSync()
+      plugin.activeStreamClient.add([doc.shareId])
     }
 
     const leaf = await openFileInNewTab(file, plugin.app.workspace)
@@ -319,6 +321,13 @@ export class SharedDocument extends SharedEntity {
 
   startWebRTCSync() {
     return super.startWebRTCSync((provider) => {
+
+      provider.awareness.setLocalStateField('user', {
+        name: this.plugin.settings.name,
+        color: SharedDocument._userColor.dark,
+        colorLight: SharedDocument._userColor.light
+      })
+
       provider.awareness.on("update", async (msg: { added: Array<number>, removed: Array<number> }) => {
         const removed = msg.removed ?? [];
         if (removed && removed.length > 0) {
@@ -395,6 +404,7 @@ export class SharedDocument extends SharedEntity {
     if (!this._isPermanent) {
       this._isPermanent = true
       await this.plugin.permanentShareStore.add(this)
+      this.plugin.activeStreamClient.add([this.shareId])
     }
   }
 
@@ -452,11 +462,6 @@ export class SharedDocument extends SharedEntity {
     editor.setValue(this.getValue())
 
     const undoManager = new Y.UndoManager(this.getContentFragment())
-    webRTCProvider.awareness.setLocalStateField('user', {
-      name: this.plugin.settings.name,
-      color: SharedDocument._userColor.dark,
-      colorLight: SharedDocument._userColor.light
-    })
 
     const extension = yCollab(this.getContentFragment(), webRTCProvider.awareness, { undoManager })
     const compartment = new Compartment()
