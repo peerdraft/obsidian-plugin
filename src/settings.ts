@@ -107,7 +107,7 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
     })
 
   const pathSetting = new Setting(el)
-  pathSetting.setName("Root folder")
+  pathSetting.setName("Root Folder")
   pathSetting.setDesc("When you import a share from someone else it will be created in this folder.")
   pathSetting.addText(text => {
     text.setValue(settings.root)
