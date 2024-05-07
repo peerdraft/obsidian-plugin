@@ -127,8 +127,9 @@ export class SharedDocument extends SharedEntity {
       }
     }
 
-    const parent = plugin.app.fileManager.getNewFileParent('', initialFileName)
-    const filePath = path.join(parent.path, initialFileName)
+    const parent = plugin.settings.root || plugin.app.fileManager.getNewFileParent('', initialFileName).path
+    const filePath = path.join(parent, initialFileName)
+    const folder = await SharedFolder.getOrCreatePath(path.dirname(filePath), plugin)
     const file = await plugin.app.vault.create(filePath, doc.getValue())
     addIsSharedClass(file.path, plugin)
     doc._file = file

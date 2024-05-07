@@ -107,7 +107,7 @@ export class SharedFolder extends SharedEntity {
     const preFetchedDoc = await plugin.serverSync.requestDocument(id)
     const docFoldername = preFetchedDoc.getText("originalFoldername").toString()
     if (docFoldername != '') {
-      const folderExists = plugin.app.vault.getAbstractFileByPath(docFoldername)
+      const folderExists = plugin.app.vault.getAbstractFileByPath(path.join(plugin.settings.root, docFoldername))
       if (!folderExists) {
         initialRootName = docFoldername
       } else {
@@ -115,10 +115,13 @@ export class SharedFolder extends SharedEntity {
       }
     }
 
-    const parent = plugin.app.fileManager.getNewFileParent('', initialRootName)
-    const folderPath = path.join(parent.path, initialRootName)
+    const folderPath = path.join(plugin.settings.root, initialRootName)
 
-    const folder = await plugin.app.vault.createFolder(folderPath)
+    const folder = await SharedFolder.getOrCreatePath(folderPath, plugin)
+
+    if (!folder) {
+      return showNotice("Could not create folder " + folderPath)
+    }
 
     const sFolder = new SharedFolder(folder, plugin)
     sFolder._shareId = id

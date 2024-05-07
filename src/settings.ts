@@ -3,6 +3,7 @@ import { createRandomId } from "./tools";
 import { refreshSubscriptionData } from "./subscription";
 import { showTextModal } from "./ui";
 import PeerdraftPlugin from "./peerdraftPlugin";
+import { promptForFolderSelection } from "./ui/selectFolder";
 
 export interface Settings {
   signaling: string,
@@ -18,6 +19,7 @@ export interface Settings {
     type: "hobby" | "professional" | "team"
     email?: string
   },
+  root: string,
   duration: number,
   debug: boolean,
   version: string
@@ -32,6 +34,7 @@ const DEFAULT_SETTINGS: Settings = {
   signaling: "wss://www.peerdraft.app/signal",
   actives: "wss://www.peerdraft.app/actives",
   name: "",
+  root: "",
   oid: createRandomId(),
   plan: {
     type: "hobby",
@@ -90,18 +93,42 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
 
   const settings = await getSettings(plugin)
 
-  el.createEl("h1", { text: "What's your name?" });
+  el.createEl("h1", { text: "General" });
 
-  const setting = new Setting(el)
-  setting.setName("Name")
-  setting.setDesc("This name will be shown to your collaborators")
-  setting.addText((text) => {
-    text.setValue(settings.name)
-    text.onChange(async (value) => {
-      settings.name = value
-      await saveSettings(settings, plugin);
+  new Setting(el)
+    .setName("Display Name")
+    .setDesc("This name will be shown to your collaborators")
+    .addText((text) => {
+      text.setValue(settings.name)
+      text.onChange(async (value) => {
+        settings.name = value
+        await saveSettings(settings, plugin);
+      })
+    })
+
+  const pathSetting = new Setting(el)
+  pathSetting.setName("Root folder")
+  pathSetting.setDesc("When you import a share from someone else it will be created in this folder.")
+  pathSetting.addText(text => {
+    text.setValue(settings.root)
+    text.onChange(async value => {
+      settings.root = value
+      await saveSettings(settings, plugin)
+    })
+
+    pathSetting.addExtraButton(button => {
+      button.setIcon('search')
+      button.onClick(async () => {
+        const folder = await promptForFolderSelection(plugin.app)
+        if (folder) {
+          text.setValue(folder.path)
+          settings.root = folder.path
+          await saveSettings(settings, plugin)
+        }
+      })
     })
   })
+
 
   el.createEl("h1", { text: "Your subscription" })
   if (settings.plan.type === "hobby") {
@@ -141,7 +168,7 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
               email: connectEmail,
               oid: settings.oid
             })
-            
+
           }).json
           if (data && data.plan) {
             settings.plan = data.plan
@@ -159,15 +186,15 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
   }
 
   new Setting(el)
-  .setName("Refresh subscription data")
-  .setDesc("If you just subscribed or connected your license, click here to refresh your subscription information.")
-  .addButton((button) => {
-    button.setButtonText("Refresh")
-    button.onClick(async (e) => {
-      refreshSubscriptionData(plugin)
-      renderSettings(el, plugin)
+    .setName("Refresh subscription data")
+    .setDesc("If you just subscribed or connected your license, click here to refresh your subscription information.")
+    .addButton((button) => {
+      button.setButtonText("Refresh")
+      button.onClick(async (e) => {
+        refreshSubscriptionData(plugin)
+        renderSettings(el, plugin)
+      })
     })
-  })
 
   el.createEl("h1", { text: "Help" })
   const div = el.createDiv()
