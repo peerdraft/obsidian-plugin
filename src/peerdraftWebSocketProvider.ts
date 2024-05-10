@@ -7,6 +7,7 @@ import * as math from 'lib0/math'
 import { SharedDocument } from './sharedEntities/sharedDocument'
 import { SharedEntity } from './sharedEntities/sharedEntity'
 import { SharedFolder } from './sharedEntities/sharedFolder'
+import { calculateHash, serialize } from './tools'
 
 export const MESSAGE_SYNC = 0
 export const MESSAGE_QUERY_AWARENESS = 3
@@ -69,6 +70,7 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
             const doc = SharedDocument.findById(id) ?? SharedFolder.findById(id)
             if (doc) {
               Y.applyUpdate(doc.yDoc, update, provider)
+              provider.emit('synced', [id, hash])
             }
           }
             break;
@@ -144,7 +146,7 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
 
 
 type Events = {
-  // synced: (state: boolean) => void
+  synced: (id: string, hash: string) => void
   // sync: (state: boolean) => void
   "connection-error": (event: Event, provider: PeerdraftWebsocketProvider) => void
   "connection-close": (event: Event, provider: PeerdraftWebsocketProvider) => void
@@ -238,6 +240,16 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
     this.sendMessage(encoding.toUint8Array(encoder))
   }
 
+  sendUpdateMessage(shareId: string, update: Uint8Array, checksum: string) {
+    const encoder = encoding.createEncoder()
+    encoding.writeVarUint(encoder, MESSAGE_MULTIPLEX_SYNC)
+    encoding.writeVarUint(encoder, UPDATE)
+    encoding.writeVarString(encoder, shareId)
+    encoding.writeVarUint8Array(encoder, update)
+    encoding.writeVarString(encoder, checksum)
+    this.sendMessage(encoding.toUint8Array(encoder))
+  }
+
   sendNewDocument(doc: SharedEntity, tempId: string) {
     const encoder = encoding.createEncoder()
     encoding.writeVarUint(encoder, MESSAGE_MULTIPLEX_SYNC)
@@ -264,11 +276,21 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
 
   requestDocument(docId: string) {
     return new Promise<Y.Doc>(resolve => {
-      const handler = (serverId: string, update: Uint8Array) => {
+      const handler = (serverId: string, update: Uint8Array, checksum: string) => {
         if (docId == serverId) {
           this.off('document-received', handler)
           const doc = new Y.Doc()
           Y.applyUpdate(doc, update)
+
+          // correct hash for folders
+          const docs = Array.from(doc.getMap("documents"))
+          if (docs.length > 0) {
+            const serialized = serialize(Array.from(docs))
+            const calculatedHash = calculateHash(serialized)
+            if (calculatedHash != checksum) {
+              this.sendUpdateMessage(docId, Y.encodeStateAsUpdate(doc), calculatedHash)
+            }
+          }
           resolve(doc)
         }
       }

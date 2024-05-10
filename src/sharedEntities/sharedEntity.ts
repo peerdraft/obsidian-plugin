@@ -81,7 +81,16 @@ export abstract class SharedEntity {
   }
 
   syncWithServer() {
-    this.plugin.serverSync.sendSyncStep1(this)
+    return new Promise<string>(resolve => {
+      const handler = async (id: string, hash: string) => {
+        if (id === this.shareId) {
+          this.plugin.serverSync.off('synced', handler)
+          resolve(hash)
+        }
+      }
+      this.plugin.serverSync.on('synced', handler)
+      this.plugin.serverSync.sendSyncStep1(this)
+    })
   }
 
 

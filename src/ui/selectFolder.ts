@@ -43,7 +43,6 @@ export class SelectFolderModal extends SuggestModal<TFolder> {
   }
 
   onChooseSuggestion(item: TFolder, evt: MouseEvent | KeyboardEvent) {
-    console.log("selected")
   }
 
   onClose(): void {

@@ -9,6 +9,7 @@ import { SharedDocument } from "./sharedDocument";
 import { PermanentShareFolder } from "src/permanentShareStore";
 import { IndexeddbPersistence } from "y-indexeddb";
 import { addIsSharedClass, removeIsSharedClass } from "src/workspace/explorerView";
+import { fromShareURL } from "./sharedEntityFactory";
 
 const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: SharedFolder, plugin: PeerDraftPlugin) => {
 
@@ -23,7 +24,13 @@ const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: Share
       const absolutePath = path.join(folder.path, relativePath)
       const file = plugin.app.vault.getAbstractFileByPath(absolutePath)
       if (file) {
-        showNotice("Peerdraft: Error with file " + file.path)
+
+        showNotice("File " + file.path + " already exists. Renaming.")
+
+        const alteredPath = path.join(path.dirname(relativePath),path.basename(relativePath, path.extname(relativePath)) + "_" + generateRandomString() + path.extname(relativePath))
+        const alteredAbsolutePath = path.join(folder.root.path, alteredPath)
+        folder.getDocsFragment().set(key, alteredPath)
+        SharedDocument.fromIdAndPath(key, alteredAbsolutePath, plugin)
       } else {
         showNotice("Creating new shared document: " + absolutePath)
         await SharedFolder.getOrCreatePath(path.parse(absolutePath).dir, plugin)
@@ -36,9 +43,19 @@ const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: Share
       plugin.log("Update " + document.path + "   " + key)
       const folder = SharedFolder.getSharedFolderForSubPath(document.path)
       if (!folder) return
-      const newAbsolutePath = path.join(folder.root.path, newPath)
+      let newAbsolutePath = path.join(folder.root.path, newPath)
       await SharedFolder.getOrCreatePath(path.parse(newAbsolutePath).dir, plugin)
-      plugin.app.vault.rename(document.file, newAbsolutePath)
+
+      const alreadyExists = SharedDocument.findByPath(newAbsolutePath)
+      if (alreadyExists) {
+        showNotice("File " + newPath + " already exists. Renaming.")
+        const alteredPath = path.join(path.dirname(newPath),path.basename(newPath, path.extname(newPath)) + "_" + generateRandomString() + path.extname(newPath))
+        const alteredAbsolutePath = path.join(folder.root.path, alteredPath)
+        folder.getDocsFragment().set(key, alteredPath)
+        SharedDocument.fromIdAndPath(key, alteredAbsolutePath, plugin)
+      } else {
+        plugin.app.vault.rename(document.file, newAbsolutePath)
+      }
     } else if (data.action === "delete") {
       const document = SharedDocument.findById(key)
       if (!document) return
@@ -46,7 +63,6 @@ const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: Share
       const file = plugin.app.vault.getAbstractFileByPath(document.path)
       if (!file) return
       plugin.app.vault.delete(file)
-
     }
   })
 }
@@ -96,41 +112,56 @@ export class SharedFolder extends SharedEntity {
     return folder
   }
 
-  static async fromShareURL(url: string, plugin: PeerDraftPlugin): Promise<SharedFolder | void> {
+  static async recreate(folder: SharedFolder, plugin: PeerDraftPlugin) {
+    const path = folder.path
+    await plugin.app.vault.delete(folder.root, true)
+    return await fromShareURL(plugin.settings.basePath + '/team/' + folder.shareId, plugin,)
+  }
+
+  static async fromShareURL(url: string, plugin: PeerDraftPlugin, location?: string): Promise<SharedFolder | void> {
     const id = url.split('/').pop()
     if (!id || !id.match('^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')) {
       showNotice("No valid peerdraft link")
       return
     }
 
-    let initialRootName = `_peerdraft_team_folder_${generateRandomString()}`
+    let folderPath = location
     const preFetchedDoc = await plugin.serverSync.requestDocument(id)
-    const docFoldername = preFetchedDoc.getText("originalFoldername").toString()
-    if (docFoldername != '') {
-      const folderExists = plugin.app.vault.getAbstractFileByPath(path.join(plugin.settings.root, docFoldername))
-      if (!folderExists) {
-        initialRootName = docFoldername
-      } else {
-        initialRootName = `_peerdraft_${generateRandomString()}_${docFoldername}`
+
+
+    if (!location) {
+      let initialRootName = `_peerdraft_team_folder_${generateRandomString()}`
+      const docFoldername = preFetchedDoc.getText("originalFoldername").toString()
+      if (docFoldername != '') {
+        const folderExists = plugin.app.vault.getAbstractFileByPath(path.join(plugin.settings.root, docFoldername))
+        if (!folderExists) {
+          initialRootName = docFoldername
+        } else {
+          initialRootName = `_peerdraft_${generateRandomString()}_${docFoldername}`
+        }
       }
+
+      folderPath = path.join(plugin.settings.root, initialRootName)
     }
 
-    const folderPath = path.join(plugin.settings.root, initialRootName)
-
-    const folder = await SharedFolder.getOrCreatePath(folderPath, plugin)
+    const folder = await SharedFolder.getOrCreatePath(folderPath!, plugin)
 
     if (!folder) {
       return showNotice("Could not create folder " + folderPath)
     }
 
-    const sFolder = new SharedFolder(folder, plugin)
+    (preFetchedDoc.getMap("documents") as Y.Map<string>).forEach(async (location, id) => {
+      await SharedDocument.fromIdAndPath(id, path.join(folderPath!, location), plugin)
+    })
+
+    const sFolder = new SharedFolder(folder, plugin, preFetchedDoc)
     sFolder._shareId = id
 
     await plugin.permanentShareStore.add(sFolder)
     await sFolder.startIndexedDBSync()
     if (sFolder.indexedDBProvider) {
       if (!sFolder.indexedDBProvider.synced) await sFolder.indexedDBProvider.whenSynced
-      sFolder.syncWithServer()
+      await sFolder.syncWithServer()
       sFolder.startWebRTCSync()
     }
     return sFolder
@@ -152,12 +183,13 @@ export class SharedFolder extends SharedEntity {
       showNotice("Could not create folder " + psf.path + ".")
       return
     }
+
     const folder = new SharedFolder(tFolder, plugin)
     folder._shareId = psf.shareId
     const local = await folder.startIndexedDBSync()
     if (local) {
       if (local.synced || await local.whenSynced) {
-        folder.syncWithServer()
+        await folder.syncWithServer()
         folder.startWebRTCSync()
       }
     }
@@ -172,6 +204,7 @@ export class SharedFolder extends SharedEntity {
     return super.findById(id) as SharedFolder | undefined
   }
 
+
   static getAll() {
     return super.getAll() as Array<SharedFolder>
   }
@@ -184,11 +217,11 @@ export class SharedFolder extends SharedEntity {
     }
   }
 
-  private constructor(root: TFolder, plugin: PeerDraftPlugin) {
+  private constructor(root: TFolder, plugin: PeerDraftPlugin, ydoc?: Y.Doc) {
     super(plugin)
     this.root = root
     this._path = root.path
-    this.yDoc = new Y.Doc()
+    this.yDoc = ydoc ?? new Y.Doc()
     this.getDocsFragment().observe((ev, tx) => {
       handleUpdate(ev, tx, this, plugin)
     })

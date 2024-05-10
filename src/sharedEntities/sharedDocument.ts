@@ -152,22 +152,24 @@ export class SharedDocument extends SharedEntity {
 
   }
 
-  static async fromIdAndPath(id: string, path: string, plugin: PeerDraftPlugin) {
+  static async fromIdAndPath(id: string, location: string, plugin: PeerDraftPlugin) {
     const existingDoc = SharedDocument.findById(id)
     if (existingDoc) {
       showNotice("This share is already active: " + existingDoc.path)
       return
     }
-    await plugin.app.vault.create(path, '')
+    await SharedFolder.getOrCreatePath(path.dirname(location), plugin)
+    showNotice("Creating new synced file " + location)
+    const ydoc = await plugin.serverSync.requestDocument(id)
+    await plugin.app.vault.create(location, ydoc.getText("content").toString())
     const doc = new SharedDocument({
-      id, path
+      id, path: location, yDoc: ydoc
     }, plugin)
-
     doc.syncWithServer()
     await doc.setPermanent()
     await doc.startIndexedDBSync()
-
   }
+  
 
   static async fromTFile(file: TFile, opts: { permanent?: boolean }, plugin: PeerDraftPlugin) {
     if (!['md', 'MD'].contains(file.extension)) return
@@ -499,7 +501,7 @@ export class SharedDocument extends SharedEntity {
           })
         }
       } catch (error) {
-        console.log("editor already gone")
+        this.plugin.log("editor already gone")
       }
     }
     this._extensions.delete(leafId)

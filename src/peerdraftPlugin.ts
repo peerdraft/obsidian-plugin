@@ -78,13 +78,13 @@ export default class PeerdraftPlugin extends Plugin {
 
 		plugin.app.workspace.onLayoutReady(
 			async () => {
-				const permanentlySharedFolders = await plugin.permanentShareStore.getAllFolders()
-				for (const folder of permanentlySharedFolders) {
-					SharedFolder.fromPermanentShareFolder(folder, plugin)
-				}
 				const permanentlySharedDocs = await plugin.permanentShareStore.getAllDocs()
 				for (const doc of permanentlySharedDocs) {
 					SharedDocument.fromPermanentShareDocument(doc, plugin)
+				}
+				const permanentlySharedFolders = await plugin.permanentShareStore.getAllFolders()
+				for (const folder of permanentlySharedFolders) {
+					SharedFolder.fromPermanentShareFolder(folder, plugin)
 				}
 				updatePeerdraftWorkspace(plugin.app.workspace, plugin.pws)
 				plugin.registerEvent(plugin.app.workspace.on("layout-change", () => {
@@ -122,6 +122,13 @@ export default class PeerdraftPlugin extends Plugin {
 							item.setIcon('refresh-cw-off')
 							item.onClick(async () => {
 								await sharedFolder.unshare()
+							})
+						})
+						menu.addItem(item => {
+							item.setTitle('Re-create sync from server')
+							item.setIcon('refresh-cw')
+							item.onClick(async () => {
+								await SharedFolder.recreate(sharedFolder, plugin)
 							})
 						})
 					}
