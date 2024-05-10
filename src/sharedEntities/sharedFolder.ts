@@ -113,9 +113,10 @@ export class SharedFolder extends SharedEntity {
   }
 
   static async recreate(folder: SharedFolder, plugin: PeerDraftPlugin) {
-    const path = folder.path
+    const location = folder.root.path
+    await folder.unshare()
     await plugin.app.vault.delete(folder.root, true)
-    return await fromShareURL(plugin.settings.basePath + '/team/' + folder.shareId, plugin,)
+    return await this.fromShareURL(plugin.settings.basePath + '/team/' + folder.shareId, plugin, location)
   }
 
   static async fromShareURL(url: string, plugin: PeerDraftPlugin, location?: string): Promise<SharedFolder | void> {
@@ -374,9 +375,12 @@ export class SharedFolder extends SharedEntity {
       await this._indexedDBProvider.clearData()
       await this._indexedDBProvider.destroy()
     }
-    this.getDocsFragment().forEach((path: string, shareId: string) => {
-      SharedDocument.findById(shareId)?.unshare()
-    })
+
+    
+    for (const key in (this.getDocsFragment() as Y.Map<string>)) {
+      await SharedDocument.findById(key)?.unshare()
+    }
+
     this.destroy()
     removeIsSharedClass(this.path, this.plugin)
   }
