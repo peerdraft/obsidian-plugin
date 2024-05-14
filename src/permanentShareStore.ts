@@ -3,7 +3,7 @@ import { SharedDocument } from "./sharedEntities/sharedDocument"
 import { createRandomId } from "./tools"
 import { SharedEntity } from "./sharedEntities/sharedEntity"
 import { SharedFolder } from "./sharedEntities/sharedFolder"
-import { cpSync } from "fs"
+
 
 export interface PermanentShareDocument {
   path: string, persistenceId: string, shareId: string 
@@ -13,12 +13,12 @@ export interface PermanentShareFolder {
   path: string, persistenceId: string, shareId: string 
 }
 
-export class PermanentShareStore {
+export class PermanentShareStoreIndexedDB {
 
   oid: string
-  documentTable: Table<PermanentShareDocument, string>
-  folderTable: Table<PermanentShareFolder, string>
-  db: Dexie
+  private documentTable: Table<PermanentShareDocument, string>
+  private folderTable: Table<PermanentShareFolder, string>
+  private db: Dexie
 
   keepOpen: boolean = true
 
@@ -36,7 +36,6 @@ export class PermanentShareStore {
     })
     this.documentTable = this.db._allTables["sharedDocs"] as Table<PermanentShareDocument, string>
     this.folderTable = this.db._allTables["sharedFolders"] as Table<PermanentShareFolder, string>
-    
   }
 
   close(){
@@ -83,6 +82,12 @@ export class PermanentShareStore {
 
   async getFolderByPath(path: string) {
     return this.folderTable.get(path)
+  }
+
+
+  async deleteDB() {
+    window.indexedDB.deleteDatabase(this.folderTable.name)
+    window.indexedDB.deleteDatabase(this.documentTable.name)
   }
 
 }

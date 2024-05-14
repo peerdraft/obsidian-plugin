@@ -9,7 +9,7 @@ import { SharedDocument } from "./sharedDocument";
 import { PermanentShareFolder } from "src/permanentShareStore";
 import { IndexeddbPersistence } from "y-indexeddb";
 import { addIsSharedClass, removeIsSharedClass } from "src/workspace/explorerView";
-import { fromShareURL } from "./sharedEntityFactory";
+import { add, getFolderByPath, moveFolder, removeFolder } from "src/permanentShareStoreFS";
 
 const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: SharedFolder, plugin: PeerDraftPlugin) => {
 
@@ -18,6 +18,7 @@ const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: Share
   const changedKeys = ev.changes.keys
 
   changedKeys.forEach(async (data, key) => {
+    plugin.log("Action: " + data.action + "for " + key + " --> " + tx.doc.getMap("documents").get(key) as string)
 
     if (data.action === "add") {
       const relativePath = tx.doc.getMap("documents").get(key) as string
@@ -102,7 +103,7 @@ export class SharedFolder extends SharedEntity {
 
     await folder.initServerYDoc()
 
-    await plugin.permanentShareStore.add(folder)
+    await add(folder, plugin)
     await folder.startIndexedDBSync()
     folder.startWebRTCSync()
 
@@ -158,7 +159,7 @@ export class SharedFolder extends SharedEntity {
     const sFolder = new SharedFolder(folder, plugin, preFetchedDoc)
     sFolder._shareId = id
 
-    await plugin.permanentShareStore.add(sFolder)
+    await add(sFolder, plugin)
     await sFolder.startIndexedDBSync()
     if (sFolder.indexedDBProvider) {
       if (!sFolder.indexedDBProvider.synced) await sFolder.indexedDBProvider.whenSynced
@@ -299,11 +300,7 @@ export class SharedFolder extends SharedEntity {
     const oldPath = this._path
     this.root = folder
     this._path = folder.path
-    const dbEntry = await this.plugin.permanentShareStore.getFolderByPath(oldPath)
-    if (dbEntry) {
-      this.plugin.permanentShareStore.removeFolder(oldPath)
-      this.plugin.permanentShareStore.add(this)
-    }
+    moveFolder(oldPath, folder.path, this.plugin)
   }
 
   async getOrCreateFile(relativePath: string) {
@@ -316,7 +313,6 @@ export class SharedFolder extends SharedEntity {
       showNotice("Error creating shares")
       return
     }
-
     return await this.plugin.app.vault.create(absolutePath, '')
   }
 
@@ -360,26 +356,27 @@ export class SharedFolder extends SharedEntity {
 
   async startIndexedDBSync() {
     if (this._indexedDBProvider) return this._indexedDBProvider
-    const id = (await this.plugin.permanentShareStore.getFolderByPath(this.path))?.persistenceId
+    const id = getFolderByPath(this.path, this.plugin)?.persistenceId
     if (!id) return
     this._indexedDBProvider = new IndexeddbPersistence(SharedEntity.DB_PERSISTENCE_PREFIX + id, this.yDoc)
     return this._indexedDBProvider
   }
 
   async unshare() {
-    const dbEntry = await this.plugin.permanentShareStore.getFolderByPath(this.path)
+    const dbEntry = getFolderByPath(this.path, this.plugin)
     if (dbEntry) {
-      this.plugin.permanentShareStore.removeFolder(this.path)
+      removeFolder(this.path, this.plugin)
     }
+
     if (this._indexedDBProvider) {
       await this._indexedDBProvider.clearData()
       await this._indexedDBProvider.destroy()
     }
 
     
-    for (const key in (this.getDocsFragment() as Y.Map<string>)) {
-      await SharedDocument.findById(key)?.unshare()
-    }
+    this.getDocsFragment().forEach((path: string, shareId: string) => {
+      SharedDocument.findById(shareId)?.unshare()
+    })
 
     this.destroy()
     removeIsSharedClass(this.path, this.plugin)

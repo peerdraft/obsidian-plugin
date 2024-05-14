@@ -1,9 +1,9 @@
-import { Modal, Plugin, PluginSettingTab, Setting, requestUrl } from "obsidian";
-import { createRandomId } from "./tools";
+import { Modal, Plugin, PluginSettingTab, Setting, debounce, requestUrl } from "obsidian";
 import { refreshSubscriptionData } from "./subscription";
 import { showTextModal } from "./ui";
 import PeerdraftPlugin from "./peerdraftPlugin";
 import { promptForFolderSelection } from "./ui/selectFolder";
+import { PermanentShareStoreIndexedDB } from "./permanentShareStore";
 
 export interface Settings {
   signaling: string,
@@ -22,10 +22,14 @@ export interface Settings {
   root: string,
   duration: number,
   debug: boolean,
-  version: string
+  version: string,
+  serverShares: {
+    folders: Map<string, { persistenceId: string, shareId: string }>
+    files: Map<string, { persistenceId: string, shareId: string }>
+  }
 }
 
-const DEFAULT_SETTINGS: Settings = {
+const DEFAULT_SETTINGS: Omit<Settings, "oid"> = {
   basePath: "https://www.peerdraft.app",
   subscriptionAPI: "https://www.peerdraft.app/subscription",
   connectAPI: "https://www.peerdraft.app/subscription/connect",
@@ -35,7 +39,6 @@ const DEFAULT_SETTINGS: Settings = {
   actives: "wss://www.peerdraft.app/actives",
   name: "",
   root: "",
-  oid: createRandomId(),
   plan: {
     type: "hobby",
     email: ""
@@ -43,6 +46,10 @@ const DEFAULT_SETTINGS: Settings = {
   duration: 0,
   debug: false,
   version: '',
+  serverShares: {
+    files: new Map<string, { persistenceId: string, shareId: string }>(),
+    folders: new Map<string, { persistenceId: string, shareId: string }>()
+  }
 }
 
 const FORCE_SETTINGS: Partial<Settings> = {
@@ -67,10 +74,27 @@ const FORCE_SETTINGS: Partial<Settings> = {
 export const migrateSettings = async (plugin: PeerdraftPlugin) => {
   const oldSettings = await getSettings(plugin)
 
-  const newSettings = Object.assign({}, DEFAULT_SETTINGS, oldSettings, FORCE_SETTINGS, {
+  const newSettings: Settings = Object.assign({}, DEFAULT_SETTINGS, oldSettings, FORCE_SETTINGS, {
     version: plugin.manifest.version
   })
-  await saveSettings(newSettings, plugin)
+  //@ts-expect-error
+  newSettings.oid = oldSettings.oid ?? plugin.app.appId
+
+  if (newSettings.serverShares.files.size === 0 && newSettings.serverShares.folders.size === 0) {
+    const db = new PermanentShareStoreIndexedDB(oldSettings.oid)
+    const docs = await db.getAllDocs()
+    docs.forEach(doc => {
+      newSettings.serverShares.files.set(doc.path, { persistenceId: doc.persistenceId, shareId: doc.shareId })
+    })
+    const folders = await db.getAllFolders()
+    folders.forEach(doc => {
+      newSettings.serverShares.folders.set(doc.path, { persistenceId: doc.persistenceId, shareId: doc.shareId })
+    })
+    saveSettings(newSettings, plugin)
+    await db.deleteDB()
+  }
+
+  saveSettings(newSettings, plugin)
 
   if (oldSettings && oldSettings.version != newSettings.version) {
     showTextModal(plugin.app, 'Peerdraft updated', 'A new version of Peerdraft was installed. Please restart Obsidian before you use Peerdraft again.')
@@ -80,13 +104,25 @@ export const migrateSettings = async (plugin: PeerdraftPlugin) => {
 
 export const getSettings = async (plugin: Plugin) => {
   const settings = await plugin.loadData() as Settings
+  settings.serverShares = {
+    files: new Map(settings.serverShares?.files),
+    folders: new Map(settings.serverShares?.folders)
+  }
   return settings
 }
 
-export const saveSettings = async (settings: Settings, plugin: PeerdraftPlugin) => {
-  await plugin.saveData(settings)
-  plugin.settings = settings
-}
+
+export const saveSettings = debounce(async (settings: Settings, plugin: PeerdraftPlugin) => {
+
+  const serialized = JSON.parse(JSON.stringify(settings))
+
+  serialized.serverShares = {
+    files: Array.from(settings.serverShares.files.entries()),
+    folders: Array.from(settings.serverShares.folders.entries())
+  }
+
+  plugin.saveData(serialized)
+}, 1000, true)
 
 export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) => {
   el.empty();
@@ -102,7 +138,7 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
       text.setValue(settings.name)
       text.onChange(async (value) => {
         settings.name = value
-        await saveSettings(settings, plugin);
+        saveSettings(settings, plugin);
       })
     })
 
@@ -113,7 +149,7 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
     text.setValue(settings.root)
     text.onChange(async value => {
       settings.root = value
-      await saveSettings(settings, plugin)
+      saveSettings(settings, plugin)
     })
 
     pathSetting.addExtraButton(button => {
@@ -123,7 +159,7 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
         if (folder) {
           text.setValue(folder.path)
           settings.root = folder.path
-          await saveSettings(settings, plugin)
+          saveSettings(settings, plugin)
         }
       })
     })

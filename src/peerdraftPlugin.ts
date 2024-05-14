@@ -1,7 +1,6 @@
 import { MarkdownView, Plugin, TFile, TFolder } from "obsidian"
 import { ActiveStreamClient } from "./activeStreamClient"
 import { prepareCommunication } from "./cookie"
-import { PermanentShareStore } from "./permanentShareStore"
 import { ServerAPI } from "./serverAPI"
 import { Settings, createSettingsTab, getSettings, migrateSettings, saveSettings } from "./settings"
 import { SharedDocument } from "./sharedEntities/sharedDocument"
@@ -20,13 +19,11 @@ export default class PeerdraftPlugin extends Plugin {
 
 	settings: Settings
 	pws: PeerdraftRecord<PeerdraftLeaf>
-	permanentShareStore: PermanentShareStore
 	serverAPI: ServerAPI
 	activeStreamClient: ActiveStreamClient
 	serverSync: PeerdraftWebsocketProvider
 
 	async onload() {
-
 
 		const plugin = this
 
@@ -34,6 +31,8 @@ export default class PeerdraftPlugin extends Plugin {
 		await prepareCommunication(plugin)
 
 		plugin.settings = await getSettings(plugin)
+		console.log(plugin.settings)
+
 		plugin.pws = new PeerdraftRecord<PeerdraftLeaf>()
 		plugin.serverAPI = new ServerAPI({
 			oid: plugin.settings.oid,
@@ -74,17 +73,13 @@ export default class PeerdraftPlugin extends Plugin {
 			leaf.destroy()
 		})
 
-		plugin.permanentShareStore = new PermanentShareStore(plugin.settings.oid)
-
 		plugin.app.workspace.onLayoutReady(
 			async () => {
-				const permanentlySharedDocs = await plugin.permanentShareStore.getAllDocs()
-				for (const doc of permanentlySharedDocs) {
-					SharedDocument.fromPermanentShareDocument(doc, plugin)
+				for (const docs of plugin.settings.serverShares.files) {
+					SharedDocument.fromPermanentShareDocument({ path: docs[0], persistenceId: docs[1].persistenceId, shareId: docs[1].shareId }, plugin)
 				}
-				const permanentlySharedFolders = await plugin.permanentShareStore.getAllFolders()
-				for (const folder of permanentlySharedFolders) {
-					SharedFolder.fromPermanentShareFolder(folder, plugin)
+				for (const folder of plugin.settings.serverShares.folders) {
+					SharedFolder.fromPermanentShareFolder({ path: folder[0], persistenceId: folder[1].persistenceId, shareId: folder[1].shareId }, plugin)
 				}
 				updatePeerdraftWorkspace(plugin.app.workspace, plugin.pws)
 				plugin.registerEvent(plugin.app.workspace.on("layout-change", () => {
@@ -94,68 +89,66 @@ export default class PeerdraftPlugin extends Plugin {
 			}
 		)
 
-		if (plugin.settings.plan.type === "team") {
-			plugin.registerEvent(plugin.app.workspace.on('file-menu', (menu, file) => {
-				if (file instanceof TFolder) {
-					// Not shared folder && not within shared folder
-					const sharedFolder = SharedFolder.findByPath(file.path)
-					if (!sharedFolder) {
-						if (!SharedFolder.getSharedFolderForSubPath(file.path)) {
-							menu.addItem((item) => {
-								item.setTitle('Share Folder')
-								item.setIcon('users')
-								item.onClick(() => {
-									SharedFolder.fromTFolder(file, plugin)
-								})
-							})
-						}
-					} else {
-						menu.addItem(item => {
-							item.setTitle('Copy Peerdraft URL')
+		plugin.registerEvent(plugin.app.workspace.on('file-menu', (menu, file) => {
+			if (file instanceof TFolder) {
+				// Not shared folder && not within shared folder
+				const sharedFolder = SharedFolder.findByPath(file.path)
+				if (!sharedFolder) {
+					if (!SharedFolder.getSharedFolderForSubPath(file.path) && plugin.settings.plan.type === "team") {
+						menu.addItem((item) => {
+							item.setTitle('Share Folder')
 							item.setIcon('users')
 							item.onClick(() => {
-								navigator.clipboard.writeText(plugin.settings.basePath + '/team/' + sharedFolder.shareId)
-							})
-						})
-						menu.addItem(item => {
-							item.setTitle('Stop syncing this folder')
-							item.setIcon('refresh-cw-off')
-							item.onClick(async () => {
-								await sharedFolder.unshare()
-							})
-						})
-						menu.addItem(item => {
-							item.setTitle('Re-create sync from server')
-							item.setIcon('refresh-cw')
-							item.onClick(async () => {
-								await SharedFolder.recreate(sharedFolder, plugin)
+								SharedFolder.fromTFolder(file, plugin)
 							})
 						})
 					}
 				} else {
-					const sharedDocument = SharedDocument.findByPath(file.path)
-					const sharedFolder = SharedFolder.getSharedFolderForSubPath(file.path)
-					if (sharedDocument) {
+					menu.addItem(item => {
+						item.setTitle('Copy Peerdraft URL')
+						item.setIcon('users')
+						item.onClick(() => {
+							navigator.clipboard.writeText(plugin.settings.basePath + '/team/' + sharedFolder.shareId)
+						})
+					})
+					menu.addItem(item => {
+						item.setTitle('Stop syncing this folder')
+						item.setIcon('refresh-cw-off')
+						item.onClick(async () => {
+							await sharedFolder.unshare()
+						})
+					})
+					menu.addItem(item => {
+						item.setTitle('Re-create sync from server')
+						item.setIcon('refresh-cw')
+						item.onClick(async () => {
+							await SharedFolder.recreate(sharedFolder, plugin)
+						})
+					})
+				}
+			} else {
+				const sharedDocument = SharedDocument.findByPath(file.path)
+				const sharedFolder = SharedFolder.getSharedFolderForSubPath(file.path)
+				if (sharedDocument) {
+					menu.addItem(item => {
+						item.setTitle('Copy Peerdraft URL')
+						item.setIcon('users')
+						item.onClick(() => {
+							navigator.clipboard.writeText(plugin.settings.basePath + '/cm/' + sharedDocument.shareId)
+						})
+					})
+					if (!sharedFolder) {
 						menu.addItem(item => {
-							item.setTitle('Copy Peerdraft URL')
-							item.setIcon('users')
-							item.onClick(() => {
-								navigator.clipboard.writeText(plugin.settings.basePath + '/cm/' + sharedDocument.shareId)
+							item.setTitle('Stop syncing this document')
+							item.setIcon('refresh-cw-off')
+							item.onClick(async () => {
+								await sharedDocument.unshare()
 							})
 						})
-						if (!sharedFolder) {
-							menu.addItem(item => {
-								item.setTitle('Stop syncing this document')
-								item.setIcon('refresh-cw-off')
-								item.onClick(async () => {
-									await sharedDocument.unshare()
-								})
-							})
-						}
 					}
 				}
-			}))
-		}
+			}
+		}))
 
 		plugin.addCommand({
 			id: "share",
@@ -325,7 +318,9 @@ export default class PeerdraftPlugin extends Plugin {
 					if (!folder) return
 					if (folder.isFileInSyncObject(file)) return
 					if (SharedDocument.findByPath(file.path)) return
-					if (await this.permanentShareStore.getDocByPath(file.path)) return
+
+					if (plugin.settings.serverShares.files.has(file.path)) return
+
 					const doc = await SharedDocument.fromTFile(file, {
 						permanent: true
 					}, plugin)
@@ -357,7 +352,6 @@ export default class PeerdraftPlugin extends Plugin {
 			folder.destroy()
 		})
 		this.activeStreamClient.destroy()
-		this.permanentShareStore.close()
 	}
 
 	log(message: string) {

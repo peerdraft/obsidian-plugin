@@ -17,6 +17,7 @@ import { addIsSharedClass, removeIsSharedClass } from 'src/workspace/explorerVie
 import { SharedFolder } from './sharedFolder';
 import { Mutex } from 'async-mutex';
 import { diff, diffCleanupEfficiency } from 'diff-match-patch-es'
+import { add, getDocByPath, moveDoc, removeDoc } from 'src/permanentShareStoreFS';
 
 export class SharedDocument extends SharedEntity {
 
@@ -137,7 +138,7 @@ export class SharedDocument extends SharedEntity {
 
     if (isPermanent) {
       doc._isPermanent = true
-      await plugin.permanentShareStore.add(doc)
+      await add(doc, plugin)
       await doc.startIndexedDBSync()
       plugin.activeStreamClient.add([doc.shareId])
     }
@@ -394,11 +395,7 @@ export class SharedDocument extends SharedEntity {
       this.removeStatusStatusBarEntry()
       this.addStatusBarEntry()
     }
-    const dbEntry = await this.plugin.permanentShareStore.getDocByPath(oldPath)
-    if (dbEntry) {
-      this.plugin.permanentShareStore.removeDoc(oldPath)
-      this.plugin.permanentShareStore.add(this)
-    }
+    await moveDoc(oldPath, file.path, this.plugin)
     removeIsSharedClass(oldPath, this.plugin)
     addIsSharedClass(this.path, this.plugin)
   }
@@ -406,7 +403,7 @@ export class SharedDocument extends SharedEntity {
   async setPermanent() {
     if (!this._isPermanent) {
       this._isPermanent = true
-      await this.plugin.permanentShareStore.add(this)
+      await add(this, this.plugin)
       this.plugin.activeStreamClient.add([this.shareId])
     }
   }
@@ -429,7 +426,7 @@ export class SharedDocument extends SharedEntity {
 
   async startIndexedDBSync() {
     if (this._indexedDBProvider) return this._indexedDBProvider
-    const id = (await this.plugin.permanentShareStore.getDocByPath(this.path))?.persistenceId
+    const id = (getDocByPath(this.path, this.plugin))?.persistenceId
     if (!id) return
     const provider = new IndexeddbPersistence(SharedEntity.DB_PERSISTENCE_PREFIX + id, this.yDoc)
     this._indexedDBProvider = provider
@@ -541,9 +538,9 @@ export class SharedDocument extends SharedEntity {
   }
 
   async unshare() {
-    const dbEntry = await this.plugin.permanentShareStore.getDocByPath(this.path)
+    const dbEntry = getDocByPath(this.path, this.plugin)
     if (dbEntry) {
-      this.plugin.permanentShareStore.removeDoc(this.path)
+      removeDoc(this.path, this.plugin)
     }
     if (this._indexedDBProvider) {
       await this._indexedDBProvider.clearData()
