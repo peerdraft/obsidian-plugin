@@ -78,9 +78,9 @@ export const migrateSettings = async (plugin: PeerdraftPlugin) => {
     version: plugin.manifest.version
   })
   //@ts-expect-error
-  newSettings.oid = oldSettings.oid ?? plugin.app.appId
+  newSettings.oid = oldSettings?.oid ?? plugin.app.appId
 
-  if (newSettings.serverShares.files.size === 0 && newSettings.serverShares.folders.size === 0) {
+  if (oldSettings?.oid && newSettings.serverShares.files.size === 0 && newSettings.serverShares.folders.size === 0) {
     const db = new PermanentShareStoreIndexedDB(oldSettings.oid)
     const docs = await db.getAllDocs()
     docs.forEach(doc => {
@@ -100,13 +100,17 @@ export const migrateSettings = async (plugin: PeerdraftPlugin) => {
     showTextModal(plugin.app, 'Peerdraft updated', 'A new version of Peerdraft was installed. Please restart Obsidian before you use Peerdraft again.')
   }
 
+  return newSettings
+
 }
 
 export const getSettings = async (plugin: Plugin) => {
   const settings = await plugin.loadData() as Settings
-  settings.serverShares = {
-    files: new Map(settings.serverShares?.files),
-    folders: new Map(settings.serverShares?.folders)
+  if (settings) {
+    settings.serverShares = {
+      files: new Map(settings.serverShares?.files),
+      folders: new Map(settings.serverShares?.folders)
+    }
   }
   return settings
 }

@@ -27,11 +27,10 @@ export default class PeerdraftPlugin extends Plugin {
 
 		const plugin = this
 
-		await migrateSettings(plugin)
+		plugin.settings = await migrateSettings(plugin)
+
 		await prepareCommunication(plugin)
 
-		plugin.settings = await getSettings(plugin)
-		console.log(plugin.settings)
 
 		plugin.pws = new PeerdraftRecord<PeerdraftLeaf>()
 		plugin.serverAPI = new ServerAPI({
@@ -332,9 +331,8 @@ export default class PeerdraftPlugin extends Plugin {
 		)
 
 		const settingsTab = createSettingsTab(plugin)
-		const settings = await getSettings(plugin)
 
-		if (!settings.name) {
+		if (!plugin.settings.name) {
 			const name = await promptForName(plugin.app)
 			if (name && name.text) {
 				this.settings.name = name.text
