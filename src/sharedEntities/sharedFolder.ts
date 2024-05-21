@@ -28,7 +28,7 @@ const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: Share
 
         showNotice("File " + file.path + " already exists. Renaming.")
 
-        const alteredPath = path.join(path.dirname(relativePath),path.basename(relativePath, path.extname(relativePath)) + "_" + generateRandomString() + path.extname(relativePath))
+        const alteredPath = path.join(path.dirname(relativePath), path.basename(relativePath, path.extname(relativePath)) + "_" + generateRandomString() + path.extname(relativePath))
         const alteredAbsolutePath = path.join(folder.root.path, alteredPath)
         folder.getDocsFragment().set(key, alteredPath)
         SharedDocument.fromIdAndPath(key, alteredAbsolutePath, plugin)
@@ -50,7 +50,7 @@ const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: Share
       const alreadyExists = SharedDocument.findByPath(newAbsolutePath)
       if (alreadyExists) {
         showNotice("File " + newPath + " already exists. Renaming.")
-        const alteredPath = path.join(path.dirname(newPath),path.basename(newPath, path.extname(newPath)) + "_" + generateRandomString() + path.extname(newPath))
+        const alteredPath = path.join(path.dirname(newPath), path.basename(newPath, path.extname(newPath)) + "_" + generateRandomString() + path.extname(newPath))
         const alteredAbsolutePath = path.join(folder.root.path, alteredPath)
         folder.getDocsFragment().set(key, alteredPath)
         SharedDocument.fromIdAndPath(key, alteredAbsolutePath, plugin)
@@ -150,11 +150,21 @@ export class SharedFolder extends SharedEntity {
 
     if (!folder) {
       return showNotice("Could not create folder " + folderPath)
-    }
+    };
 
-    (preFetchedDoc.getMap("documents") as Y.Map<string>).forEach(async (location, id) => {
-      await SharedDocument.fromIdAndPath(id, path.join(folderPath!, location), plugin)
-    })
+    const paths: Array<string> = []
+    const documentMap = preFetchedDoc.getMap("documents") as Y.Map<string>
+
+    for (const entry of documentMap.entries()) {
+      let docPath = entry[1]
+      // repair inconsistent server version
+      if (paths.contains(docPath)) {
+        docPath = path.join(path.dirname(docPath), path.basename(docPath, path.extname(docPath)) + "_" + generateRandomString() + path.extname(docPath))
+        documentMap.set(entry[0], docPath)
+      }
+      await SharedDocument.fromIdAndPath(entry[0], path.join(folderPath!, docPath), plugin)
+      paths.push(docPath)
+    }
 
     const sFolder = new SharedFolder(folder, plugin, preFetchedDoc)
     sFolder._shareId = id
@@ -373,7 +383,7 @@ export class SharedFolder extends SharedEntity {
       await this._indexedDBProvider.destroy()
     }
 
-    
+
     this.getDocsFragment().forEach((path: string, shareId: string) => {
       SharedDocument.findById(shareId)?.unshare()
     })

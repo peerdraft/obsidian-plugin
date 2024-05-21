@@ -88,8 +88,9 @@ export class SharedDocument extends SharedEntity {
       return
     }
 
-    if (SharedDocument.findById(id)) {
-      showNotice("This share is already active.")
+    const existingDoc = SharedDocument.findById(id)
+    if (existingDoc) {
+      showNotice("This share is already active: " + existingDoc.path)
       return
     }
 
@@ -162,13 +163,18 @@ export class SharedDocument extends SharedEntity {
     await SharedFolder.getOrCreatePath(path.dirname(location), plugin)
     showNotice("Creating new synced file " + location)
     const ydoc = await plugin.serverSync.requestDocument(id)
-    await plugin.app.vault.create(location, ydoc.getText("content").toString())
     const doc = new SharedDocument({
-      id, path: location, yDoc: ydoc
+      id, yDoc: ydoc
     }, plugin)
+    doc._path = location
+
+    const file = await plugin.app.vault.create(location, ydoc.getText("content").toString())
+    doc._file = file
+
     doc.syncWithServer()
     await doc.setPermanent()
     await doc.startIndexedDBSync()
+    addIsSharedClass(doc.path, plugin)
   }
   
 
