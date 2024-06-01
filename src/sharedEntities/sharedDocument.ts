@@ -56,7 +56,6 @@ export class SharedDocument extends SharedEntity {
     if (this.findByPath(pd.path)) return
     let fileAlreadyThere = false
     // check if path exists
-    const normalizedPath = normalizePathPD(pd.path)
     const file = plugin.app.vault.getAbstractFileByPath(normalizePath(pd.path))
     if (!file) {
       showNotice("File " + pd.path + " not found. Creating it now.")
@@ -177,7 +176,7 @@ export class SharedDocument extends SharedEntity {
     await doc.startIndexedDBSync()
     addIsSharedClass(doc.path, plugin)
   }
-  
+
 
   static async fromTFile(file: TFile, opts: { permanent?: boolean }, plugin: PeerDraftPlugin) {
     if (!['md', 'MD'].contains(file.extension)) return
@@ -294,7 +293,7 @@ export class SharedDocument extends SharedEntity {
                   // keep
                   case 0:
                     {
-                      pos+=length
+                      pos += length
                     }
                     break;
                   // remove
@@ -307,7 +306,7 @@ export class SharedDocument extends SharedEntity {
                   case 1:
                     {
                       content.insert(pos, text)
-                      pos+=length
+                      pos += length
                     }
                     break;
                 }

@@ -90,6 +90,7 @@ export abstract class SharedEntity {
         }
       }
       this.plugin.serverSync.on('synced', handler)
+      
       this.plugin.serverSync.sendSyncStep1(this)
     })
   }

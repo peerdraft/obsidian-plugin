@@ -74,6 +74,7 @@ export default class PeerdraftPlugin extends Plugin {
 
 		plugin.app.workspace.onLayoutReady(
 			async () => {
+				this.serverSync = new PeerdraftWebsocketProvider(this.settings.sync)
 				for (const docs of plugin.settings.serverShares.files) {
 					await SharedDocument.fromPermanentShareDocument({ path: docs[0], persistenceId: docs[1].persistenceId, shareId: docs[1].shareId }, plugin)
 				}
@@ -84,7 +85,6 @@ export default class PeerdraftPlugin extends Plugin {
 				plugin.registerEvent(plugin.app.workspace.on("layout-change", () => {
 					updatePeerdraftWorkspace(plugin.app.workspace, plugin.pws)
 				}))
-				this.serverSync = new PeerdraftWebsocketProvider(this.settings.sync)
 			}
 		)
 

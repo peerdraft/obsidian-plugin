@@ -55,7 +55,7 @@ const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: Share
         folder.getDocsFragment().set(key, alteredPath)
         SharedDocument.fromIdAndPath(key, alteredAbsolutePath, plugin)
       } else {
-        plugin.app.vault.rename(document.file, newAbsolutePath)
+        await plugin.app.fileManager.renameFile(document.file, newAbsolutePath)
       }
     } else if (data.action === "delete") {
       const document = SharedDocument.findById(key)
