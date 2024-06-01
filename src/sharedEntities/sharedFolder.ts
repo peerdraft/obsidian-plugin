@@ -248,7 +248,7 @@ export class SharedFolder extends SharedEntity {
   }
 
   getDocsFragment() {
-    return this.yDoc.getMap('documents')
+    return this.yDoc.getMap('documents') as Y.Map<string>
   }
 
 

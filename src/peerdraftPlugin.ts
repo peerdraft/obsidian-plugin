@@ -14,7 +14,7 @@ import { PeerdraftLeaf } from "./workspace/peerdraftLeaf"
 import { getLeafsByPath, updatePeerdraftWorkspace } from "./workspace/peerdraftWorkspace"
 import { PeerdraftWebsocketProvider } from "./peerdraftWebSocketProvider"
 import * as path from "path"
-import { normalizePathPD } from "./tools"
+import { normalizePathPD, removePostfix } from "./tools"
 
 export default class PeerdraftPlugin extends Plugin {
 
@@ -124,6 +124,38 @@ export default class PeerdraftPlugin extends Plugin {
 							await SharedFolder.recreate(sharedFolder, plugin)
 						})
 					})
+
+					if (plugin.settings.debug) {
+						menu.addItem(item => {
+							item.setTitle('Remove suffix from file names')
+							item.onClick(async () => {
+
+								for (const key of sharedFolder.getDocsFragment().keys() as IterableIterator<string>) {
+									const doc = SharedDocument.findById(key)
+									if (!doc) {
+										console.log(key)
+										console.log("missing: " + sharedFolder.getDocsFragment().get(key))
+										continue;
+									}
+									const newName = removePostfix(doc.file.basename)
+									const newPath = path.join(path.dirname(doc.file.path), newName + "." + doc.file.extension)
+
+									const fileExists = plugin.app.vault.getAbstractFileByPath(newPath)
+									if (!fileExists) {
+										console.log("RENAMEING:")
+										console.log(doc.file.path)
+										console.log(newPath)
+										console.log("____________________________")
+										// plugin.app.fileManager.renameFile(file, newPath)
+									} else {
+										console.log("NOT RENAMING:")
+										console.log(doc.file.path)
+										console.log("____________________________")
+									}
+								}
+							})
+						})
+					}
 				}
 			} else {
 				const sharedDocument = SharedDocument.findByPath(file.path)

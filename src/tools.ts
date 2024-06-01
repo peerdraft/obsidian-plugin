@@ -35,16 +35,6 @@ export const normalizePathPD = (path: string) => {
   return path.split('\\').join('/')
 }
 
-/*
-(() => {
-  if (Platform.isWin) {
-    return (path: string) => {
-      return path.split('\\').join('/')
-    }
-  } else {
-    return (path: string) => {
-      return path
-    }
-  }
-})()
-*/
+export const removePostfix = (name: string) => {
+  return name.replace(/_[\w\d]{6}(?=_|$)/g, '')
+}
