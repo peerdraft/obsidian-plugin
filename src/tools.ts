@@ -1,4 +1,4 @@
-import * as XXH from 'xxhashjs'
+import { Platform } from 'obsidian';
 
 export const createRandomId = (): string => {
   return window.crypto.randomUUID()
@@ -28,3 +28,15 @@ export const serialize = (obj: any): string => {
   }
   return `${JSON.stringify(obj)}`
 }
+
+export const normalizePathPD = (() => {
+  if (Platform.isWin) {
+    return (path: string) => {
+      return path.split('\\').join('/')
+    }
+  } else {
+    return (path: string) => {
+      return path
+    }
+  }
+})()

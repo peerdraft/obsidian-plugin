@@ -1,4 +1,4 @@
-import { MarkdownView, Plugin, TFile, TFolder } from "obsidian"
+import { MarkdownView, Plugin, TFile, TFolder, normalizePath } from "obsidian"
 import { ActiveStreamClient } from "./activeStreamClient"
 import { prepareCommunication } from "./cookie"
 import { ServerAPI } from "./serverAPI"
@@ -14,6 +14,7 @@ import { PeerdraftLeaf } from "./workspace/peerdraftLeaf"
 import { getLeafsByPath, updatePeerdraftWorkspace } from "./workspace/peerdraftWorkspace"
 import { PeerdraftWebsocketProvider } from "./peerdraftWebSocketProvider"
 import * as path from "path"
+import { normalizePathPD } from "./tools"
 
 export default class PeerdraftPlugin extends Plugin {
 
@@ -30,7 +31,6 @@ export default class PeerdraftPlugin extends Plugin {
 		plugin.settings = await migrateSettings(plugin)
 
 		await prepareCommunication(plugin)
-
 
 		plugin.pws = new PeerdraftRecord<PeerdraftLeaf>()
 		plugin.serverAPI = new ServerAPI({
@@ -75,10 +75,10 @@ export default class PeerdraftPlugin extends Plugin {
 		plugin.app.workspace.onLayoutReady(
 			async () => {
 				for (const docs of plugin.settings.serverShares.files) {
-					SharedDocument.fromPermanentShareDocument({ path: docs[0], persistenceId: docs[1].persistenceId, shareId: docs[1].shareId }, plugin)
+					await SharedDocument.fromPermanentShareDocument({ path: docs[0], persistenceId: docs[1].persistenceId, shareId: docs[1].shareId }, plugin)
 				}
 				for (const folder of plugin.settings.serverShares.folders) {
-					SharedFolder.fromPermanentShareFolder({ path: folder[0], persistenceId: folder[1].persistenceId, shareId: folder[1].shareId }, plugin)
+					await SharedFolder.fromPermanentShareFolder({ path: folder[0], persistenceId: folder[1].persistenceId, shareId: folder[1].shareId }, plugin)
 				}
 				updatePeerdraftWorkspace(plugin.app.workspace, plugin.pws)
 				plugin.registerEvent(plugin.app.workspace.on("layout-change", () => {
@@ -318,7 +318,7 @@ export default class PeerdraftPlugin extends Plugin {
 					if (folder.isFileInSyncObject(file)) return
 					if (SharedDocument.findByPath(file.path)) return
 
-					if (plugin.settings.serverShares.files.has(file.path)) return
+					if (plugin.settings.serverShares.files.has(normalizePathPD(file.path))) return
 
 					const doc = await SharedDocument.fromTFile(file, {
 						permanent: true

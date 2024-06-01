@@ -1,6 +1,6 @@
-import { MarkdownView, Menu, TFile } from 'obsidian'
+import { MarkdownView, Menu, TFile, normalizePath } from 'obsidian'
 import * as Y from 'yjs'
-import { calculateHash, createRandomId, generateRandomString, randomUint32 } from '../tools'
+import { calculateHash, createRandomId, generateRandomString, normalizePathPD, randomUint32 } from '../tools'
 import { Compartment } from "@codemirror/state";
 import PeerDraftPlugin from '../main';
 import { openFileInNewTab, pinLeaf, showNotice, usercolors } from '../ui';
@@ -56,7 +56,8 @@ export class SharedDocument extends SharedEntity {
     if (this.findByPath(pd.path)) return
     let fileAlreadyThere = false
     // check if path exists
-    const file = plugin.app.vault.getAbstractFileByPath(pd.path)
+    const normalizedPath = normalizePathPD(pd.path)
+    const file = plugin.app.vault.getAbstractFileByPath(normalizePath(pd.path))
     if (!file) {
       showNotice("File " + pd.path + " not found. Creating it now.")
       await SharedFolder.getOrCreatePath(path.dirname(pd.path), plugin)
@@ -121,7 +122,7 @@ export class SharedDocument extends SharedEntity {
     const docFilename = doc.yDoc.getText("originalFilename").toString()
     let initialFileName = `_peerdraft_session_${id}_${generateRandomString()}.md`
     if (docFilename != '') {
-      const fileExists = plugin.app.vault.getAbstractFileByPath(docFilename)
+      const fileExists = plugin.app.vault.getAbstractFileByPath(normalizePath(docFilename))
       if (!fileExists) {
         initialFileName = docFilename
       } else {
@@ -232,8 +233,8 @@ export class SharedDocument extends SharedEntity {
   }, plugin: PeerDraftPlugin) {
     super(plugin)
     if (opts.path) {
-      this._path = opts.path
-      const file = this.plugin.app.vault.getAbstractFileByPath(this.path)
+      this._path = normalizePathPD(opts.path)
+      const file = this.plugin.app.vault.getAbstractFileByPath(normalizePath(opts.path))
       if ((file instanceof TFile)) {
         this._file = file
       } else {
@@ -338,6 +339,7 @@ export class SharedDocument extends SharedEntity {
         colorLight: SharedDocument._userColor.light
       })
 
+
       provider.awareness.on("update", async (msg: { added: Array<number>, removed: Array<number> }) => {
         const removed = msg.removed ?? [];
         if (removed && removed.length > 0) {
@@ -353,6 +355,7 @@ export class SharedDocument extends SharedEntity {
             }
           }
         }
+
 
         const added = msg.added ?? [];
         if (added && added.length > 0) {
@@ -396,7 +399,7 @@ export class SharedDocument extends SharedEntity {
   async setNewFileLocation(file: TFile) {
     const oldPath = this._path
     this._file = file
-    this._path = file.path
+    this._path = normalizePathPD(file.path)
     if (this.statusBarEntry) {
       this.removeStatusStatusBarEntry()
       this.addStatusBarEntry()

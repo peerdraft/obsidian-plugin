@@ -1,6 +1,7 @@
 import { PeerdraftRecord } from "src/utils/peerdraftRecord";
 import { PeerdraftLeaf } from "./peerdraftLeaf";
 import { MarkdownView, Workspace } from "obsidian";
+import { normalizePathPD } from "src/tools";
 
 export const updatePeerdraftWorkspace = (ws: Workspace, pws: PeerdraftRecord<PeerdraftLeaf>) => {
   const leafs = ws.getLeavesOfType("markdown")
@@ -45,6 +46,7 @@ export const getLeafsByPath = (path: string, pws: PeerdraftRecord<PeerdraftLeaf>
 }
 
 export const getLeafIdsByPath = (path: string, pws: PeerdraftRecord<PeerdraftLeaf>) => {
+  const normalizedPath = normalizePathPD(path)
   return pws.keys.filter((key) => {
     return pws.get(key).path === path
   })

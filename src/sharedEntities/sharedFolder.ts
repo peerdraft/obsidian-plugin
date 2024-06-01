@@ -2,7 +2,7 @@ import { TAbstractFile, TFile, TFolder } from "obsidian";
 import * as path from 'path'
 import * as Y from 'yjs'
 import { showNotice } from "../ui";
-import { calculateHash, generateRandomString, serialize } from "../tools";
+import { calculateHash, generateRandomString, normalizePathPD, serialize } from "../tools";
 import { SharedEntity } from "./sharedEntity";
 import PeerDraftPlugin from "src/main";
 import { SharedDocument } from "./sharedDocument";
@@ -222,10 +222,11 @@ export class SharedFolder extends SharedEntity {
   }
 
   static getSharedFolderForSubPath(dir: string) {
+    const normalizedPath = normalizePathPD(dir)
     const folders = this.getAll()
     for (const folder of folders) {
-      if (folder.root.path === dir) return
-      if (folder.isPathSubPath(dir)) return folder
+      if (folder.root.path === normalizedPath) return
+      if (folder.isPathSubPath(normalizedPath)) return folder
     }
   }
 
@@ -252,8 +253,9 @@ export class SharedFolder extends SharedEntity {
 
 
   getDocByRelativePath(dir: string) {
+    const normalizedPath = normalizePathPD(dir)
     for (const entry of this.getDocsFragment().entries() as IterableIterator<[key: string, value: string]>) {
-      if (entry[1] === dir) return entry[0]
+      if (entry[1] === normalizedPath) return entry[0]
     }
   }
 
@@ -263,7 +265,7 @@ export class SharedFolder extends SharedEntity {
 
     const id = this.getDocByRelativePath(oldPathRelative)
     if (id) {
-      this.getDocsFragment().set(id, newPathRelative)
+      this.getDocsFragment().set(id, normalizePathPD(newPathRelative))
     }
     return id
   }
@@ -309,7 +311,7 @@ export class SharedFolder extends SharedEntity {
   async setNewFolderLocation(folder: TFolder) {
     const oldPath = this._path
     this.root = folder
-    this._path = folder.path
+    this._path = normalizePathPD(folder.path)
     moveFolder(oldPath, folder.path, this.plugin)
   }
 
@@ -341,8 +343,9 @@ export class SharedFolder extends SharedEntity {
   }
 
   isFileInSyncObject(file: TFile) {
+    const normalizedPath = normalizePathPD(file.path)
     for (const value of this.getDocsFragment().values()) {
-      if (file.path === path.join(this.root.path, value)) return true
+      if (normalizedPath === path.join(this.root.path, value)) return true
     }
     return false
   }

@@ -1,5 +1,5 @@
 import { SharedDocument } from "./sharedEntities/sharedDocument"
-import { createRandomId } from "./tools"
+import { createRandomId, normalizePathPD } from "./tools"
 import { SharedEntity } from "./sharedEntities/sharedEntity"
 import { SharedFolder } from "./sharedEntities/sharedFolder"
 import PeerdraftPlugin from "./peerdraftPlugin"
@@ -59,11 +59,13 @@ export const getFolderByPath = (path: string, plugin: PeerdraftPlugin) =>  {
 }
 
 export const moveFolder = async (oldPath: string, newPath: string, plugin: PeerdraftPlugin) => {
+  const oldPathNormalized = normalizePathPD(oldPath)
+  const newPathNormalized = normalizePathPD(newPath)
   const files = plugin.settings.serverShares.folders
-  const entry = files.get(oldPath)
+  const entry = files.get(oldPathNormalized)
   if (entry) {
-    files.delete(oldPath)
-    files.set(newPath, entry)
+    files.delete(oldPathNormalized)
+    files.set(newPathNormalized, entry)
     saveSettings(plugin.settings, plugin)
   }
 }

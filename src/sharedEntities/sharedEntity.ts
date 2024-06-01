@@ -2,7 +2,7 @@ import PeerDraftPlugin from 'src/main'
 import { WebrtcProvider } from 'y-webrtc'
 import { IndexeddbPersistence } from "y-indexeddb"
 import * as Y from 'yjs'
-import { createRandomId } from 'src/tools'
+import { createRandomId, normalizePathPD } from 'src/tools'
 export abstract class SharedEntity {
 
   static DB_PERSISTENCE_PREFIX = "peerdraft_persistence_"
@@ -36,8 +36,9 @@ export abstract class SharedEntity {
   }
 
   static findByPath(path: string) {
+    const normalizedPath = normalizePathPD(path)
     const docs = this._sharedEntites.filter(doc => {
-      return doc.path === path
+      return doc.path === normalizedPath
     })
     if (docs.length >= 1) {
       return docs[0]
