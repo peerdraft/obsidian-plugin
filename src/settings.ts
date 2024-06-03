@@ -1,4 +1,4 @@
-import { Modal, Plugin, PluginSettingTab, Setting, debounce, requestUrl } from "obsidian";
+import { Modal, Plugin, PluginSettingTab, Setting, debounce, normalizePath, requestUrl } from "obsidian";
 import { refreshSubscriptionData } from "./subscription";
 import { showTextModal } from "./ui";
 import PeerdraftPlugin from "./peerdraftPlugin";
@@ -80,15 +80,31 @@ export const migrateSettings = async (plugin: PeerdraftPlugin) => {
   //@ts-expect-error
   newSettings.oid = oldSettings?.oid ?? plugin.app.appId
 
+  const files = newSettings.serverShares.files
+  for (const key of files.keys()) {
+    if(key.contains('\\')) {
+      files.set(normalizePath(key), files.get(key)!)
+      files.delete(key)
+    }
+  }
+
+  const folders = newSettings.serverShares.folders
+  for (const key of folders.keys()) {
+    if(key.contains('\\')) {
+      folders.set(normalizePath(key), folders.get(key)!)
+      folders.delete(key)
+    }
+  }
+
   if (oldSettings?.oid && newSettings.serverShares.files.size === 0 && newSettings.serverShares.folders.size === 0) {
     const db = new PermanentShareStoreIndexedDB(oldSettings.oid)
     const docs = await db.getAllDocs()
     docs.forEach(doc => {
-      newSettings.serverShares.files.set(doc.path, { persistenceId: doc.persistenceId, shareId: doc.shareId })
+      newSettings.serverShares.files.set(normalizePath(doc.path), { persistenceId: doc.persistenceId, shareId: doc.shareId })
     })
     const folders = await db.getAllFolders()
     folders.forEach(doc => {
-      newSettings.serverShares.folders.set(doc.path, { persistenceId: doc.persistenceId, shareId: doc.shareId })
+      newSettings.serverShares.folders.set(normalizePath(doc.path), { persistenceId: doc.persistenceId, shareId: doc.shareId })
     })
     saveSettings(newSettings, plugin)
     await db.deleteDB()

@@ -1,6 +1,6 @@
 import { MarkdownView, Menu, TFile, normalizePath } from 'obsidian'
 import * as Y from 'yjs'
-import { calculateHash, createRandomId, generateRandomString, normalizePathPD, randomUint32 } from '../tools'
+import { calculateHash, createRandomId, generateRandomString, randomUint32 } from '../tools'
 import { Compartment } from "@codemirror/state";
 import PeerDraftPlugin from '../main';
 import { openFileInNewTab, pinLeaf, showNotice, usercolors } from '../ui';
@@ -54,7 +54,7 @@ export class SharedDocument extends SharedEntity {
 
   static async fromPermanentShareDocument(pd: PermanentShareDocument, plugin: PeerDraftPlugin) {
     if (this.findByPath(pd.path)) return
-    let fileAlreadyThere = false
+    //let fileAlreadyThere = false
     // check if path exists
     const file = plugin.app.vault.getAbstractFileByPath(normalizePath(pd.path))
     if (!file) {
@@ -65,7 +65,7 @@ export class SharedDocument extends SharedEntity {
         showNotice("Error creating file " + pd.path + ".")
         return
       }
-      fileAlreadyThere = true
+      //fileAlreadyThere = true
     }
 
     const doc = new SharedDocument({
@@ -74,9 +74,9 @@ export class SharedDocument extends SharedEntity {
     doc._isPermanent = true
     doc._shareId = pd.shareId
     await doc.startIndexedDBSync()
-    if (fileAlreadyThere) {
-      doc.syncWithServer()
-    }
+    //if (fileAlreadyThere) {
+    doc.syncWithServer()
+    //}
     plugin.activeStreamClient.add([doc.shareId])
     return doc
   }
@@ -105,11 +105,6 @@ export class SharedDocument extends SharedEntity {
       yDoc
     }, plugin)
 
-    doc.startWebRTCSync()
-    if (isPermanent) {
-      doc.syncWithServer()
-    }
-
     // wait for first update to make sure it works and to get the filename
 
     await new Promise<void>((resolve) => {
@@ -117,6 +112,11 @@ export class SharedDocument extends SharedEntity {
         resolve()
       })
     })
+
+    doc.startWebRTCSync()
+    if (isPermanent) {
+      doc.syncWithServer()
+    }
 
     const docFilename = doc.yDoc.getText("originalFilename").toString()
     let initialFileName = `_peerdraft_session_${id}_${generateRandomString()}.md`
@@ -155,20 +155,21 @@ export class SharedDocument extends SharedEntity {
   }
 
   static async fromIdAndPath(id: string, location: string, plugin: PeerDraftPlugin) {
+    const normalizedPath = normalizePath(location)
     const existingDoc = SharedDocument.findById(id)
     if (existingDoc) {
       showNotice("This share is already active: " + existingDoc.path)
       return
     }
-    await SharedFolder.getOrCreatePath(path.dirname(location), plugin)
-    showNotice("Creating new synced file " + location)
+    await SharedFolder.getOrCreatePath(path.dirname(normalizedPath), plugin)
+    showNotice("Creating new synced file " + normalizedPath)
     const ydoc = await plugin.serverSync.requestDocument(id)
     const doc = new SharedDocument({
       id, yDoc: ydoc
     }, plugin)
-    doc._path = location
+    doc._path = normalizedPath
 
-    const file = await plugin.app.vault.create(location, ydoc.getText("content").toString())
+    const file = await plugin.app.vault.create(normalizedPath, ydoc.getText("content").toString())
     doc._file = file
 
     doc.syncWithServer()
@@ -232,7 +233,7 @@ export class SharedDocument extends SharedEntity {
   }, plugin: PeerDraftPlugin) {
     super(plugin)
     if (opts.path) {
-      this._path = normalizePathPD(opts.path)
+      this._path = normalizePath(opts.path)
       const file = this.plugin.app.vault.getAbstractFileByPath(normalizePath(opts.path))
       if ((file instanceof TFile)) {
         this._file = file
@@ -398,7 +399,7 @@ export class SharedDocument extends SharedEntity {
   async setNewFileLocation(file: TFile) {
     const oldPath = this._path
     this._file = file
-    this._path = normalizePathPD(file.path)
+    this._path = normalizePath(file.path)
     if (this.statusBarEntry) {
       this.removeStatusStatusBarEntry()
       this.addStatusBarEntry()
@@ -439,6 +440,7 @@ export class SharedDocument extends SharedEntity {
     const provider = new IndexeddbPersistence(SharedEntity.DB_PERSISTENCE_PREFIX + id, this.yDoc)
     this._indexedDBProvider = provider
     if (!provider.synced) await provider.whenSynced
+
     return this._indexedDBProvider
   }
 

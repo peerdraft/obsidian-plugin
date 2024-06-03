@@ -2,7 +2,8 @@ import PeerDraftPlugin from 'src/main'
 import { WebrtcProvider } from 'y-webrtc'
 import { IndexeddbPersistence } from "y-indexeddb"
 import * as Y from 'yjs'
-import { createRandomId, normalizePathPD } from 'src/tools'
+import { createRandomId } from 'src/tools'
+import { normalizePath } from 'obsidian'
 export abstract class SharedEntity {
 
   static DB_PERSISTENCE_PREFIX = "peerdraft_persistence_"
@@ -36,7 +37,7 @@ export abstract class SharedEntity {
   }
 
   static findByPath(path: string) {
-    const normalizedPath = normalizePathPD(path)
+    const normalizedPath = normalizePath(path)
     const docs = this._sharedEntites.filter(doc => {
       return doc.path === normalizedPath
     })
@@ -86,12 +87,14 @@ export abstract class SharedEntity {
       const handler = async (id: string, hash: string) => {
         if (id === this.shareId) {
           this.plugin.serverSync.off('synced', handler)
+          this.plugin.log("synced " + this.path)
           resolve(hash)
         }
       }
       this.plugin.serverSync.on('synced', handler)
       
       this.plugin.serverSync.sendSyncStep1(this)
+      this.plugin.log("syncing " + this.path)
     })
   }
 

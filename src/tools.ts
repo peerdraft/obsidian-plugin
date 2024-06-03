@@ -30,21 +30,3 @@ export const serialize = (obj: any): string => {
   }
   return `${JSON.stringify(obj)}`
 }
-
-export const normalizePathPD = (path: string) => {
-  return path.split('\\').join('/')
-}
-
-/*
-(() => {
-  if (Platform.isWin) {
-    return (path: string) => {
-      return path.split('\\').join('/')
-    }
-  } else {
-    return (path: string) => {
-      return path
-    }
-  }
-})()
-*/

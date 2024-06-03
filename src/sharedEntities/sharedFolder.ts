@@ -1,8 +1,8 @@
-import { TAbstractFile, TFile, TFolder } from "obsidian";
+import { TAbstractFile, TFile, TFolder, normalizePath } from "obsidian";
 import * as path from 'path'
 import * as Y from 'yjs'
 import { showNotice } from "../ui";
-import { calculateHash, generateRandomString, normalizePathPD, serialize } from "../tools";
+import { calculateHash, generateRandomString, serialize } from "../tools";
 import { SharedEntity } from "./sharedEntity";
 import PeerDraftPlugin from "src/main";
 import { SharedDocument } from "./sharedDocument";
@@ -158,12 +158,12 @@ export class SharedFolder extends SharedEntity {
     for (const entry of documentMap.entries()) {
       let docPath = entry[1]
       // repair inconsistent server version
-      if (paths.contains(docPath)) {
-        docPath = path.join(path.dirname(docPath), path.basename(docPath, path.extname(docPath)) + "_" + generateRandomString() + path.extname(docPath))
+      if (paths.contains(normalizePath(docPath))) {
+        docPath = normalizePath(path.join(path.dirname(docPath), path.basename(docPath, path.extname(docPath)) + "_" + generateRandomString() + path.extname(docPath)))
         documentMap.set(entry[0], docPath)
       }
       await SharedDocument.fromIdAndPath(entry[0], path.join(folderPath!, docPath), plugin)
-      paths.push(docPath)
+      paths.push(normalizePath(docPath))
     }
 
     const sFolder = new SharedFolder(folder, plugin, preFetchedDoc)
@@ -173,7 +173,7 @@ export class SharedFolder extends SharedEntity {
     await sFolder.startIndexedDBSync()
     if (sFolder.indexedDBProvider) {
       if (!sFolder.indexedDBProvider.synced) await sFolder.indexedDBProvider.whenSynced
-      await sFolder.syncWithServer()
+      sFolder.syncWithServer()
       sFolder.startWebRTCSync()
     }
     return sFolder
@@ -201,7 +201,7 @@ export class SharedFolder extends SharedEntity {
     const local = await folder.startIndexedDBSync()
     if (local) {
       if (local.synced || await local.whenSynced) {
-        await folder.syncWithServer()
+        folder.syncWithServer()
         folder.startWebRTCSync()
       }
     }
@@ -222,7 +222,7 @@ export class SharedFolder extends SharedEntity {
   }
 
   static getSharedFolderForSubPath(dir: string) {
-    const normalizedPath = normalizePathPD(dir)
+    const normalizedPath = normalizePath(dir)
     const folders = this.getAll()
     for (const folder of folders) {
       if (folder.root.path === normalizedPath) return
@@ -253,7 +253,7 @@ export class SharedFolder extends SharedEntity {
 
 
   getDocByRelativePath(dir: string) {
-    const normalizedPath = normalizePathPD(dir)
+    const normalizedPath = normalizePath(dir)
     for (const entry of this.getDocsFragment().entries() as IterableIterator<[key: string, value: string]>) {
       if (entry[1] === normalizedPath) return entry[0]
     }
@@ -265,7 +265,7 @@ export class SharedFolder extends SharedEntity {
 
     const id = this.getDocByRelativePath(oldPathRelative)
     if (id) {
-      this.getDocsFragment().set(id, normalizePathPD(newPathRelative))
+      this.getDocsFragment().set(id, normalizePath(newPathRelative))
     }
     return id
   }
@@ -311,7 +311,7 @@ export class SharedFolder extends SharedEntity {
   async setNewFolderLocation(folder: TFolder) {
     const oldPath = this._path
     this.root = folder
-    this._path = normalizePathPD(folder.path)
+    this._path = normalizePath(folder.path)
     moveFolder(oldPath, folder.path, this.plugin)
   }
 
@@ -329,21 +329,21 @@ export class SharedFolder extends SharedEntity {
   }
 
   static async getOrCreatePath(absolutePath: string, plugin: PeerDraftPlugin): Promise<TFolder | void> {
-    let folder = plugin.app.vault.getAbstractFileByPath(absolutePath)
+    let folder = plugin.app.vault.getAbstractFileByPath(normalizePath(absolutePath))
     if (folder && folder instanceof TFolder) return folder
     const segments = absolutePath.split(path.sep)
     for (let index = 0; index < segments.length; index++) {
       const subPath = segments.slice(0, index + 1).join(path.sep)
-      folder = plugin.app.vault.getAbstractFileByPath(subPath)
+      folder = plugin.app.vault.getAbstractFileByPath(normalizePath(subPath))
       if (!folder) {
-        folder = await plugin.app.vault.createFolder(subPath)
+        folder = await plugin.app.vault.createFolder(normalizePath(subPath))
       }
     }
     return folder as TFolder
   }
 
   isFileInSyncObject(file: TFile) {
-    const normalizedPath = normalizePathPD(file.path)
+    const normalizedPath = normalizePath(file.path)
     for (const value of this.getDocsFragment().values()) {
       if (normalizedPath === path.join(this.root.path, value)) return true
     }

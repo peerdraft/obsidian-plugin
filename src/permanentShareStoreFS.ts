@@ -1,9 +1,10 @@
 import { SharedDocument } from "./sharedEntities/sharedDocument"
-import { createRandomId, normalizePathPD } from "./tools"
+import { createRandomId } from "./tools"
 import { SharedEntity } from "./sharedEntities/sharedEntity"
 import { SharedFolder } from "./sharedEntities/sharedFolder"
 import PeerdraftPlugin from "./peerdraftPlugin"
 import { saveSettings } from "./settings"
+import { normalizePath } from "obsidian"
 
 export interface PermanentShareDocument {
   path: string, persistenceId: string, shareId: string
@@ -31,7 +32,7 @@ export const add = async (doc: SharedEntity, plugin: PeerdraftPlugin) => {
 }
 
 export const removeDoc = async (path: string, plugin: PeerdraftPlugin) => {
-  plugin.settings.serverShares.files.delete(path)
+  plugin.settings.serverShares.files.delete(normalizePath(path))
   saveSettings(plugin.settings, plugin)
 }
 
@@ -59,8 +60,8 @@ export const getFolderByPath = (path: string, plugin: PeerdraftPlugin) =>  {
 }
 
 export const moveFolder = async (oldPath: string, newPath: string, plugin: PeerdraftPlugin) => {
-  const oldPathNormalized = normalizePathPD(oldPath)
-  const newPathNormalized = normalizePathPD(newPath)
+  const oldPathNormalized = normalizePath(oldPath)
+  const newPathNormalized = normalizePath(newPath)
   const files = plugin.settings.serverShares.folders
   const entry = files.get(oldPathNormalized)
   if (entry) {

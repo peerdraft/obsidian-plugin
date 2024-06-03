@@ -14,7 +14,6 @@ import { PeerdraftLeaf } from "./workspace/peerdraftLeaf"
 import { getLeafsByPath, updatePeerdraftWorkspace } from "./workspace/peerdraftWorkspace"
 import { PeerdraftWebsocketProvider } from "./peerdraftWebSocketProvider"
 import * as path from "path"
-import { normalizePathPD } from "./tools"
 
 export default class PeerdraftPlugin extends Plugin {
 
@@ -211,12 +210,6 @@ export default class PeerdraftPlugin extends Plugin {
 				callback: async () => {
 					const dbs = await window.indexedDB.databases()
 					for (const db of dbs) {
-						for (const doc of SharedDocument.getAll()) {
-							doc.unshare()
-						}
-						for (const folder of SharedFolder.getAll()) {
-							folder.unshare()
-						}
 						if (db.name?.startsWith("peerdraft_")) {
 							window.indexedDB.deleteDatabase(db.name)
 						}
@@ -318,7 +311,7 @@ export default class PeerdraftPlugin extends Plugin {
 					if (folder.isFileInSyncObject(file)) return
 					if (SharedDocument.findByPath(file.path)) return
 
-					if (plugin.settings.serverShares.files.has(normalizePathPD(file.path))) return
+					if (plugin.settings.serverShares.files.has(normalizePath(file.path))) return
 
 					const doc = await SharedDocument.fromTFile(file, {
 						permanent: true
