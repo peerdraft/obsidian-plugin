@@ -1,4 +1,4 @@
-import { MarkdownView, Menu, TFile, normalizePath } from 'obsidian'
+import { MarkdownView, Menu, TFile, debounce, normalizePath } from 'obsidian'
 import * as Y from 'yjs'
 import { calculateHash, createRandomId, generateRandomString, randomUint32 } from '../tools'
 import { Compartment } from "@codemirror/state";
@@ -33,6 +33,7 @@ export class SharedDocument extends SharedEntity {
   protected static _sharedEntites: Array<SharedDocument> = new Array<SharedDocument>()
 
   private mutex = new Mutex
+  private lastUpdateTriggeredByDocChange: number
 
   static async fromView(view: MarkdownView, plugin: PeerDraftPlugin, opts = { permanent: false }) {
     if (!view.file) return
@@ -263,20 +264,25 @@ export class SharedDocument extends SharedEntity {
 
     this.getContentFragment().observe(async () => {
       if (this._file && this._extensions.size === 0) {
-        this.mutex.runExclusive(async () => {
-          const yDocContent = this.getValue()
-          const fileContent = await this.plugin.app.vault.read(this._file)
-          if (yDocContent != fileContent) {
-            await this.plugin.app.vault.modify(this._file, yDocContent)
-          }
-        })
+        debounce(() => {
+          this.mutex.runExclusive(async () => {
+            const yDocContent = this.getValue()
+            const fileContent = await this.plugin.app.vault.read(this._file)
+            if (yDocContent != fileContent) {
+              this.lastUpdateTriggeredByDocChange = new Date().valueOf()
+              await this.plugin.app.vault.modify(this._file, yDocContent, {
+                mtime: this.lastUpdateTriggeredByDocChange
+              })
+            }
+          })
+        }, 1000, true)()
       }
     })
 
     this.plugin.registerEvent(this.plugin.app.vault.on("modify", async (file) => {
       // only react to changes of this file, and only if it didn't happen within the editor.
       // The editor extension takes care of updates in that case.
-      if (this.file === file && this._extensions.size === 0) {
+      if (this.file === file && this._extensions.size === 0 && this.file.stat.mtime != this.lastUpdateTriggeredByDocChange) {
         // check if document and content actually are out of sync
         this.mutex.runExclusive(async () => {
           const yDocContent = this.getValue()
