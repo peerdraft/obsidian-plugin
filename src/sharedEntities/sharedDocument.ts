@@ -109,15 +109,14 @@ export class SharedDocument extends SharedEntity {
     // wait for first update to make sure it works and to get the filename
 
     await new Promise<void>((resolve) => {
+      doc.startWebRTCSync()
+      if (isPermanent) {
+        doc.syncWithServer()
+      }
       yDoc.once("update", () => {
         resolve()
       })
     })
-
-    doc.startWebRTCSync()
-    if (isPermanent) {
-      doc.syncWithServer()
-    }
 
     const docFilename = doc.yDoc.getText("originalFilename").toString()
     let initialFileName = `_peerdraft_session_${id}_${generateRandomString()}.md`
