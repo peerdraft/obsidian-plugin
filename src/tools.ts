@@ -1,4 +1,3 @@
-import { Platform } from 'obsidian';
 import * as XXH from 'xxhashjs'
 
 
