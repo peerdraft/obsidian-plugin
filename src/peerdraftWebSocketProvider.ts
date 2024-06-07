@@ -58,7 +58,7 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
             const id = decoding.readVarString(decoder)
             const vector = decoding.readVarUint8Array(decoder)
             const hash = decoding.readVarString(decoder)
-            const doc = SharedDocument.findById(id)
+            const doc = SharedDocument.findById(id) ?? SharedFolder.findById(id)
             if (doc && hash != doc.calculateHash()) {
               provider.sendSyncStep2(doc, vector)
             }
