@@ -40,3 +40,12 @@ The session will be closed automatically, when you close the document in Obsidia
 ### Join a session
 
 When you received a link to a Peerdraft session from someone else, you can also use the `Join session and add document from someone else` command. After you entered the URL, a new file will be created and you can start working together.
+
+# NEW: Peerdraft for Teams:
+
+Use Obsidian as your team's central knowledge base and working space.
+
+* Share documents and folders with one click (including subfolders)
+* Keep documents and folders permanently in sync between your team members' Obsidian vaults
+
+Peerdraft for Teams is in closed beta right now. [Get in touch](https://forms.reform.app/rvWlqR/peerdraft-for-teams/ZZlT1z) if you are interested in joining.
