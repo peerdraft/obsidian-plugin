@@ -143,7 +143,17 @@ export default class PeerdraftPlugin extends Plugin {
 							navigator.clipboard.writeText(plugin.settings.basePath + '/cm/' + sharedDocument.shareId)
 						})
 					})
-					if (!sharedFolder) {
+					if (sharedFolder) {
+						menu.addItem(item => {
+							item.setTitle('Delete and remove from Shared Folder')
+							item.setIcon('trash')
+							item.onClick(async () => {
+								sharedFolder.removeDocument(sharedDocument)
+								sharedDocument.unshare()
+								plugin.app.vault.delete(sharedDocument.file)
+							})
+						})
+					} else {
 						menu.addItem(item => {
 							item.setTitle('Stop syncing this document')
 							item.setIcon('refresh-cw-off')
@@ -331,7 +341,7 @@ export default class PeerdraftPlugin extends Plugin {
 					if (doc) {
 						folder.addDocument(doc)
 						const prop = folder.getAutoFillProperty()
-							if (prop) doc.updateProperty(prop, doc.getShareURL())
+						if (prop) doc.updateProperty(prop, doc.getShareURL())
 					}
 				})))
 			}

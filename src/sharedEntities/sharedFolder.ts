@@ -356,6 +356,10 @@ export class SharedFolder extends SharedEntity {
 
   removeDocument(doc: SharedDocument) {
     this.getDocsFragment().delete(doc.shareId)
+    const deleted = this.yDoc.getArray("deleted") as Y.Array<string>
+    if (!deleted.toArray().includes(doc.shareId)){
+      deleted.push([doc.shareId])
+    }
   }
 
   isPathSubPath(folder: string) {
