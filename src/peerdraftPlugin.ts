@@ -14,6 +14,7 @@ import { PeerdraftLeaf } from "./workspace/peerdraftLeaf"
 import { getLeafsByPath, updatePeerdraftWorkspace } from "./workspace/peerdraftWorkspace"
 import { PeerdraftWebsocketProvider } from "./peerdraftWebSocketProvider"
 import * as path from "path"
+import { openFolderOptions } from "./ui/folderOptions"
 
 export default class PeerdraftPlugin extends Plugin {
 
@@ -121,6 +122,13 @@ export default class PeerdraftPlugin extends Plugin {
 						item.setIcon('refresh-cw')
 						item.onClick(async () => {
 							await SharedFolder.recreate(sharedFolder, plugin)
+						})
+					})
+					menu.addItem(item => {
+						item.setTitle('Show Peerdraft folder options')
+						item.setIcon('cog')
+						item.onClick(async () => {
+							openFolderOptions(this.app, sharedFolder)
 						})
 					})
 				}
@@ -235,6 +243,8 @@ export default class PeerdraftPlugin extends Plugin {
 						const newDoc = await SharedDocument.fromTFile(file, { permanent: true }, plugin)
 						if (newDoc) {
 							newPathInFolder.addDocument(newDoc)
+							const prop = newPathInFolder.getAutoFillProperty()
+							if (prop) newDoc.updateProperty(prop, newDoc.getShareURL())
 						}
 						if (doc) {
 							// oldPathInFolder.removeDocument(doc)
@@ -258,6 +268,8 @@ export default class PeerdraftPlugin extends Plugin {
 					const doc = await SharedDocument.fromTFile(file, { permanent: true }, plugin)
 					if (doc) {
 						newPathInFolder.addDocument(doc)
+						const prop = newPathInFolder.getAutoFillProperty()
+						if (prop) doc.updateProperty(prop, doc.getShareURL())
 					}
 				}
 			} else if (file instanceof TFolder) {
@@ -318,6 +330,8 @@ export default class PeerdraftPlugin extends Plugin {
 					}, plugin)
 					if (doc) {
 						folder.addDocument(doc)
+						const prop = folder.getAutoFillProperty()
+							if (prop) doc.updateProperty(prop, doc.getShareURL())
 					}
 				})))
 			}

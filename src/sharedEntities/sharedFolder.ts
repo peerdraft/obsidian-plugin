@@ -10,6 +10,7 @@ import { PermanentShareFolder } from "src/permanentShareStore";
 import { IndexeddbPersistence } from "y-indexeddb";
 import { addIsSharedClass, removeIsSharedClass } from "src/workspace/explorerView";
 import { add, getFolderByPath, moveFolder, removeFolder } from "src/permanentShareStoreFS";
+import { openFolderOptions } from "src/ui/folderOptions";
 
 const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: SharedFolder, plugin: PeerDraftPlugin) => {
 
@@ -131,8 +132,12 @@ export class SharedFolder extends SharedEntity {
 
     navigator.clipboard.writeText(plugin.settings.basePath + '/team/' + folder.shareId)
     showNotice(`Folder ${folder.path} with ${docs.length} documents shared. URL copied to your clipboard.`, 0)
-
+    openFolderOptions(plugin.app, folder)
     return folder
+  }
+
+  getShareURL() {
+    return this.plugin.settings.basePath + "/team/" + this.shareId
   }
 
   static async recreate(folder: SharedFolder, plugin: PeerDraftPlugin) {
@@ -171,7 +176,8 @@ export class SharedFolder extends SharedEntity {
     const folder = await SharedFolder.getOrCreatePath(folderPath!, plugin)
 
     if (!folder) {
-      return showNotice("Could not create folder " + folderPath)
+      showNotice("Could not create folder " + folderPath)
+      return
     };
 
     const paths: Array<string> = []
@@ -185,7 +191,7 @@ export class SharedFolder extends SharedEntity {
         // sanity check
         const existingDoc = SharedDocument.findById(entry[0])
         if (existingDoc) {
-          if(existingDoc.path === absPath) {
+          if (existingDoc.path === absPath) {
             plugin.log("already synced")
           } else {
             plugin.app.fileManager.renameFile(existingDoc.file, absPath)
@@ -195,7 +201,7 @@ export class SharedFolder extends SharedEntity {
           documentMap.set(entry[0], docPath)
         }
       }
-      await SharedDocument.fromIdAndPath(entry[0], absPath , plugin)
+      await SharedDocument.fromIdAndPath(entry[0], absPath, plugin)
       paths.push(normalizePath(docPath))
     }
 
@@ -281,7 +287,7 @@ export class SharedFolder extends SharedEntity {
   }
 
   getDocsFragment() {
-    return this.yDoc.getMap('documents')
+    return this.yDoc.getMap('documents') as Y.Map<string>
   }
 
 
@@ -306,6 +312,37 @@ export class SharedFolder extends SharedEntity {
   calculateHash(): string {
     const serialized = serialize(Array.from(this.getDocsFragment()))
     return calculateHash(serialized)
+  }
+
+  getOriginalFolderName() {
+    return this.yDoc.getText("originalFoldername").toString()
+  }
+
+  setOriginalFolderName(name: string) {
+    const text = this.yDoc.getText("originalFoldername")
+    text.delete(0, text.length)
+    text.insert(0, name)
+  }
+
+  getAutoFillProperty() {
+    return this.yDoc.getText("autoFillProperty").toString()
+  }
+
+  setAutoFillProperty(property: string) {
+    const prop = this.yDoc.getText("autoFillProperty")
+    prop.delete(0, prop.length)
+    prop.insert(0, property)
+  }
+
+  async updatePropertiesOfAllDocuments(oldPropertyName?: string) {
+    const prop = this.getAutoFillProperty()
+    if (!prop || prop === "") return
+    const docs = this.getDocsFragment()
+    for (const entry of docs) {
+      const doc = SharedDocument.findById(entry[0])
+      if (!doc) return
+      doc.updateProperty(prop, doc.getShareURL(), oldPropertyName)
+    }
   }
 
   addDocument(doc: SharedDocument) {

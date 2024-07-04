@@ -564,6 +564,20 @@ export class SharedDocument extends SharedEntity {
     removeIsSharedClass(this.path, this.plugin)
   }
 
+  getShareURL() {
+    return this.plugin.settings.basePath + "/cm/" + this.shareId
+  }
+
+  updateProperty(name: string, value: string, oldProperty?: string) {
+    this.plugin.app.fileManager.processFrontMatter(this.file, (fm) => {
+      if (oldProperty) {
+        delete fm[oldProperty]
+      }
+      fm[name] = value
+    })
+  }
+
+
 
   destroy() {
     if (!this.isPermanent) {
