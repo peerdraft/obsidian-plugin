@@ -277,7 +277,7 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
   requestDocument(docId: string) {
     return new Promise<Y.Doc>(resolve => {
       const handler = (serverId: string, update: Uint8Array, checksum: string) => {
-        if (docId == serverId) {
+        if (docId === serverId) {
           this.off('document-received', handler)
           const doc = new Y.Doc()
           Y.applyUpdate(doc, update)
