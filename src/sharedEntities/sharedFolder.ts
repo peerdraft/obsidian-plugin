@@ -13,7 +13,7 @@ import { add, getFolderByPath, moveFolder, removeFolder } from "src/permanentSha
 
 const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: SharedFolder, plugin: PeerDraftPlugin) => {
 
-  if (!([plugin.serverSync, folder.webRTCProvider?.room].contains(tx.origin))) return
+  if (!([plugin.serverSync, folder.webRTCProvider?.room].includes(tx.origin))) return
 
   const changedKeys = ev.changes.keys
 
@@ -26,12 +26,25 @@ const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: Share
       const file = plugin.app.vault.getAbstractFileByPath(absolutePath)
       if (file) {
 
-        showNotice("File " + file.path + " already exists. Renaming.")
+        // safety check if fs already in sync
 
-        const alteredPath = path.join(path.dirname(relativePath), path.basename(relativePath, path.extname(relativePath)) + "_" + generateRandomString() + path.extname(relativePath))
-        const alteredAbsolutePath = path.join(folder.root.path, alteredPath)
-        folder.getDocsFragment().set(key, alteredPath)
-        SharedDocument.fromIdAndPath(key, alteredAbsolutePath, plugin)
+        const existingDoc = SharedDocument.findById(key)
+        if (existingDoc) {
+          if (existingDoc.file.path === file.path) {
+            // Do nothing.
+            plugin.log("Received update, but FS is already in correct state")
+          } else {
+            // should not occur :-(
+            showNotice("There is something wrong with your synced file " + file.path + ". Consider re-creating the synced folder from server.")
+          }
+        } else {
+          showNotice("File " + file.path + " already exists. Renaming local file.")
+
+          const alteredPath = path.join(path.dirname(relativePath), path.basename(relativePath, path.extname(relativePath)) + "_" + generateRandomString() + path.extname(relativePath))
+          const alteredAbsolutePath = path.join(folder.root.path, alteredPath)
+          plugin.app.fileManager.renameFile(file, alteredAbsolutePath)
+          SharedDocument.fromIdAndPath(key, absolutePath, plugin)
+        }
       } else {
         showNotice("Creating new shared document: " + absolutePath)
         await SharedFolder.getOrCreatePath(path.parse(absolutePath).dir, plugin)
@@ -40,7 +53,10 @@ const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: Share
     } else if (data.action === "update") {
       const newPath = tx.doc.getMap("documents").get(key) as string
       const document = SharedDocument.findById(key)
-      if (!document) return
+      if (!document) {
+        showNotice("Document at " + newPath + " doesn't exist in your vault. Consider re-creating the synced folder from server.")
+        return
+      }
       plugin.log("Update " + document.path + "   " + key)
       const folder = SharedFolder.getSharedFolderForSubPath(document.path)
       if (!folder) return
@@ -49,11 +65,17 @@ const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: Share
 
       const alreadyExists = SharedDocument.findByPath(newAbsolutePath)
       if (alreadyExists) {
-        showNotice("File " + newPath + " already exists. Renaming.")
-        const alteredPath = path.join(path.dirname(newPath), path.basename(newPath, path.extname(newPath)) + "_" + generateRandomString() + path.extname(newPath))
-        const alteredAbsolutePath = path.join(folder.root.path, alteredPath)
-        folder.getDocsFragment().set(key, alteredPath)
-        SharedDocument.fromIdAndPath(key, alteredAbsolutePath, plugin)
+        // check if in sync already
+        if (alreadyExists.shareId === key) {
+          // Do nothing.
+          plugin.log("Received update, but FS is already in correct state.")
+        } else {
+          showNotice("File " + newPath + " already exists. Renaming local file.")
+          const alteredPath = path.join(path.dirname(newPath), path.basename(newPath, path.extname(newPath)) + "_" + generateRandomString() + path.extname(newPath))
+          const alteredAbsolutePath = path.join(folder.root.path, alteredPath)
+          plugin.app.fileManager.renameFile(alreadyExists.file, alteredAbsolutePath)
+          SharedDocument.fromIdAndPath(key, alteredAbsolutePath, plugin)
+        }
       } else {
         await plugin.app.fileManager.renameFile(document.file, newAbsolutePath)
       }
@@ -131,7 +153,7 @@ export class SharedFolder extends SharedEntity {
     const preFetchedDoc = await plugin.serverSync.requestDocument(id)
 
 
-    if (!location) {
+    if (!folderPath) {
       let initialRootName = `_peerdraft_team_folder_${generateRandomString()}`
       const docFoldername = preFetchedDoc.getText("originalFoldername").toString()
       if (docFoldername != '') {
@@ -157,12 +179,23 @@ export class SharedFolder extends SharedEntity {
 
     for (const entry of documentMap.entries()) {
       let docPath = entry[1]
+      const absPath = path.join(folderPath!, docPath)
       // repair inconsistent server version
-      if (paths.contains(normalizePath(docPath))) {
-        docPath = normalizePath(path.join(path.dirname(docPath), path.basename(docPath, path.extname(docPath)) + "_" + generateRandomString() + path.extname(docPath)))
-        documentMap.set(entry[0], docPath)
+      if (docPath && paths.includes(normalizePath(docPath))) {
+        // sanity check
+        const existingDoc = SharedDocument.findById(entry[0])
+        if (existingDoc) {
+          if(existingDoc.path === absPath) {
+            plugin.log("already synced")
+          } else {
+            plugin.app.fileManager.renameFile(existingDoc.file, absPath)
+          }
+        } else {
+          docPath = normalizePath(path.join(path.dirname(docPath), path.basename(docPath, path.extname(docPath)) + "_" + generateRandomString() + path.extname(docPath)))
+          documentMap.set(entry[0], docPath)
+        }
       }
-      await SharedDocument.fromIdAndPath(entry[0], path.join(folderPath!, docPath), plugin)
+      await SharedDocument.fromIdAndPath(entry[0], absPath , plugin)
       paths.push(normalizePath(docPath))
     }
 
@@ -184,7 +217,7 @@ export class SharedFolder extends SharedEntity {
     let tFolder: void | null | TAbstractFile
     tFolder = plugin.app.vault.getAbstractFileByPath(psf.path)
     if (tFolder instanceof TFile) {
-      showNotice("Expected " + psf.path + " to be a folder, a but is a file?")
+      showNotice("Expected " + psf.path + " to be a folder, but it is a file?")
       return
     }
     if (!(tFolder instanceof TFolder)) {
@@ -344,7 +377,7 @@ export class SharedFolder extends SharedEntity {
 
   isFileInSyncObject(file: TFile) {
     const normalizedPath = normalizePath(file.path)
-    for (const value of this.getDocsFragment().values()) {
+    for (const value of (this.getDocsFragment() as Y.Map<string>).values()) {
       if (normalizedPath === path.join(this.root.path, value)) return true
     }
     return false
