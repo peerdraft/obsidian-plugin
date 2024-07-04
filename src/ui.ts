@@ -26,7 +26,7 @@ export const showTextModal = (app: App, title: string, text: string) => {
 }
 
 export const showNotice = (text: string, duration?: number | undefined) => {
-	new Notice(text, duration)
+	return new Notice(text, duration)
 }
 
 
