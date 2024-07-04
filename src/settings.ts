@@ -82,7 +82,7 @@ export const migrateSettings = async (plugin: PeerdraftPlugin) => {
 
   const files = newSettings.serverShares.files
   for (const key of files.keys()) {
-    if(key.contains('\\')) {
+    if (key.contains('\\')) {
       files.set(normalizePath(key), files.get(key)!)
       files.delete(key)
     }
@@ -90,7 +90,7 @@ export const migrateSettings = async (plugin: PeerdraftPlugin) => {
 
   const folders = newSettings.serverShares.folders
   for (const key of folders.keys()) {
-    if(key.contains('\\')) {
+    if (key.contains('\\')) {
       folders.set(normalizePath(key), folders.get(key)!)
       folders.delete(key)
     }
