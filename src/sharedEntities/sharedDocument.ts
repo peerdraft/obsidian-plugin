@@ -188,7 +188,7 @@ export class SharedDocument extends SharedEntity {
     const leafIds = getLeafIdsByPath(file.path, plugin.pws)
 
     if (leafIds.length > 0) {
-      const content = (plugin.app.workspace.getLeafById(leafIds[0]).view as MarkdownView).editor.getValue()
+      const content = (plugin.app.workspace.getLeafById(leafIds[0])?.view as MarkdownView).editor.getValue()
       doc.getContentFragment().insert(0, content)
     } else {
       const content = await plugin.app.vault.read(file)
