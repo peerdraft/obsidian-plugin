@@ -13,11 +13,13 @@ class LoginModal extends Modal {
 
   storeJWT = false
   code = ''
+  email = ''
 
   constructor(plugin: PeerdraftPlugin, cb: (success: boolean) => any) {
     super(plugin.app)
     this.plugin = plugin
     this.cb = cb
+    this.email = this.plugin.settings.plan.email ?? ''
   }
 
   async onOpen() {
@@ -37,28 +39,27 @@ class LoginModal extends Modal {
     headerDiv.createSpan({ text: '.' })
 
     const emailSetting = new Setting(this.contentEl)
-    let email = this.plugin.settings.plan.email ?? ''
     emailSetting.setName("Your e-mail address")
     emailSetting.descEl.innerHTML = 'By signing up or logging in, you agree to <a href="https://www.peerdraft.app/terms">the Terms of Service</a> and the <a href="https://www.peerdraft.app/privacy">Privacy Policy</a>.'
     emailSetting.addText(text => {
       text.inputEl.setAttr("type", "email")
-      text.setValue(email)
+      text.setValue(this.email)
       text.onChange(value => {
-        email = value
+        this.email = value
       })
     })
 
     emailSetting.addButton(button => {
       button.setButtonText("Send Login Code")
       button.onClick(async () => {
-        if (!email.match(/^\S+@\S+\.\S+$/)) {
+        if (!this.email.match(/^\S+@\S+\.\S+$/)) {
           showNotice("Please enter a valid email address.")
         } else {
 
-          const code = await requestLoginCode(this.plugin, email)
+          const code = await requestLoginCode(this.plugin, this.email)
 
           if (code) {
-            showNotice("Code sent to " + email + ".")
+            showNotice("Code sent to " + this.email + ".")
           } else {
             showNotice("Something went wrong. Please try again or get in touch with peerdraft support.")
           }
@@ -93,7 +94,7 @@ class LoginModal extends Modal {
       const text = this.storeJWT ? "Log in and remember me" : "Log in for this session only"
       button.setButtonText(text)
       button.onClick(async () => {
-        if (!email.match(/^\S+@\S+\.\S+$/)) {
+        if (!this.email.match(/^\S+@\S+\.\S+$/)) {
           showNotice("Please enter a valid email address.")
           return
         }
@@ -102,11 +103,11 @@ class LoginModal extends Modal {
           return
         }
 
-        const jwt = await requestWebToken(this.plugin, email, this.code, this.storeJWT)
+        const jwt = await requestWebToken(this.plugin, this.email, this.code, this.storeJWT)
 
 
         if (jwt) {
-          this.plugin.settings.plan.email = email
+          this.plugin.settings.plan.email = this.email
           saveSettings(this.plugin.settings, this.plugin)
 
           if (await this.plugin.serverSync.authenticate(jwt)) {
