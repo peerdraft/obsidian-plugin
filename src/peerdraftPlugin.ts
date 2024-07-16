@@ -15,6 +15,7 @@ import { getLeafsByPath, updatePeerdraftWorkspace } from "./workspace/peerdraftW
 import { PeerdraftWebsocketProvider } from "./peerdraftWebSocketProvider"
 import * as path from "path"
 import { openFolderOptions } from "./ui/folderOptions"
+import { getJWT } from "./login"
 
 export default class PeerdraftPlugin extends Plugin {
 
@@ -73,8 +74,16 @@ export default class PeerdraftPlugin extends Plugin {
 		})
 
 		plugin.app.workspace.onLayoutReady(
-			async () => {
-				this.serverSync = new PeerdraftWebsocketProvider(this.settings.sync)
+			async () => {				
+				this.serverSync = new PeerdraftWebsocketProvider(this.settings.sync, { jwt: getJWT(plugin.settings.oid) ?? undefined, connect: false})
+				this.serverSync.on("authenticated", (data) => {
+					showNotice("Logged in to Peerdraft")
+					plugin.settings.plan.type = data.plan.type
+					saveSettings(plugin.settings, plugin)
+				})
+
+				this.serverSync.connect()
+
 				for (const docs of plugin.settings.serverShares.files) {
 					await SharedDocument.fromPermanentShareDocument({ path: docs[0], persistenceId: docs[1].persistenceId, shareId: docs[1].shareId }, plugin)
 				}

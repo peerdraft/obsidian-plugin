@@ -1,9 +1,10 @@
 import { Modal, Plugin, PluginSettingTab, Setting, debounce, normalizePath, requestUrl } from "obsidian";
-import { refreshSubscriptionData } from "./subscription";
 import { showTextModal } from "./ui";
 import PeerdraftPlugin from "./peerdraftPlugin";
 import { promptForFolderSelection } from "./ui/selectFolder";
 import { PermanentShareStoreIndexedDB } from "./permanentShareStore";
+import { logout } from "./login";
+import { openLoginModal } from "./ui/login";
 
 export interface Settings {
   signaling: string,
@@ -53,7 +54,7 @@ const DEFAULT_SETTINGS: Omit<Settings, "oid"> = {
 }
 
 const FORCE_SETTINGS: Partial<Settings> = {
-  /*
+/*
   basePath: "http://localhost:5173",
   subscriptionAPI: "http://localhost:5173/subscription",
   connectAPI: "http://localhost:5173/subscription/connect",
@@ -61,7 +62,7 @@ const FORCE_SETTINGS: Partial<Settings> = {
   sync: "ws://localhost:5173/sync",
   signaling: "ws://localhost:5173/signal",
   actives: "ws://localhost:5173/actives"
-  */
+*/
   basePath: "https://www.peerdraft.app",
   subscriptionAPI: "https://www.peerdraft.app/subscription",
   connectAPI: "https://www.peerdraft.app/subscription/connect",
@@ -69,6 +70,7 @@ const FORCE_SETTINGS: Partial<Settings> = {
   sync: "wss://www.peerdraft.app/sync",
   signaling: "wss://www.peerdraft.app/signal",
   actives: "wss://www.peerdraft.app/actives",
+
 }
 
 export const migrateSettings = async (plugin: PeerdraftPlugin) => {
@@ -141,13 +143,13 @@ export const saveSettings = debounce(async (settings: Settings, plugin: Peerdraf
     folders: Array.from(settings.serverShares.folders.entries())
   }
 
-  plugin.saveData(serialized)
+  await plugin.saveData(serialized)
 }, 1000, true)
 
 export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) => {
   el.empty();
 
-  const settings = await getSettings(plugin)
+  const settings = plugin.settings
 
   el.createEl("h1", { text: "General" });
 
@@ -185,72 +187,53 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
     })
   })
 
+  el.createEl("h1", { text: "Your Account" })
 
-  el.createEl("h1", { text: "Your subscription" })
-  if (settings.plan.type === "hobby") {
-    el.createEl("div", { text: "You are on the free Hobby plan. You can collaborate with your peers for up to 2.5 hours a month. For unlimited collaboration time, sign-up for the Professional plan at 30 USD/year." })
+  if (plugin.serverSync.authenticated) {
+    el.createEl("div", { text: `You are logged in as ${plugin.settings.plan.email}.` })
     el.createEl("p")
-    el.createEl("div", { text: `You have used Peerdraft for ${settings.duration} minutes so far.` })
+    const div = el.createEl("div")
+    div.createSpan({ text: "You are on the "}).createEl('b', { text:  plugin.settings.plan.type})
+    div.createSpan({ text: " plan."})
     el.createEl("p")
+
+    if (plugin.settings.plan.type === "hobby") {
+      new Setting(el)
+        .setName("Manage your subscription")
+        .addButton(button => {
+          button.setButtonText("Upgrade to pro")
+          button.setCta()
+          button.onClick((e) => {
+            window.open(`https://peerdraft.app/checkout?email=${plugin.settings.plan.email}`)
+          })
+        })
+    }
 
     new Setting(el)
-      .setName("Subscribe")
+      .setName("Log out")
       .addButton(button => {
-        button.setButtonText("Buy professional plan")
-        button.setCta()
-        button.onClick((e) => {
-          window.open(`https://peerdraft.app/checkout?oid=${settings.oid}`)
-        })
-      })
-
-    let connectEmail = ""
-    new Setting(el)
-      .setName("Use existing subscription")
-      .setDesc("If you already bought a subscription, enter the e-mail address associated with it and click on `Connect`.")
-      .addText((text) => {
-        text.setPlaceholder("me@test.com")
-        text.onChange((value) => {
-          connectEmail = value
-        })
-      })
-      .addButton(button => {
-        button.setButtonText("Connect")
+        button.setButtonText("Log out")
         button.onClick(async (e) => {
-          const data = await requestUrl({
-            url: settings.connectAPI,
-            method: 'POST',
-            contentType: "application/json",
-            body: JSON.stringify({
-              email: connectEmail,
-              oid: settings.oid
-            })
-
-          }).json
-          if (data && data.plan) {
-            settings.plan = data.plan
-            saveSettings(settings, plugin),
-              await renderSettings(el, plugin)
-          }
+          await logout(plugin)
+          renderSettings(el, plugin)
         })
       })
-
-  } else if (settings.plan.type === "professional") {
-    el.createEl("div", { text: "You are on the professional plan for unlimited collaboration. Happy peerdrafting." })
+  } else {
+    el.createEl("div", { text: `You are not logged in.` })
     el.createEl("p")
-    el.createEl("div", { text: `You have used Peerdraft for ${settings.duration} minutes so far.` })
+    el.createEl("div", { text: `To initiate new shared documents or folders you need to log in to your Peerdraft account. If you only work on shared documents and folders created by others, you don't need an account.` })
     el.createEl("p")
-  }
 
-  new Setting(el)
-    .setName("Refresh subscription data")
-    .setDesc("If you just subscribed or connected your license, click here to refresh your subscription information.")
-    .addButton((button) => {
-      button.setButtonText("Refresh")
-      button.onClick(async (e) => {
-        refreshSubscriptionData(plugin)
-        renderSettings(el, plugin)
+    new Setting(el)
+      .setName("Log in or create account")
+      .addButton(button => {
+        button.setButtonText("Log in or create account")
+        button.onClick(async (e) => {
+          await openLoginModal(plugin)
+          renderSettings(el, plugin)
+        })
       })
-    })
+  }
 
   el.createEl("h1", { text: "Help" })
   const div = el.createDiv()

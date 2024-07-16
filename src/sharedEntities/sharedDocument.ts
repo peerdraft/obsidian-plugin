@@ -18,6 +18,7 @@ import { SharedFolder } from './sharedFolder';
 import { Mutex } from 'async-mutex';
 import { diff, diffCleanupEfficiency } from 'diff-match-patch-es'
 import { add, getDocByPath, moveDoc, removeDoc } from 'src/permanentShareStoreFS';
+import { openLoginModal } from 'src/ui/login';
 
 export class SharedDocument extends SharedEntity {
 
@@ -183,6 +184,12 @@ export class SharedDocument extends SharedEntity {
     if (!['md', 'MD'].contains(file.extension)) return
     const existing = SharedDocument.findByPath(file.path)
     if (existing) return existing
+
+    if(!plugin.serverSync.authenticated) {
+      showNotice("Please log in to Peerdraft first.")
+      const auth = await openLoginModal(plugin)
+      if (!auth) return
+    }
 
     const doc = new SharedDocument({ path: file.path }, plugin)
     const leafIds = getLeafIdsByPath(file.path, plugin.pws)

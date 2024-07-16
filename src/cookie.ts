@@ -1,5 +1,4 @@
 import { Platform, Plugin } from "obsidian";
-import { getSettings, saveSettings } from "./settings";
 import { session } from '@electron/remote';
 import PeerdraftPlugin from "./main";
 

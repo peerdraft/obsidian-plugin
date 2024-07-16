@@ -25,6 +25,9 @@ export const NEW_DOCUMENT_CONFIRMED = 5
 export const GET_DOCUMENT_AS_UPDATE = 6
 export const SEND_DOCUMENT_AS_UPDATE = 7
 
+export const MESSAGE_AUTHENTICATION_REQUEST = 5
+export const MESSAGE_AUTHENTICATION_RESPONSE = 6
+
 const messageReconnectTimeout = 30000
 
 
@@ -85,6 +88,11 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
             break;
         }
       }
+      else if (messageType === MESSAGE_AUTHENTICATION_RESPONSE) {
+        const data = JSON.parse(decoding.readVarString(decoder))
+        provider.authenticated = true
+        provider.emit('authenticated', [data])
+      }
     }
 
     websocket.onerror = (event) => {
@@ -93,6 +101,9 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
 
     websocket.onclose = (event) => {
       provider.emit('connection-close', [event, provider])
+      if (provider.authenticated) {
+        provider.authenticated = false
+      }
       provider.ws = null
       provider.wsconnecting = false
       if (provider.wsconnected) {
@@ -122,6 +133,10 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
         status: 'connected'
       }])
 
+      if (provider.jwt) {
+        provider.authenticate(provider.jwt)
+      }
+
       for (const folder of SharedFolder.getAll()) {
         if (folder.indexedDBProvider) {
           if (!folder.indexedDBProvider.synced) await folder.indexedDBProvider.whenSynced
@@ -144,6 +159,11 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
   }
 }
 
+interface AuthResponseData {
+  plan: {
+    type: "hobby" | "professional" | "team"
+  }
+}
 
 type Events = {
   synced: (id: string, hash: string) => void
@@ -156,6 +176,7 @@ type Events = {
   'new-doc-confirmed': (tempId: string, id: string, checksum: string) => void
   // 'my-update-sent': (id: string, update: Uint8Array, checksum: string) => void
   // 'other-document-received-if-checksum-differs': (id: string, myChecksum: string, yourChecksum: string, update?: Uint8Array) => void
+  'authenticated': (data: AuthResponseData) => void
 }
 
 export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
@@ -177,12 +198,15 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
   _awarenessUpdateHandler: ({ added, updated, removed }: any, _origin: any) => void
   _exitHandler: () => void
   _checkInterval: number
+  authenticated: boolean
+  jwt: string | undefined
 
   constructor(serverUrl: string, {
     connect = true,
     resyncInterval = -1,
     maxBackoffTime = 2500,
-  }: { connect?: boolean; params?: { [s: string]: string }; WebSocketPolyfill?: typeof WebSocket; resyncInterval?: number; maxBackoffTime?: number; disableBc?: boolean } = {}) {
+    jwt = undefined
+  }: { jwt?: string, connect?: boolean; params?: { [s: string]: string }; WebSocketPolyfill?: typeof WebSocket; resyncInterval?: number; maxBackoffTime?: number; disableBc?: boolean } = {}) {
     super()
     this.url = serverUrl
     this.maxBackoffTime = maxBackoffTime
@@ -195,6 +219,8 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
     this.wsLastMessageReceived = 0
     this.shouldConnect = connect
     this._resyncInterval = 0
+    this.authenticated = false
+    this.jwt = jwt
 
     this._checkInterval = (window.setInterval(() => {
       if (
@@ -266,6 +292,25 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
     encoding.writeVarUint(encoder, GET_DOCUMENT_AS_UPDATE),
       encoding.writeVarString(encoder, id)
     this.sendMessage(encoding.toUint8Array(encoder))
+  }
+
+  sendAuthenicationRequest(jwt: string) {
+    this.jwt = jwt
+    const encoder = encoding.createEncoder()
+    encoding.writeVarUint(encoder, MESSAGE_AUTHENTICATION_REQUEST)
+    encoding.writeVarString(encoder, jwt)
+    this.sendMessage(encoding.toUint8Array(encoder))
+  }
+
+  authenticate(jwt: string) {
+    return new Promise<AuthResponseData>(resolve => {
+      const handler = async (data: AuthResponseData) => {
+        this.off('authenticated', handler)
+        resolve(data)
+      }
+      this.on('authenticated', handler)
+      this.sendAuthenicationRequest(jwt)
+    })
   }
 
   sendMessage(buf: ArrayBuffer) {

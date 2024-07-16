@@ -11,6 +11,7 @@ import { IndexeddbPersistence } from "y-indexeddb";
 import { addIsSharedClass, removeIsSharedClass } from "src/workspace/explorerView";
 import { add, getFolderByPath, moveFolder, removeFolder } from "src/permanentShareStoreFS";
 import { openFolderOptions } from "src/ui/folderOptions";
+import { openLoginModal } from "src/ui/login";
 
 const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: SharedFolder, plugin: PeerDraftPlugin) => {
 
@@ -106,6 +107,12 @@ export class SharedFolder extends SharedEntity {
         showNotice("You can not share a directory that already has shared files in it (right now).")
         return
       }
+    }
+
+    if(!plugin.serverSync.authenticated) {
+      showNotice("Please log in to Peerdraft first.")
+      const auth = await openLoginModal(plugin)
+      if (!auth) return
     }
 
     const docs = await Promise.all(files.map((file) => {
