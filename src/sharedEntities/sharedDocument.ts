@@ -180,12 +180,12 @@ export class SharedDocument extends SharedEntity {
   }
 
 
-  static async fromTFile(file: TFile, opts: { permanent?: boolean }, plugin: PeerDraftPlugin) {
+  static async fromTFile(file: TFile, opts: { permanent?: boolean, folder?: string }, plugin: PeerDraftPlugin) {
     if (!['md', 'MD'].contains(file.extension)) return
     const existing = SharedDocument.findByPath(file.path)
     if (existing) return existing
 
-    if(!plugin.serverSync.authenticated) {
+    if (!(plugin.serverSync.authenticated || opts.folder)) {
       showNotice("Please log in to Peerdraft first.")
       const auth = await openLoginModal(plugin)
       if (!auth) return

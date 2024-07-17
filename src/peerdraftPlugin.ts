@@ -74,8 +74,8 @@ export default class PeerdraftPlugin extends Plugin {
 		})
 
 		plugin.app.workspace.onLayoutReady(
-			async () => {				
-				this.serverSync = new PeerdraftWebsocketProvider(this.settings.sync, { jwt: getJWT(plugin.settings.oid) ?? undefined, connect: false})
+			async () => {
+				this.serverSync = new PeerdraftWebsocketProvider(this.settings.sync, { jwt: getJWT(plugin.settings.oid) ?? undefined, connect: false })
 				this.serverSync.on("authenticated", (data) => {
 					showNotice("Logged in to Peerdraft")
 					plugin.settings.plan.type = data.plan.type
@@ -259,7 +259,7 @@ export default class PeerdraftPlugin extends Plugin {
 					if (oldPathInFolder === newPathInFolder) {
 						oldPathInFolder.updatePath(oldPath, file.path)
 					} else {
-						const newDoc = await SharedDocument.fromTFile(file, { permanent: true }, plugin)
+						const newDoc = await SharedDocument.fromTFile(file, { permanent: true, folder: newPathInFolder.shareId }, plugin)
 						if (newDoc) {
 							newPathInFolder.addDocument(newDoc)
 							const prop = newPathInFolder.getAutoFillProperty()
@@ -284,7 +284,7 @@ export default class PeerdraftPlugin extends Plugin {
 						doc.syncWithServer()
 					}
 				} else if (!oldPathInFolder && newPathInFolder) {
-					const doc = await SharedDocument.fromTFile(file, { permanent: true }, plugin)
+					const doc = await SharedDocument.fromTFile(file, { permanent: true, folder: newPathInFolder.shareId }, plugin)
 					if (doc) {
 						newPathInFolder.addDocument(doc)
 						const prop = newPathInFolder.getAutoFillProperty()
@@ -345,7 +345,8 @@ export default class PeerdraftPlugin extends Plugin {
 					if (plugin.settings.serverShares.files.has(normalizePath(file.path))) return
 
 					const doc = await SharedDocument.fromTFile(file, {
-						permanent: true
+						permanent: true,
+						folder: folder.shareId
 					}, plugin)
 					if (doc) {
 						folder.addDocument(doc)
