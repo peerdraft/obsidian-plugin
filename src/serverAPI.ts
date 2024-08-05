@@ -11,23 +11,6 @@ export class ServerAPI {
     }
   ){}
 
-  async createPermanentSession () {
-    const data = await requestUrl({
-      url: this.opts.permanentSessionUrl,
-      method: 'POST',
-      contentType: "application/json",
-      body: JSON.stringify({
-        oid: this.opts.oid
-      })
-    }).json
-  
-    if (!data || !data.id) {
-      showNotice("Error creating shared file")
-      return 
-    }
-    return data as {id: string}
-  }
-
   async isSessionPermanent (id: string) {
     const data = await requestUrl({
       url: this.opts.permanentSessionUrl + "/" + id,

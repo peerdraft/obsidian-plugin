@@ -8,6 +8,7 @@ import { SharedDocument } from './sharedEntities/sharedDocument'
 import { SharedEntity } from './sharedEntities/sharedEntity'
 import { SharedFolder } from './sharedEntities/sharedFolder'
 import { calculateHash, serialize } from './tools'
+import { randomUUID } from 'crypto'
 
 export const MESSAGE_SYNC = 0
 export const MESSAGE_QUERY_AWARENESS = 3
@@ -24,6 +25,8 @@ export const NEW_DOCUMENT = 4
 export const NEW_DOCUMENT_CONFIRMED = 5
 export const GET_DOCUMENT_AS_UPDATE = 6
 export const SEND_DOCUMENT_AS_UPDATE = 7
+export const NEW_SESSION = 8
+export const NEW_SESSION_CONFIRMED = 9
 
 export const MESSAGE_AUTHENTICATION_REQUEST = 5
 export const MESSAGE_AUTHENTICATION_RESPONSE = 6
@@ -83,8 +86,14 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
             const checksum = decoding.readVarString(decoder)
             provider.emit("document-received", [id, update, checksum])
           } break;
+          case NEW_SESSION_CONFIRMED: {
+            const tempId = decoding.readVarString(decoder)
+            const id = decoding.readVarString(decoder)
+            provider.emit("new-session-confirmed", [tempId, id])
+            break;
+          }
           default:
-            console.log("unreachable")
+            console.log(syncMessageType)
             break;
         }
       }
@@ -174,6 +183,7 @@ type Events = {
   'document-received': (id: string, update: Uint8Array, checksum: string) => void
   // 'sync-confirmed': (id: string, checksum: string) => void
   'new-doc-confirmed': (tempId: string, id: string, checksum: string) => void
+  'new-session-confirmed': (tempId: string, id: string) => void
   // 'my-update-sent': (id: string, update: Uint8Array, checksum: string) => void
   // 'other-document-received-if-checksum-differs': (id: string, myChecksum: string, yourChecksum: string, update?: Uint8Array) => void
   'authenticated': (data: AuthResponseData) => void
@@ -289,8 +299,8 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
   sendGetDocumentAsUpdate(id: string) {
     const encoder = encoding.createEncoder()
     encoding.writeVarUint(encoder, MESSAGE_MULTIPLEX_SYNC)
-    encoding.writeVarUint(encoder, GET_DOCUMENT_AS_UPDATE),
-      encoding.writeVarString(encoder, id)
+    encoding.writeVarUint(encoder, GET_DOCUMENT_AS_UPDATE)
+    encoding.writeVarString(encoder, id)
     this.sendMessage(encoding.toUint8Array(encoder))
   }
 
@@ -299,6 +309,14 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
     const encoder = encoding.createEncoder()
     encoding.writeVarUint(encoder, MESSAGE_AUTHENTICATION_REQUEST)
     encoding.writeVarString(encoder, jwt)
+    this.sendMessage(encoding.toUint8Array(encoder))
+  }
+
+  sendCreateNewSession(tempId: string) {
+    const encoder = encoding.createEncoder()
+    encoding.writeVarUint(encoder, MESSAGE_MULTIPLEX_SYNC)
+    encoding.writeVarUint(encoder, NEW_SESSION)
+    encoding.writeVarString(encoder, tempId)
     this.sendMessage(encoding.toUint8Array(encoder))
   }
 
@@ -341,6 +359,20 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
       }
       this.on('document-received', handler)
       this.sendGetDocumentAsUpdate(docId)
+    })
+  }
+
+  createNewSession() {
+    const tempId = randomUUID()
+    return new Promise<string>(resolve => {
+      const handler = (serverTempId: string, id: string) => {
+        if(serverTempId === tempId) {
+          this.off("new-session-confirmed", handler)
+          resolve(id)
+        }
+      }
+      this.on("new-session-confirmed", handler)
+      this.sendCreateNewSession(tempId)
     })
   }
 

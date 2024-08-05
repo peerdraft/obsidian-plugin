@@ -10,7 +10,7 @@ type ClientMessage = {
 }
 
 type ServerMessage = {
-  type: "add" | "full",
+  type: "add" | "full" | "delete",
   docs: Array<string>
 }
 
@@ -22,11 +22,18 @@ type Events = {
 
 const messageReconnectTimeout = 30000
 
-const handleMessage = (data: string) => {
+const handleMessage = async (data: string) => {
   const message = JSON.parse(data) as ServerMessage
-  for (const id of message.docs) {
-    SharedDocument.findById(id)?.startWebRTCSync()
-    SharedFolder.findById(id)?.startWebRTCSync()
+  if (["add", "full"].includes(message.type)) {
+    for (const id of message.docs) {
+      SharedDocument.findById(id)?.startWebRTCSync()
+      SharedFolder.findById(id)?.startWebRTCSync()
+    }
+  } else if (message.type === "delete") {
+    for (const id of message.docs) {
+      SharedDocument.findById(id)?.unshare()
+      SharedFolder.findById(id)?.unshare()
+    }
   }
 }
 

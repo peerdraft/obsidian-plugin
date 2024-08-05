@@ -210,7 +210,7 @@ export class SharedDocument extends SharedEntity {
       // doc.startWebSocketSync()
       doc.startIndexedDBSync()
     } else {
-      doc._shareId = createRandomId()
+      doc._shareId = await plugin.serverSync.createNewSession()
     }
 
     for (const id of leafIds) {
