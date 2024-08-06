@@ -27,6 +27,8 @@ export const GET_DOCUMENT_AS_UPDATE = 6
 export const SEND_DOCUMENT_AS_UPDATE = 7
 export const NEW_SESSION = 8
 export const NEW_SESSION_CONFIRMED = 9
+export const STOP_SESSION = 10
+export const STOP_SESSION_CONFIRMED = 11
 
 export const MESSAGE_AUTHENTICATION_REQUEST = 5
 export const MESSAGE_AUTHENTICATION_RESPONSE = 6
@@ -90,6 +92,11 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
             const tempId = decoding.readVarString(decoder)
             const id = decoding.readVarString(decoder)
             provider.emit("new-session-confirmed", [tempId, id])
+            break;
+          }
+          case STOP_SESSION_CONFIRMED: {
+            const id = decoding.readVarString(decoder)
+            provider.emit("stop-session-confirmed", [id])
             break;
           }
           default:
@@ -184,6 +191,7 @@ type Events = {
   // 'sync-confirmed': (id: string, checksum: string) => void
   'new-doc-confirmed': (tempId: string, id: string, checksum: string) => void
   'new-session-confirmed': (tempId: string, id: string) => void
+  'stop-session-confirmed': (id: string) => void
   // 'my-update-sent': (id: string, update: Uint8Array, checksum: string) => void
   // 'other-document-received-if-checksum-differs': (id: string, myChecksum: string, yourChecksum: string, update?: Uint8Array) => void
   'authenticated': (data: AuthResponseData) => void
@@ -320,6 +328,14 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
     this.sendMessage(encoding.toUint8Array(encoder))
   }
 
+  sendStopSession(id: string) {
+    const encoder = encoding.createEncoder()
+    encoding.writeVarUint(encoder, MESSAGE_MULTIPLEX_SYNC)
+    encoding.writeVarUint(encoder, STOP_SESSION)
+    encoding.writeVarString(encoder, id)
+    this.sendMessage(encoding.toUint8Array(encoder))
+  }
+
   authenticate(jwt: string) {
     return new Promise<AuthResponseData>(resolve => {
       const handler = async (data: AuthResponseData) => {
@@ -373,6 +389,19 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
       }
       this.on("new-session-confirmed", handler)
       this.sendCreateNewSession(tempId)
+    })
+  }
+
+  stopSession(id: string) {
+    return new Promise<string>(resolve => {
+      const handler = (sessionId: string) => {
+        if(sessionId === id) {
+          this.off("new-session-confirmed", handler)
+          resolve(id)
+        }
+      }
+      this.on("stop-session-confirmed", handler)
+      this.sendStopSession(id)
     })
   }
 

@@ -214,6 +214,7 @@ export class SharedFolder extends SharedEntity {
 
     const sFolder = new SharedFolder(folder, plugin, preFetchedDoc)
     sFolder._shareId = id
+    plugin.activeStreamClient.add([id])
 
     await add(sFolder, plugin)
     await sFolder.startIndexedDBSync()
@@ -244,6 +245,7 @@ export class SharedFolder extends SharedEntity {
 
     const folder = new SharedFolder(tFolder, plugin)
     folder._shareId = psf.shareId
+    plugin.activeStreamClient.add([psf.shareId])
     const local = await folder.startIndexedDBSync()
     if (local) {
       if (local.synced || await local.whenSynced) {
@@ -454,6 +456,11 @@ export class SharedFolder extends SharedEntity {
     if (!id) return
     this._indexedDBProvider = new IndexeddbPersistence(SharedEntity.DB_PERSISTENCE_PREFIX + id, this.yDoc)
     return this._indexedDBProvider
+  }
+
+  async stopSession() {
+    await this.plugin.serverSync.stopSession(this._shareId)
+    await this.unshare()
   }
 
   async unshare() {

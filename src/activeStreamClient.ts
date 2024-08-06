@@ -3,6 +3,7 @@ import { ObservableV2 } from 'lib0/observable'
 import * as math from 'lib0/math'
 import { SharedDocument } from './sharedEntities/sharedDocument'
 import { SharedFolder } from './sharedEntities/sharedFolder'
+import { showNotice } from './ui'
 
 type ClientMessage = {
   type: "add" | "remove" | "full",
@@ -30,9 +31,24 @@ const handleMessage = async (data: string) => {
       SharedFolder.findById(id)?.startWebRTCSync()
     }
   } else if (message.type === "delete") {
+    console.log(message)
     for (const id of message.docs) {
-      SharedDocument.findById(id)?.unshare()
-      SharedFolder.findById(id)?.unshare()
+      const folder = SharedFolder.findById(id)
+      console.log("folder for " + id)
+      if (folder) {
+        showNotice(folder.path + " is not shared anymore.", undefined)
+        await folder.unshare()
+      } else {
+        const document = SharedDocument.findById(id)
+        if (document) {
+          console.log("document found")
+          const inFolder = SharedFolder.getSharedFolderForSubPath(document.path)
+          if (!inFolder) {
+            showNotice(document.path + " is not shared anymore.", undefined)
+            document.unshare()
+          }
+        }
+      }
     }
   }
 }

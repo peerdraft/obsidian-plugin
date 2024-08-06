@@ -584,12 +584,13 @@ export class SharedDocument extends SharedEntity {
     })
   }
 
+  async stopSession() {
+    await this.plugin.serverSync.stopSession(this.shareId)
+    await this.unshare()
+  }
 
 
-  destroy() {
-    if (!this.isPermanent) {
-      showNotice("Stopping collaboration on " + this.path + ".")
-    }
+  async destroy() {
     for (const key of this._extensions.keys) {
       this.removeExtensionFromLeaf(key)
     }

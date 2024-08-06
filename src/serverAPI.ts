@@ -19,7 +19,7 @@ export class ServerAPI {
     }).json
   
     if (!data) {
-      showNotice("Error creating shared file")
+      showNotice("Error getting information about shared file")
       return 
     }
     return !!data.permanent

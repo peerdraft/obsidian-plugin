@@ -1,10 +1,10 @@
-import { Menu, TAbstractFile, TFile, TFolder } from "obsidian";
+import { MarkdownView, Menu, TAbstractFile, TFile, TFolder } from "obsidian";
 import PeerdraftPlugin from "src/peerdraftPlugin";
 import { SharedFolder } from "src/sharedEntities/sharedFolder";
 import { openFolderOptions } from "./folderOptions";
 import { SharedDocument } from "src/sharedEntities/sharedDocument";
 import { promptForSessionType } from "./chooseSessionType";
-import { showNotice } from "src/ui";
+import { openFileInNewTab, showNotice } from "src/ui";
 
 export const createMenuAsSubMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlugin) => {
   menu.addItem(item => {
@@ -57,7 +57,7 @@ export const createMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlu
         item.setTitle('Stop syncing for everyone')
         item.setIcon('circle-off')
         item.onClick(async () => {
-          // await sharedFolder.unshare()
+          await sharedFolder.stopSession()
         })
       })
       menu.addItem(item => {
@@ -74,7 +74,7 @@ export const createMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlu
     if (sharedDocument) {
       menu.addItem(item => {
         item.setTitle('Copy URL')
-        item.setIcon('users')
+        item.setIcon('clipboard-copy')
         item.onClick(() => {
           navigator.clipboard.writeText(plugin.settings.basePath + '/cm/' + sharedDocument.shareId)
         })
@@ -101,7 +101,7 @@ export const createMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlu
           item.setTitle('Stop syncing for everyone')
           item.setIcon('circle-off')
           item.onClick(async () => {
-            // await sharedFolder.unshare()
+            await sharedDocument.stopSession()
           })
         })
       }
@@ -110,15 +110,11 @@ export const createMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlu
       menu.addItem((item) => {
         item.setTitle('Share File')
         item.setIcon('share-2')
-        item.onClick(() => {
-          promptForSessionType(plugin.app).then(result => {
-						if (!result) return
-						SharedDocument.fromTFile(file, {permanent: result.permanent}, plugin).then(doc => {
-							if (!doc) {
-								return showNotice("ERROR creating sharedDoc")
-							}
-						})
-					})
+        item.onClick(async () => {
+          const result = await promptForSessionType(plugin.app)
+          if (!result) return
+          const leaf = await openFileInNewTab(file, plugin.app.workspace)
+          SharedDocument.fromView(leaf.view as MarkdownView, plugin, { permanent: result.permanent })
         })
       })
     }
