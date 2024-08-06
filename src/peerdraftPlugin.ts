@@ -1,21 +1,21 @@
 import { MarkdownView, Plugin, TFile, TFolder, normalizePath } from "obsidian"
+import * as path from "path"
 import { ActiveStreamClient } from "./activeStreamClient"
 import { prepareCommunication } from "./cookie"
+import { getJWT } from "./login"
+import { PeerdraftWebsocketProvider } from "./peerdraftWebSocketProvider"
 import { ServerAPI } from "./serverAPI"
-import { Settings, createSettingsTab, getSettings, migrateSettings, saveSettings } from "./settings"
+import { Settings, createSettingsTab, migrateSettings, saveSettings } from "./settings"
 import { SharedDocument } from "./sharedEntities/sharedDocument"
 import { fromShareURL } from "./sharedEntities/sharedEntityFactory"
 import { SharedFolder } from "./sharedEntities/sharedFolder"
 import { showNotice } from "./ui"
 import { promptForSessionType } from "./ui/chooseSessionType"
+import { createMenuAsSubMenu } from "./ui/createMenu"
 import { promptForName, promptForURL } from "./ui/enterText"
 import { PeerdraftRecord } from "./utils/peerdraftRecord"
 import { PeerdraftLeaf } from "./workspace/peerdraftLeaf"
 import { getLeafsByPath, updatePeerdraftWorkspace } from "./workspace/peerdraftWorkspace"
-import { PeerdraftWebsocketProvider } from "./peerdraftWebSocketProvider"
-import * as path from "path"
-import { openFolderOptions } from "./ui/folderOptions"
-import { getJWT } from "./login"
 
 export default class PeerdraftPlugin extends Plugin {
 
@@ -98,81 +98,7 @@ export default class PeerdraftPlugin extends Plugin {
 		)
 
 		plugin.registerEvent(plugin.app.workspace.on('file-menu', (menu, file) => {
-			if (file instanceof TFolder) {
-				// Not shared folder && not within shared folder
-				const sharedFolder = SharedFolder.findByPath(file.path)
-				if (!sharedFolder) {
-					if (!SharedFolder.getSharedFolderForSubPath(file.path) && plugin.settings.plan.type === "team") {
-						menu.addItem((item) => {
-							item.setTitle('Share Folder')
-							item.setIcon('users')
-							item.onClick(() => {
-								SharedFolder.fromTFolder(file, plugin)
-							})
-						})
-					}
-				} else {
-					menu.addItem(item => {
-						item.setTitle('Copy Peerdraft URL')
-						item.setIcon('users')
-						item.onClick(() => {
-							navigator.clipboard.writeText(plugin.settings.basePath + '/team/' + sharedFolder.shareId)
-						})
-					})
-					menu.addItem(item => {
-						item.setTitle('Stop syncing this folder')
-						item.setIcon('refresh-cw-off')
-						item.onClick(async () => {
-							await sharedFolder.unshare()
-						})
-					})
-					menu.addItem(item => {
-						item.setTitle('Re-create sync from server')
-						item.setIcon('refresh-cw')
-						item.onClick(async () => {
-							await SharedFolder.recreate(sharedFolder, plugin)
-						})
-					})
-					menu.addItem(item => {
-						item.setTitle('Show Peerdraft folder options')
-						item.setIcon('cog')
-						item.onClick(async () => {
-							openFolderOptions(this.app, sharedFolder)
-						})
-					})
-				}
-			} else {
-				const sharedDocument = SharedDocument.findByPath(file.path)
-				const sharedFolder = SharedFolder.getSharedFolderForSubPath(file.path)
-				if (sharedDocument) {
-					menu.addItem(item => {
-						item.setTitle('Copy Peerdraft URL')
-						item.setIcon('users')
-						item.onClick(() => {
-							navigator.clipboard.writeText(plugin.settings.basePath + '/cm/' + sharedDocument.shareId)
-						})
-					})
-					if (sharedFolder) {
-						menu.addItem(item => {
-							item.setTitle('Delete and remove from Shared Folder')
-							item.setIcon('trash')
-							item.onClick(async () => {
-								sharedFolder.removeDocument(sharedDocument)
-								sharedDocument.unshare()
-								plugin.app.vault.delete(sharedDocument.file)
-							})
-						})
-					} else {
-						menu.addItem(item => {
-							item.setTitle('Stop syncing this document')
-							item.setIcon('refresh-cw-off')
-							item.onClick(async () => {
-								await sharedDocument.unshare()
-							})
-						})
-					}
-				}
-			}
+			createMenuAsSubMenu(menu, file, plugin)
 		}))
 
 		plugin.addCommand({

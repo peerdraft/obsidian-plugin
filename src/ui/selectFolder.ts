@@ -1,5 +1,4 @@
 import { App, SuggestModal, TFile, TFolder, Vault } from "obsidian";
-import * as path from "path";
 
 export class SelectFolderModal extends SuggestModal<TFolder> {
 
