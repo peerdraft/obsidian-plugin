@@ -113,22 +113,14 @@ export default class PeerdraftPlugin extends Plugin {
 				if (doc) return false
 				if (checking) return true
 				// do it
-				if (plugin.settings.plan.type === "team") {
-					promptForSessionType(plugin.app).then(result => {
-						if (!result) return
-						SharedDocument.fromView(view, plugin, { permanent: result.permanent }).then(doc => {
-							if (!doc) {
-								return showNotice("ERROR creating sharedDoc")
-							}
-						})
-					})
-				} else {
-					SharedDocument.fromView(view, plugin, { permanent: false }).then(doc => {
+				promptForSessionType(plugin.app).then(result => {
+					if (!result) return
+					SharedDocument.fromView(view, plugin, { permanent: result.permanent }).then(doc => {
 						if (!doc) {
 							return showNotice("ERROR creating sharedDoc")
 						}
 					})
-				}
+				})
 			}
 		})
 
