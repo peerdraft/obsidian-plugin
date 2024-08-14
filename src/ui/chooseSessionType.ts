@@ -14,7 +14,7 @@ class ChooseSessionTypeModal extends Modal {
     new Setting(this.contentEl).setName("Start working together").setHeading()
 
     new Setting(this.contentEl).addButton(button => {
-      button.setButtonText("Start fleeting session")
+      button.setButtonText("Fleeting session")
       button.setCta()
       button.onClick(() => {
         this.close()
@@ -22,10 +22,10 @@ class ChooseSessionTypeModal extends Modal {
           permanent: false
         })
       })
-    }).setDesc("A fleeting session automatically closes when you close the document or disconnect.")
+    }).setDesc("A Fleeting Session is ideal when you need to collaborate on a document in real-time but don’t require ongoing synchronization or permanent sharing afterward.")
 
-    new Setting(this.contentEl).addButton(button => {
-      button.setButtonText("Share permanently")
+    const setting = new Setting(this.contentEl).addButton(button => {
+      button.setButtonText("Persistent Share")
       button.setCta()
       button.onClick(() => {
         this.close()
@@ -33,7 +33,9 @@ class ChooseSessionTypeModal extends Modal {
           permanent: true
         })
       })
-    }).setDesc("The document will be shared permanently until you explicitely stop sharing. This is persisted even if you disconnect or close Obsidian.")
+    }).setDesc("A Persistent Share is used when you want to keep documents and folders synchronized over an extended period. Persistent Shares support both asynchronous and offline edits.")
+
+    setting.settingEl.insertAdjacentHTML('afterend', '<p><small>To learn more about the difference between a Fleeting Session and a Permanent Share, click <a href="http://localhost:5173/documentation/explanations/what-is-the-difference-between-persistent-and-fleeting">here</a>.</small></p>')
   }
 }
 

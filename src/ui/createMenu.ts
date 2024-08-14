@@ -22,7 +22,7 @@ export const createMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlu
     // Not shared folder && not within shared folder
     const sharedFolder = SharedFolder.findByPath(file.path)
     if (!sharedFolder) {
-      if (!SharedFolder.getSharedFolderForSubPath(file.path) && plugin.settings.plan.type === "team") {
+      if (!SharedFolder.getSharedFolderForSubPath(file.path)) {
         menu.addItem((item) => {
           item.setTitle('Share Folder')
           item.setIcon('share-2')
@@ -57,7 +57,7 @@ export const createMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlu
         item.setTitle('Stop syncing for everyone')
         item.setIcon('circle-off')
         item.onClick(async () => {
-          await sharedFolder.stopSession()
+          await SharedFolder.stopSession(sharedFolder.shareId, plugin)
         })
       })
       menu.addItem(item => {
@@ -101,7 +101,7 @@ export const createMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlu
           item.setTitle('Stop syncing for everyone')
           item.setIcon('circle-off')
           item.onClick(async () => {
-            await sharedDocument.stopSession()
+            await SharedDocument.stopSession(sharedDocument.shareId, plugin)
           })
         })
       }

@@ -110,7 +110,7 @@ class LoginModal extends Modal {
           this.plugin.settings.plan.email = this.email
           saveSettings(this.plugin.settings, this.plugin)
 
-          if (await this.plugin.serverSync.authenticate(jwt)) {
+          if (await this.plugin.serverSync.authenticate(jwt, this.plugin.manifest.version)) {
             if (this.storeJWT) {
               saveJWT(this.plugin.settings.oid, jwt)
             }

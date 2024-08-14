@@ -1,4 +1,4 @@
-import Dexie, { Table } from "dexie"
+import Dexie, { type Table } from "dexie"
 import { SharedDocument } from "./sharedEntities/sharedDocument"
 import { createRandomId } from "./tools"
 import { SharedEntity } from "./sharedEntities/sharedEntity"

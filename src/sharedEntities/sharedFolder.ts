@@ -1,17 +1,18 @@
 import { TAbstractFile, TFile, TFolder, normalizePath } from "obsidian";
-import * as path from 'path'
-import * as Y from 'yjs'
-import { showNotice } from "../ui";
-import { calculateHash, generateRandomString, serialize } from "../tools";
-import { SharedEntity } from "./sharedEntity";
+import * as path from 'path';
 import PeerDraftPlugin from "src/main";
-import { SharedDocument } from "./sharedDocument";
-import { PermanentShareFolder } from "src/permanentShareStore";
-import { IndexeddbPersistence } from "y-indexeddb";
-import { addIsSharedClass, removeIsSharedClass } from "src/workspace/explorerView";
+import { type PermanentShareFolder } from "src/permanentShareStore";
 import { add, getFolderByPath, moveFolder, removeFolder } from "src/permanentShareStoreFS";
 import { openFolderOptions } from "src/ui/folderOptions";
 import { openLoginModal } from "src/ui/login";
+import { addIsSharedClass, removeIsSharedClass } from "src/workspace/explorerView";
+import { IndexeddbPersistence } from "y-indexeddb";
+import * as Y from 'yjs';
+import { calculateHash, generateRandomString, serialize } from "../tools";
+import { showNotice } from "../ui";
+import { SharedDocument } from "./sharedDocument";
+import { SharedEntity } from "./sharedEntity";
+import { promptForText } from "src/ui/enterText";
 
 const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: SharedFolder, plugin: PeerDraftPlugin) => {
 
@@ -139,7 +140,7 @@ export class SharedFolder extends SharedEntity {
 
     navigator.clipboard.writeText(plugin.settings.basePath + '/team/' + folder.shareId)
     showNotice(`Folder ${folder.path} with ${docs.length} documents shared. URL copied to your clipboard.`, 0)
-    openFolderOptions(plugin.app, folder)
+    // openFolderOptions(plugin.app, folder)
     return folder
   }
 
@@ -458,9 +459,21 @@ export class SharedFolder extends SharedEntity {
     return this._indexedDBProvider
   }
 
-  async stopSession() {
-    await this.plugin.serverSync.stopSession(this._shareId)
-    await this.unshare()
+  static async stopSession(id: string, plugin: PeerDraftPlugin) {
+
+    const text = await promptForText(plugin.app, {
+      description: "This folder will not be synced with any vault anymore and can not be accessed via the Peerdraft Web Editor. Enter YES, if you really want to do this.",
+      header: "Do you really want to stop sharing?",
+      initial: {
+        text: "NO"
+      }
+    })
+
+    if (!text || text.text !=="YES") return
+
+    await plugin.serverSync.stopSession(id)
+    const folder = SharedFolder.findById(id)
+    if (folder) await folder.unshare()
   }
 
   async unshare() {

@@ -1,6 +1,6 @@
 import { MarkdownView, Menu, TFile, debounce, normalizePath } from 'obsidian'
 import * as Y from 'yjs'
-import { calculateHash, createRandomId, generateRandomString, randomUint32 } from '../tools'
+import { calculateHash, generateRandomString, randomUint32 } from '../tools'
 import { Compartment } from "@codemirror/state";
 import PeerDraftPlugin from '../main';
 import { openFileInNewTab, pinLeaf, showNotice, usercolors } from '../ui';
@@ -8,7 +8,7 @@ import { yCollab } from 'y-codemirror.next';
 import { EditorView } from '@codemirror/view';
 import { StateEffect } from "@codemirror/state";
 import { PeerdraftRecord } from '../utils/peerdraftRecord';
-import { PermanentShareDocument } from '../permanentShareStore';
+import { type PermanentShareDocument } from '../permanentShareStore';
 import { getLeafIdsByPath } from '../workspace/peerdraftWorkspace';
 import { SharedEntity } from './sharedEntity';
 import * as path from 'path';
@@ -19,6 +19,7 @@ import { Mutex } from 'async-mutex';
 import { diff, diffCleanupEfficiency } from 'diff-match-patch-es'
 import { add, getDocByPath, moveDoc, removeDoc } from 'src/permanentShareStoreFS';
 import { openLoginModal } from 'src/ui/login';
+import { promptForText } from 'src/ui/enterText';
 
 export class SharedDocument extends SharedEntity {
 
@@ -205,7 +206,7 @@ export class SharedDocument extends SharedEntity {
     doc.yDoc.getText("originalFilename").insert(0, file.name)
 
     if (opts.permanent) {
-      await doc.initServerYDoc()
+      await doc.initServerYDoc(opts.folder)
       await doc.setPermanent()
       // doc.startWebSocketSync()
       doc.startIndexedDBSync()
@@ -584,9 +585,21 @@ export class SharedDocument extends SharedEntity {
     })
   }
 
-  async stopSession() {
-    await this.plugin.serverSync.stopSession(this.shareId)
-    await this.unshare()
+  static async stopSession(id: string, plugin: PeerDraftPlugin) {
+
+    const text = await promptForText(plugin.app, {
+      description: "This document will not be synced with any vault anymore and can not be accessed via the Peerdraft Web Editor. Enter YES, if you really want to do this.",
+      header: "Do you really want to stop sharing?",
+      initial: {
+        text: "NO"
+      }
+    })
+
+    if (!text || text.text !== "YES") return
+
+    await plugin.serverSync.stopSession(id)
+    const doc = SharedDocument.findById(id)
+    if (doc) await doc.unshare()
   }
 
 

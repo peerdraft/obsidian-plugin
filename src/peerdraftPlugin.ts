@@ -1,11 +1,11 @@
-import { MarkdownView, Plugin, TFile, TFolder, normalizePath } from "obsidian"
+import { MarkdownView, Modal, Plugin, TFile, TFolder, normalizePath } from "obsidian"
 import * as path from "path"
 import { ActiveStreamClient } from "./activeStreamClient"
 import { prepareCommunication } from "./cookie"
 import { getJWT } from "./login"
 import { PeerdraftWebsocketProvider } from "./peerdraftWebSocketProvider"
 import { ServerAPI } from "./serverAPI"
-import { Settings, createSettingsTab, migrateSettings, saveSettings } from "./settings"
+import { type Settings, createSettingsTab, migrateSettings, saveSettings } from "./settings"
 import { SharedDocument } from "./sharedEntities/sharedDocument"
 import { fromShareURL } from "./sharedEntities/sharedEntityFactory"
 import { SharedFolder } from "./sharedEntities/sharedFolder"
@@ -13,6 +13,7 @@ import { showNotice } from "./ui"
 import { promptForSessionType } from "./ui/chooseSessionType"
 import { createMenuAsSubMenu } from "./ui/createMenu"
 import { promptForName, promptForURL } from "./ui/enterText"
+import { PEERDRAFT_SHARE_VIEW_TYPE, PeerdraftShareView, activateView } from "./ui/shareView"
 import { PeerdraftRecord } from "./utils/peerdraftRecord"
 import { PeerdraftLeaf } from "./workspace/peerdraftLeaf"
 import { getLeafsByPath, updatePeerdraftWorkspace } from "./workspace/peerdraftWorkspace"
@@ -73,16 +74,35 @@ export default class PeerdraftPlugin extends Plugin {
 			leaf.destroy()
 		})
 
+		plugin.registerView(
+			PEERDRAFT_SHARE_VIEW_TYPE,
+			(leaf) => new PeerdraftShareView(leaf, plugin)
+		);
+
+		plugin.addRibbonIcon("users", "Show my Peerdraft Shares", () => {
+			activateView(plugin.app);
+		});
+
 		plugin.app.workspace.onLayoutReady(
 			async () => {
-				this.serverSync = new PeerdraftWebsocketProvider(this.settings.sync, { jwt: getJWT(plugin.settings.oid) ?? undefined, connect: false })
+				this.serverSync = new PeerdraftWebsocketProvider(this.settings.sync, { jwt: getJWT(plugin.settings.oid) ?? undefined, version: plugin.manifest.version, connect: false })
+				
 				this.serverSync.on("authenticated", (data) => {
 					showNotice("Logged in to Peerdraft")
 					plugin.settings.plan.type = data.plan.type
 					saveSettings(plugin.settings, plugin)
 				})
 
+				this.serverSync.on('showMessage', (title, content) => {
+					const modal = new Modal(plugin.app)
+					modal.setTitle(title)
+					modal.contentEl.innerHTML = content
+					modal.open()
+					console.log("open message")
+				})
+
 				this.serverSync.connect()
+				await this.serverSync.connected()
 
 				for (const docs of plugin.settings.serverShares.files) {
 					await SharedDocument.fromPermanentShareDocument({ path: docs[0], persistenceId: docs[1].persistenceId, shareId: docs[1].shareId }, plugin)
@@ -145,6 +165,14 @@ export default class PeerdraftPlugin extends Plugin {
 				if (url && url.text) {
 					await fromShareURL(url.text, plugin)
 				}
+			}
+		})
+
+		plugin.addCommand({
+			id: "viewShares",
+			name: "Manage active persistent shares created by me",
+			callback() {
+				activateView(plugin.app);
 			}
 		})
 

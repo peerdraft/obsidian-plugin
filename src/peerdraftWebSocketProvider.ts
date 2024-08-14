@@ -33,6 +33,8 @@ export const STOP_SESSION_CONFIRMED = 11
 export const MESSAGE_AUTHENTICATION_REQUEST = 5
 export const MESSAGE_AUTHENTICATION_RESPONSE = 6
 
+export const SHOW_MESSAGE_MESSAGE = 8
+
 const messageReconnectTimeout = 30000
 
 
@@ -108,6 +110,10 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
         const data = JSON.parse(decoding.readVarString(decoder))
         provider.authenticated = true
         provider.emit('authenticated', [data])
+      } else if (messageType === SHOW_MESSAGE_MESSAGE) {
+        const title = decoding.readVarString(decoder)
+        const content = decoding.readVarString(decoder)
+        provider.emit('showMessage', [title, content])
       }
     }
 
@@ -148,9 +154,10 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
       provider.emit('status', [{
         status: 'connected'
       }])
+      provider.emit('connected', [])
 
       if (provider.jwt) {
-        provider.authenticate(provider.jwt)
+        provider.authenticate(provider.jwt, provider.version)
       }
 
       for (const folder of SharedFolder.getAll()) {
@@ -187,6 +194,7 @@ type Events = {
   "connection-error": (event: Event, provider: PeerdraftWebsocketProvider) => void
   "connection-close": (event: Event, provider: PeerdraftWebsocketProvider) => void
   status: (status: { status: string }) => void
+  connected: () => void
   'document-received': (id: string, update: Uint8Array, checksum: string) => void
   // 'sync-confirmed': (id: string, checksum: string) => void
   'new-doc-confirmed': (tempId: string, id: string, checksum: string) => void
@@ -195,6 +203,7 @@ type Events = {
   // 'my-update-sent': (id: string, update: Uint8Array, checksum: string) => void
   // 'other-document-received-if-checksum-differs': (id: string, myChecksum: string, yourChecksum: string, update?: Uint8Array) => void
   'authenticated': (data: AuthResponseData) => void
+  'showMessage': (title: string, content: string) => void
 }
 
 export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
@@ -218,13 +227,15 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
   _checkInterval: number
   authenticated: boolean
   jwt: string | undefined
+  version: string
 
   constructor(serverUrl: string, {
     connect = true,
     resyncInterval = -1,
     maxBackoffTime = 2500,
-    jwt = undefined
-  }: { jwt?: string, connect?: boolean; params?: { [s: string]: string }; WebSocketPolyfill?: typeof WebSocket; resyncInterval?: number; maxBackoffTime?: number; disableBc?: boolean } = {}) {
+    jwt = undefined,
+    version = ''
+  }: { version?: string; jwt?: string, connect?: boolean; params?: { [s: string]: string }; WebSocketPolyfill?: typeof WebSocket; resyncInterval?: number; maxBackoffTime?: number; disableBc?: boolean } = {}) {
     super()
     this.url = serverUrl
     this.maxBackoffTime = maxBackoffTime
@@ -239,6 +250,7 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
     this._resyncInterval = 0
     this.authenticated = false
     this.jwt = jwt
+    this.version = version
 
     this._checkInterval = (window.setInterval(() => {
       if (
@@ -294,13 +306,16 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
     this.sendMessage(encoding.toUint8Array(encoder))
   }
 
-  sendNewDocument(doc: SharedEntity, tempId: string) {
+  sendNewDocument(doc: SharedEntity, tempId: string, folderKey?: string) {
     const encoder = encoding.createEncoder()
     encoding.writeVarUint(encoder, MESSAGE_MULTIPLEX_SYNC)
     encoding.writeVarUint(encoder, NEW_DOCUMENT)
     encoding.writeVarString(encoder, tempId)
     encoding.writeVarUint8Array(encoder, Y.encodeStateAsUpdate(doc.yDoc))
     encoding.writeVarString(encoder, doc.calculateHash())
+    if (folderKey) {
+      encoding.writeVarString(encoder, folderKey)
+    }
     this.sendMessage(encoding.toUint8Array(encoder))
   }
 
@@ -312,11 +327,12 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
     this.sendMessage(encoding.toUint8Array(encoder))
   }
 
-  sendAuthenicationRequest(jwt: string) {
+  sendAuthenicationRequest(jwt: string, version: string) {
     this.jwt = jwt
     const encoder = encoding.createEncoder()
     encoding.writeVarUint(encoder, MESSAGE_AUTHENTICATION_REQUEST)
     encoding.writeVarString(encoder, jwt)
+    encoding.writeVarString(encoder, version)
     this.sendMessage(encoding.toUint8Array(encoder))
   }
 
@@ -336,14 +352,14 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
     this.sendMessage(encoding.toUint8Array(encoder))
   }
 
-  authenticate(jwt: string) {
+  authenticate(jwt: string, version: string) {
     return new Promise<AuthResponseData>(resolve => {
       const handler = async (data: AuthResponseData) => {
         this.off('authenticated', handler)
         resolve(data)
       }
       this.on('authenticated', handler)
-      this.sendAuthenicationRequest(jwt)
+      this.sendAuthenicationRequest(jwt, version)
     })
   }
 
@@ -353,8 +369,18 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
     }
   }
 
+  connected() {
+    return new Promise<void>((resolve) => {
+      if (this.wsconnected) return resolve()
+      this.once('connected', () => {
+        resolve()
+      })
+    })
+  }
+
   requestDocument(docId: string) {
-    return new Promise<Y.Doc>(resolve => {
+    return new Promise<Y.Doc>(async resolve => {
+      await this.connected()
       const handler = (serverId: string, update: Uint8Array, checksum: string) => {
         if (docId === serverId) {
           this.off('document-received', handler)
@@ -382,7 +408,7 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
     const tempId = randomUUID()
     return new Promise<string>(resolve => {
       const handler = (serverTempId: string, id: string) => {
-        if(serverTempId === tempId) {
+        if (serverTempId === tempId) {
           this.off("new-session-confirmed", handler)
           resolve(id)
         }
@@ -395,7 +421,7 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
   stopSession(id: string) {
     return new Promise<string>(resolve => {
       const handler = (sessionId: string) => {
-        if(sessionId === id) {
+        if (sessionId === id) {
           this.off("new-session-confirmed", handler)
           resolve(id)
         }

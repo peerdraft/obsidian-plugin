@@ -67,7 +67,7 @@ export abstract class SharedEntity {
 
   abstract calculateHash (): string
 
-  initServerYDoc() {
+  initServerYDoc(folderKey?: string) {
     return new Promise<string>(resolve => {
       const tempId = createRandomId()
       const handler = (serverTempId: string, id: string, checksum: string) => {
@@ -78,7 +78,7 @@ export abstract class SharedEntity {
         }
       }
       this.plugin.serverSync.on('new-doc-confirmed', handler)
-      this.plugin.serverSync.sendNewDocument(this, tempId)
+      this.plugin.serverSync.sendNewDocument(this, tempId, folderKey)
     })
   }
 
