@@ -35,7 +35,7 @@ class ChooseSessionTypeModal extends Modal {
       })
     }).setDesc("A Persistent Share is used when you want to keep documents and folders synchronized over an extended period. Persistent Shares support both asynchronous and offline edits.")
 
-    setting.settingEl.insertAdjacentHTML('afterend', '<p><small>To learn more about the difference between a Fleeting Session and a Permanent Share, click <a href="http://localhost:5173/documentation/explanations/what-is-the-difference-between-persistent-and-fleeting">here</a>.</small></p>')
+    setting.settingEl.insertAdjacentHTML('afterend', '<p><small>To learn more about the difference between a Fleeting Session and a Permanent Share, click <a href="https://www.peerdraft.app/documentation/explanations/what-is-the-difference-between-persistent-and-fleeting">here</a>.</small></p>')
   }
 }
 
