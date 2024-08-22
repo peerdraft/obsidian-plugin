@@ -1,51 +1,39 @@
-# Secure real-time collaboration for Obsidian
+# Collaboration for Obsidian – Sync, Share, and Edit anywhere
 
-**tl;dr** Peerdraft enables hassle-free collaboration in Obsidian with secure, one-time links. No account or Obsidian installation is needed for peers. Changes are exchanged directly, and sessions end upon document closure, ensuring privacy.
+Collaborate instantly on Obsidian documents or folders. Choose end-to-end encrypted ad-hoc sessions or long-term sharing with support for asynchronous and offline editing. Whether for quick note-taking or building a team knowledge base, Peerdaft syncs with your collaborators' Obsidian vaults and also offers a Web Editor.
 
-## It just works
+The free version lets you start unlimited ad-hoc collaboration sessions and join as many sessions from others as you want.
 
-Start a session from within Obsidian and you get a secret and unguessable link. Your peers can use this link to join with their browsers instantly. They don't need a Peerdraft account or Obsidian installed.
+For long-term sharing with support for asynchronous and offline editing you need a paid account that starts at 30 USD / year and comes with unlimited free collaborators.
 
-## Your documents are safe
+You can test all features for free for 14 days.
 
-Your document and all changes are exchanged securly and directly between you and your peers. The Peerdraft servers are only used to establish the connections.
+You do not need an account to join shares created by others.
 
-## Close and forget
+[Details](https://www.peerdraft.app/#pricing).
 
-As soon as you close your document in Obsidian, the session stops automatically. Updates will not be shared anymore and the secret link stops working. When you start a new session, a new link will be created.
+Join our [Discord Server](https://discord.gg/bKtVfTAkXt)
 
-## Obsidian-to-Obsidian sync available
+## Features
 
-Your collaborators can use the web editor or the Peerdraft Obsidian plugin to join a session. If they join a session from within Obsidian, a new document will be created and kept in sync as long as the session is active and they don't close the document.
+###  Works instantly
 
-## How to get started
+Start sharing from within Obsidian and you get a secret, unguessable link. Your collaborators don't need a Peerdraft account — they can join instantly from their Obsidian vaults or browsers using the link.
 
-Visit [https://www.peerdraft.app](https://www.peerdraft.app) to create an account and get started. There is a "Forever Free" plan available.
+###  Real-Time Collaboration
 
-## How to use
+Collaborate in real-time, seeing your teammates' positions and changes instantly. Notifications alert you when someone starts working on a shared document.
 
-### Work on a document together
+###  Share folders
 
-* Open the document you want to work on together.
-* Run the command `Start working together on this document`. A secret link will be copied to your clipboard automatically.
-* Send this link to your collaborators and start working together.
+Keep entire folders in sync with your collaborators’ vaults. New documents created by anyone in the shared folder are synced instantly.
 
-### Close a session
+###  Fleeting Sessions for Ad-Hoc Collaboration
 
-The session will be closed automatically, when you close the document in Obsidian. You can also:
+For fleeting sessions, no content passes through Peerdaft servers. Your documents and updates are exchanged end-to-end encrypted, directly between you and your peers. Fleeting Sessions end as soon as the creator leaves or closes the document. Learn about the [difference between fleeting sessions and persistent shares](https://www.peerdraft.app/documentation/explanations/what-is-the-difference-between-persistent-and-fleeting).
 
-* Run the command `Stop working together on this document` OR
-* Click on the `Sharing [filename]` entry in the statusbar and select `stop shared session`.
+### Collaborators can use the Plugin or Web Editor
 
-### Join a session
+With the Peerdaft plugin, your collaborators can sync shared files and folders with their own vaults. No Peerdaft account is needed to import a share initiated by someone else.
 
-When you received a link to a Peerdraft session from someone else, you can also use the `Join session and add document from someone else` command. After you entered the URL, a new file will be created and you can start working together.
-
-# NEW: Peerdraft for Teams:
-
-Use Obsidian as your team's central knowledge base and working space.
-
-* Share documents and folders with one click (including subfolders)
-* Keep documents and folders permanently in sync between your team members' Obsidian vaults
-
-Peerdraft for Teams is in closed beta right now. [Get in touch](https://forms.reform.app/rvWlqR/peerdraft-for-teams/ZZlT1z) if you are interested in joining.
+Not every collaborator may use Obsidian or have it available. With the secret link created when sharing, they can access the Peerdaft Web Editor directly. The Web Editor supports both peer-to-peer fleeting sessions and working on persistent shares.
