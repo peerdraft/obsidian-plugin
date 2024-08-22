@@ -346,6 +346,8 @@ export class SharedDocument extends SharedEntity {
   startWebRTCSync() {
     return super.startWebRTCSync((provider) => {
 
+      console.log(this.plugin.settings.name)
+
       provider.awareness.setLocalStateField('user', {
         name: this.plugin.settings.name,
         color: SharedDocument._userColor.dark,
