@@ -31,8 +31,6 @@ const getFileExplorers = (plugin: PeerdraftPlugin) => {
   const fileExplorers: WorkspaceLeaf[] = [];
   plugin.app.workspace.iterateAllLeaves((leaf) => {
     const viewType = leaf.view.getViewType();
-    console.log(viewType)
-    console.log(leaf)
     if (viewType === "file-explorer") {
       if (!fileExplorers.includes(leaf)) {
         fileExplorers.push(leaf);
