@@ -36,7 +36,6 @@
 	}> = [];
 
 	data.subscribe(async (newData) => {
-		console.log(newData);
 		const inFolders: Array<string> = [];
 		if (newData instanceof Array) {
 			const folderData = newData.filter((entry) => {
