@@ -43,22 +43,11 @@ export const applyFileChangesToDoc = (canvas: any, yDoc: Y.Doc) => {
   yDoc.transact(() => {
     const diffs = diffCanvases(yDocToCanvasJSON(yDoc), canvas)
 
-    console.log("diffs before applying")
-    console.log(diffs)
-
     const yCanvas = yDoc.getMap('canvas')
-
     applyChanges(yCanvas, diffs)
-
-    console.log("Diff after changes")
-    console.log(diff(yDocToCanvasJSON(yDoc), canvas, {
-      embeddedObjKeys: {
-        edges: 'id',
-        nodes: 'id'
-      }
-    }))
   })
 }
+
 export const diffCanvases = (oldCanvas: any, newCanvas: any) => {
   return diff(oldCanvas, newCanvas, {
     embeddedObjKeys: {
@@ -76,7 +65,6 @@ const applyChanges = (yMap: Y.Map<any>, changes: Array<IChange>) => {
       if (change.type === "UPDATE") {
         yMap.set(change.key, change.value)
       } else if (change.type === "ADD") {
-        console.log(change.key)
         if (change.value instanceof Array) {
           yMap.set(change.key, createYArrayFromArray(change.value));
         }

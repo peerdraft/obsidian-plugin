@@ -300,9 +300,19 @@ export class SharedDocument extends SharedEntity {
     if (opts.id) {
       this._shareId = opts.id
     }
+    const pendingUpdates: Array<Uint8Array> = []
+
+    const sendUpdates = debounce(() => {
+      this.mutex.runExclusive(() => {
+        plugin.serverSync.sendUpdate(this, Y.mergeUpdates(pendingUpdates))
+        pendingUpdates.length = 0
+      })
+    }, 1000, true)
+    
     this.yDoc.on("update", (update: Uint8Array, origin: any, yDoc: Y.Doc, tr: Y.Transaction) => {
       if (tr.local && this.isPermanent) {
-        plugin.serverSync.sendUpdate(this, update)
+        pendingUpdates.push(update)
+        sendUpdates()
       }
     })
 
@@ -320,27 +330,26 @@ export class SharedDocument extends SharedEntity {
 
   setupFileSyncForCanvas() {
 
+    const updateFile = debounce(() => {
+      this.mutex.runExclusive(async () => {
+        const yCanvas = yDocToCanvasJSON(this.yDoc)
+        const fileContent = await this.plugin.app.vault.read(this._file)
+        const fileCanvas = JSON.parse(fileContent)
+        const diffs = diffCanvases(fileCanvas, yCanvas)
+        console.log(diffs)
+        if (diffs.length != 0) {
+          this.lastUpdateTriggeredByDocChange = new Date().valueOf()
+          await this.plugin.app.vault.modify(this._file, JSON.stringify(yCanvas), {
+            mtime: this.lastUpdateTriggeredByDocChange
+          })
+        }
+      })
+    }, 1000, true)
+
     this.yDoc.getMap('canvas').observeDeep(async (events, tx) => {
-      console.log("ydoc changed")
       if (this._file && !tx.local) {
         console.log("remote")
-        debounce(() => {
-          console.log("I run")
-          this.mutex.runExclusive(async () => {
-            console.log("I run, too")
-            const yCanvas = yDocToCanvasJSON(this.yDoc)
-            const fileContent = await this.plugin.app.vault.read(this._file)
-            const fileCanvas = JSON.parse(fileContent)
-            const diffs = diffCanvases(fileCanvas, yCanvas)
-            console.log(diffs)
-            if (diffs.length != 0) {
-              this.lastUpdateTriggeredByDocChange = new Date().valueOf()
-              await this.plugin.app.vault.modify(this._file, JSON.stringify(yCanvas), {
-                mtime: this.lastUpdateTriggeredByDocChange
-              })
-            }
-          })
-        }, 1000, true)()
+        updateFile()
       }
     })
 
@@ -360,20 +369,22 @@ export class SharedDocument extends SharedEntity {
 
 
   setupFileSyncForContent() {
+
+    const updateFile = debounce(() => {
+      this.mutex.runExclusive(async () => {
+        const yDocContent = this.getValue()
+        const fileContent = await this.plugin.app.vault.read(this._file)
+        if (yDocContent != fileContent) {
+          this.lastUpdateTriggeredByDocChange = new Date().valueOf()
+          await this.plugin.app.vault.modify(this._file, yDocContent, {
+            mtime: this.lastUpdateTriggeredByDocChange
+          })
+        }
+      })
+    }, 1000, true)
     this.getContentFragment().observe(async () => {
       if (this._file && this._extensions.size === 0) {
-        debounce(() => {
-          this.mutex.runExclusive(async () => {
-            const yDocContent = this.getValue()
-            const fileContent = await this.plugin.app.vault.read(this._file)
-            if (yDocContent != fileContent) {
-              this.lastUpdateTriggeredByDocChange = new Date().valueOf()
-              await this.plugin.app.vault.modify(this._file, yDocContent, {
-                mtime: this.lastUpdateTriggeredByDocChange
-              })
-            }
-          })
-        }, 1000, true)()
+        updateFile()
       }
     })
 
