@@ -287,7 +287,6 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
   }
 
   sendUpdate(doc: SharedEntity, update: Uint8Array) {
-    console.log("send update")
     const encoder = encoding.createEncoder()
     encoding.writeVarUint(encoder, MESSAGE_MULTIPLEX_SYNC)
     encoding.writeVarUint(encoder, UPDATE)
