@@ -165,7 +165,6 @@ export class SharedDocument extends SharedEntity {
 
     const leaf = await openFileInNewTab(file, plugin.app.workspace)
     doc.addStatusBarEntry()
-    console.log(leaf.view.getViewType())
     if (leaf.view.getViewType() === "markdown") {
       // @ts-expect-error
       doc.addExtensionToLeaf(leaf.id)
@@ -208,7 +207,6 @@ export class SharedDocument extends SharedEntity {
 
 
   static async fromTFile(file: TFile, opts: { permanent?: boolean, folder?: string }, plugin: PeerDraftPlugin) {
-    console.log(file.extension)
     if (!['md', 'MD', 'canvas'].contains(file.extension)) return
     const existing = SharedDocument.findByPath(file.path)
     if (existing) return existing
@@ -237,7 +235,7 @@ export class SharedDocument extends SharedEntity {
     } else {
       const content = await plugin.app.vault.read(file)
       if (doc.isCanvas) {
-        addCanvasToYDoc(JSON.parse(content), doc.yDoc)
+        addCanvasToYDoc(JSON.parse(content || '{}'), doc.yDoc)
       } else {
         doc.getContentFragment().insert(0, content)
       }
@@ -334,9 +332,8 @@ export class SharedDocument extends SharedEntity {
       this.mutex.runExclusive(async () => {
         const yCanvas = yDocToCanvasJSON(this.yDoc)
         const fileContent = await this.plugin.app.vault.read(this._file)
-        const fileCanvas = JSON.parse(fileContent)
+        const fileCanvas = JSON.parse(fileContent || '{}')
         const diffs = diffCanvases(fileCanvas, yCanvas)
-        console.log(diffs)
         if (diffs.length != 0) {
           this.lastUpdateTriggeredByDocChange = new Date().valueOf()
           await this.plugin.app.vault.modify(this._file, JSON.stringify(yCanvas), {
@@ -348,7 +345,6 @@ export class SharedDocument extends SharedEntity {
 
     this.yDoc.getMap('canvas').observeDeep(async (events, tx) => {
       if (this._file && !tx.local) {
-        console.log("remote")
         updateFile()
       }
     })
@@ -360,7 +356,7 @@ export class SharedDocument extends SharedEntity {
 
           const fileContent = await this.plugin.app.vault.read(this._file)
 
-          applyFileChangesToDoc(JSON.parse(fileContent), this.yDoc)
+          applyFileChangesToDoc(JSON.parse(fileContent || '{}'), this.yDoc)
 
         })
       }

@@ -1,9 +1,9 @@
 <script lang="ts">
-	import type PeerdraftPlugin from "src/peerdraftPlugin";
-	import { getJWT } from "src/login";
+	import type PeerdraftPlugin from "../peerdraftPlugin";
+	import { getJWT } from "../login";
 	import fetchStore from "./fetch";
-	import { SharedFolder } from "src/sharedEntities/sharedFolder";
-	import { SharedDocument } from "src/sharedEntities/sharedDocument";
+	import { SharedFolder } from "../sharedEntities/sharedFolder";
+	import { SharedDocument } from "../sharedEntities/sharedDocument";
 
 	interface ApiReply {
 		publicAccessKey: string;
@@ -70,7 +70,6 @@
 					};
 				}),
 			);
-			console.log(inFolders);
 			const documentData = newData.filter((entry) => {
 				return (
 					entry.type === "DOCUMENT" &&
@@ -98,9 +97,6 @@
 					}
 				}),
 			);
-
-			console.log(documentData);
-			console.log(folders);
 		}
 	});
 </script>

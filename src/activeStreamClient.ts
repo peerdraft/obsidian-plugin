@@ -31,17 +31,14 @@ const handleMessage = async (data: string) => {
       SharedFolder.findById(id)?.startWebRTCSync()
     }
   } else if (message.type === "delete") {
-    console.log(message)
     for (const id of message.docs) {
       const folder = SharedFolder.findById(id)
-      console.log("folder for " + id)
       if (folder) {
         showNotice(folder.path + " is not shared anymore.", undefined)
         await folder.unshare()
       } else {
         const document = SharedDocument.findById(id)
         if (document) {
-          console.log("document found")
           const inFolder = SharedFolder.getSharedFolderForSubPath(document.path)
           if (!inFolder) {
             showNotice(document.path + " is not shared anymore.", undefined)
