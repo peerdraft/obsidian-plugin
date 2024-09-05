@@ -20,6 +20,7 @@ import { diff, diffCleanupEfficiency } from 'diff-match-patch-es'
 import { add, getDocByPath, moveDoc, removeDoc } from 'src/permanentShareStoreFS';
 import { openLoginModal } from 'src/ui/login';
 import { promptForText } from 'src/ui/enterText';
+import { addCanvasToYDoc, applyFileChangesToDoc, diffCanvases, yDocToCanvasJSON } from './canvas';
 
 export class SharedDocument extends SharedEntity {
 
@@ -36,6 +37,8 @@ export class SharedDocument extends SharedEntity {
 
   private mutex = new Mutex
   private lastUpdateTriggeredByDocChange: number
+
+  isCanvas: boolean
 
   static async fromView(view: MarkdownView, plugin: PeerDraftPlugin, opts = { permanent: false }) {
     if (!view.file) return
@@ -76,6 +79,12 @@ export class SharedDocument extends SharedEntity {
     }, plugin)
     doc._isPermanent = true
     doc._shareId = pd.shareId
+    doc.isCanvas = "canvas" === (file as TFile).extension
+    if (doc.isCanvas) {
+      doc.setupFileSyncForCanvas()
+    } else {
+      doc.setupFileSyncForContent()
+    }
     await doc.startIndexedDBSync()
     //if (fileAlreadyThere) {
     doc.syncWithServer()
@@ -120,8 +129,16 @@ export class SharedDocument extends SharedEntity {
       })
     })
 
+    if (yDoc.share.has('canvas')) {
+      doc.isCanvas = true
+      doc.setupFileSyncForCanvas()
+    } else {
+      doc.isCanvas = false
+      doc.setupFileSyncForContent()
+    }
+
     const docFilename = doc.yDoc.getText("originalFilename").toString()
-    let initialFileName = `_peerdraft_session_${id}_${generateRandomString()}.md`
+    let initialFileName = `_peerdraft_session_${id}_${generateRandomString()}.${doc.isCanvas ? 'canvas' : 'md'}`
     if (docFilename != '') {
       const fileExists = plugin.app.vault.getAbstractFileByPath(normalizePath(docFilename))
       if (!fileExists) {
@@ -148,8 +165,11 @@ export class SharedDocument extends SharedEntity {
 
     const leaf = await openFileInNewTab(file, plugin.app.workspace)
     doc.addStatusBarEntry()
-    // @ts-expect-error
-    doc.addExtensionToLeaf(leaf.id)
+    console.log(leaf.view.getViewType())
+    if (leaf.view.getViewType() === "markdown") {
+      // @ts-expect-error
+      doc.addExtensionToLeaf(leaf.id)
+    }
     pinLeaf(leaf)
     showNotice("Joined Session in " + doc.path + ".")
     return doc
@@ -169,9 +189,15 @@ export class SharedDocument extends SharedEntity {
     const doc = new SharedDocument({
       id, yDoc: ydoc
     }, plugin)
+    if (ydoc.share.has("canvas")) {
+      doc.isCanvas = true
+      doc.setupFileSyncForCanvas()
+    } else {
+      doc.isCanvas = false
+      doc.setupFileSyncForContent
+    }
     doc._path = normalizedPath
-
-    const file = await plugin.app.vault.create(normalizedPath, ydoc.getText("content").toString())
+    const file = await plugin.app.vault.create(normalizedPath, doc.getValue())
     doc._file = file
 
     doc.syncWithServer()
@@ -182,7 +208,8 @@ export class SharedDocument extends SharedEntity {
 
 
   static async fromTFile(file: TFile, opts: { permanent?: boolean, folder?: string }, plugin: PeerDraftPlugin) {
-    if (!['md', 'MD'].contains(file.extension)) return
+    console.log(file.extension)
+    if (!['md', 'MD', 'canvas'].contains(file.extension)) return
     const existing = SharedDocument.findByPath(file.path)
     if (existing) return existing
 
@@ -193,6 +220,15 @@ export class SharedDocument extends SharedEntity {
     }
 
     const doc = new SharedDocument({ path: file.path }, plugin)
+
+    if (file.extension === "canvas"){
+      doc.isCanvas = true
+      doc.setupFileSyncForCanvas()
+    } else {
+      doc.isCanvas = false
+      doc.setupFileSyncForContent()
+    }
+
     const leafIds = getLeafIdsByPath(file.path, plugin.pws)
 
     if (leafIds.length > 0) {
@@ -200,7 +236,11 @@ export class SharedDocument extends SharedEntity {
       doc.getContentFragment().insert(0, content)
     } else {
       const content = await plugin.app.vault.read(file)
-      doc.getContentFragment().insert(0, content)
+      if (doc.isCanvas) {
+        addCanvasToYDoc(JSON.parse(content), doc.yDoc)
+      } else {
+        doc.getContentFragment().insert(0, content)
+      }
     }
 
     doc.yDoc.getText("originalFilename").insert(0, file.name)
@@ -240,11 +280,19 @@ export class SharedDocument extends SharedEntity {
     yDoc?: Y.Doc
   }, plugin: PeerDraftPlugin) {
     super(plugin)
+    this.yDoc = opts.yDoc ?? new Y.Doc()
     if (opts.path) {
       this._path = normalizePath(opts.path)
       const file = this.plugin.app.vault.getAbstractFileByPath(normalizePath(opts.path))
       if ((file instanceof TFile)) {
         this._file = file
+        if (file.extension === "canvas") {
+          this.isCanvas = true
+          this.setupFileSyncForCanvas()
+        } else {
+          this.isCanvas = false
+          this.setupFileSyncForContent()
+        }
       } else {
         showNotice("ERROR creating sharedDoc")
       }
@@ -252,9 +300,6 @@ export class SharedDocument extends SharedEntity {
     if (opts.id) {
       this._shareId = opts.id
     }
-
-
-    this.yDoc = opts.yDoc ?? new Y.Doc()
     this.yDoc.on("update", (update: Uint8Array, origin: any, yDoc: Y.Doc, tr: Y.Transaction) => {
       if (tr.local && this.isPermanent) {
         plugin.serverSync.sendUpdate(this, update)
@@ -269,6 +314,52 @@ export class SharedDocument extends SharedEntity {
       }
     })
 
+    addIsSharedClass(this.path, this.plugin)
+  }
+
+
+  setupFileSyncForCanvas() {
+
+    this.yDoc.getMap('canvas').observeDeep(async (events, tx) => {
+      console.log("ydoc changed")
+      if (this._file && !tx.local) {
+        console.log("remote")
+        debounce(() => {
+          console.log("I run")
+          this.mutex.runExclusive(async () => {
+            console.log("I run, too")
+            const yCanvas = yDocToCanvasJSON(this.yDoc)
+            const fileContent = await this.plugin.app.vault.read(this._file)
+            const fileCanvas = JSON.parse(fileContent)
+            const diffs = diffCanvases(fileCanvas, yCanvas)
+            console.log(diffs)
+            if (diffs.length != 0) {
+              this.lastUpdateTriggeredByDocChange = new Date().valueOf()
+              await this.plugin.app.vault.modify(this._file, JSON.stringify(yCanvas), {
+                mtime: this.lastUpdateTriggeredByDocChange
+              })
+            }
+          })
+        }, 1000, true)()
+      }
+    })
+
+    this.plugin.registerEvent(this.plugin.app.vault.on("modify", async (file) => {
+      if (this.file === file && this.file.stat.mtime != this.lastUpdateTriggeredByDocChange) {
+        // check if document and content actually are out of sync
+        this.mutex.runExclusive(async () => {
+
+          const fileContent = await this.plugin.app.vault.read(this._file)
+
+          applyFileChangesToDoc(JSON.parse(fileContent), this.yDoc)
+
+        })
+      }
+    }))
+  }
+
+
+  setupFileSyncForContent() {
     this.getContentFragment().observe(async () => {
       if (this._file && this._extensions.size === 0) {
         debounce(() => {
@@ -330,8 +421,6 @@ export class SharedDocument extends SharedEntity {
         })
       }
     }))
-
-    addIsSharedClass(this.path, this.plugin)
   }
 
   get file() {
@@ -437,7 +526,12 @@ export class SharedDocument extends SharedEntity {
   }
 
   getValue() {
-    return this.getContentFragment().toString()
+    if (!this.isCanvas) {
+      return this.getContentFragment().toString()
+    } else {
+      return JSON.stringify(yDocToCanvasJSON(this.yDoc))
+    }
+
   }
 
   getContentFragment() {

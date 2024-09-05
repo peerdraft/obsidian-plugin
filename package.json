@@ -37,5 +37,8 @@
 		"y-webrtc": "^10.2.5",
 		"y-websocket": "^2.0.2",
 		"yjs": "^13.6.8"
+	},
+	"dependencies": {
+		"json-diff-ts": "^4.0.1"
 	}
 }

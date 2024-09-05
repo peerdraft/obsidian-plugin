@@ -380,9 +380,7 @@ export class SharedFolder extends SharedEntity {
   private static getAllFilesInFolder(folder: TFolder): Array<TFile> {
     const files = folder.children.flatMap((child) => {
       if (child instanceof TFile) {
-        if (child.extension === "md") {
-          return child
-        }
+        return child
       }
       if (child instanceof TFolder) {
         return this.getAllFilesInFolder(child)
