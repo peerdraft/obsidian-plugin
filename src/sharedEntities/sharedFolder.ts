@@ -3,7 +3,6 @@ import * as path from 'path';
 import PeerDraftPlugin from "src/main";
 import { type PermanentShareFolder } from "src/permanentShareStore";
 import { add, getFolderByPath, moveFolder, removeFolder } from "src/permanentShareStoreFS";
-import { openFolderOptions } from "src/ui/folderOptions";
 import { openLoginModal } from "src/ui/login";
 import { addIsSharedClass, removeIsSharedClass } from "src/workspace/explorerView";
 import { IndexeddbPersistence } from "y-indexeddb";

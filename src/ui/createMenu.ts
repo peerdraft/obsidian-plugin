@@ -105,7 +105,7 @@ export const createMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlu
           })
         })
       }
-    } else if (!sharedFolder && ['md', 'MD'].includes(file.extension)) {
+    } else if (!sharedFolder && ['md', 'MD', 'canvas'].includes(file.extension)) {
 
       menu.addItem((item) => {
         item.setTitle('Share File')
