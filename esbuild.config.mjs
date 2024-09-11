@@ -3,6 +3,7 @@ import esbuildSvelte from "esbuild-svelte";
 import process from "process";
 import builtins from "builtin-modules";
 import { sveltePreprocess } from "svelte-preprocess";
+import { nodeModulesPolyfillPlugin } from 'esbuild-plugins-node-modules-polyfill';
 
 const banner =
 `/*
@@ -23,7 +24,8 @@ const context = await esbuild.context({
 		esbuildSvelte({
 			compilerOptions: {css: "injected"},
 			preprocess: sveltePreprocess()
-		})
+		}),
+		nodeModulesPolyfillPlugin()
 	],
 	external: [
 		"obsidian",

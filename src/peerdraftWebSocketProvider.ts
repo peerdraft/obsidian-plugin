@@ -7,8 +7,7 @@ import * as math from 'lib0/math'
 import { SharedDocument } from './sharedEntities/sharedDocument'
 import { SharedEntity } from './sharedEntities/sharedEntity'
 import { SharedFolder } from './sharedEntities/sharedFolder'
-import { calculateHash, serialize } from './tools'
-import { randomUUID } from 'crypto'
+import { calculateHash, createRandomId, serialize } from './tools'
 
 export const MESSAGE_SYNC = 0
 export const MESSAGE_QUERY_AWARENESS = 3
@@ -405,7 +404,7 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
   }
 
   createNewSession() {
-    const tempId = randomUUID()
+    const tempId = createRandomId()
     return new Promise<string>(resolve => {
       const handler = (serverTempId: string, id: string) => {
         if (serverTempId === tempId) {

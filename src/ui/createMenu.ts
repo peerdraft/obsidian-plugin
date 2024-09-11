@@ -17,7 +17,7 @@ export const createMenuAsSubMenu = (menu: Menu, file: TAbstractFile, plugin: Pee
 }
 
 
-export const createMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlugin) => {
+export const createMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlugin, prefix: string = "") => {
   if (file instanceof TFolder) {
     // Not shared folder && not within shared folder
     const sharedFolder = SharedFolder.findByPath(file.path)
@@ -73,7 +73,7 @@ export const createMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlu
     const sharedFolder = SharedFolder.getSharedFolderForSubPath(file.path)
     if (sharedDocument) {
       menu.addItem(item => {
-        item.setTitle('Copy URL')
+        item.setTitle(prefix + 'Copy URL')
         item.setIcon('clipboard-copy')
         item.onClick(() => {
           navigator.clipboard.writeText(plugin.settings.basePath + '/cm/' + sharedDocument.shareId)
@@ -81,7 +81,7 @@ export const createMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlu
       })
       if (sharedFolder) {
         menu.addItem(item => {
-          item.setTitle('Delete and remove from Shared Folder')
+          item.setTitle(prefix + 'Delete and remove from Shared Folder')
           item.setIcon('trash')
           item.onClick(async () => {
             sharedFolder.removeDocument(sharedDocument)
@@ -91,14 +91,14 @@ export const createMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlu
         })
       } else {
         menu.addItem(item => {
-          item.setTitle('Stop syncing with this vault')
+          item.setTitle(prefix + 'Stop syncing with this vault')
           item.setIcon('refresh-cw-off')
           item.onClick(async () => {
             await sharedDocument.unshare()
           })
         })
         menu.addItem(item => {
-          item.setTitle('Stop syncing for everyone')
+          item.setTitle(prefix + 'Stop syncing for everyone')
           item.setIcon('circle-off')
           item.onClick(async () => {
             await SharedDocument.stopSession(sharedDocument.shareId, plugin)
@@ -108,7 +108,7 @@ export const createMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlu
     } else if (!sharedFolder && ['md', 'MD'].includes(file.extension)) {
 
       menu.addItem((item) => {
-        item.setTitle('Share File')
+        item.setTitle(prefix + 'Share File')
         item.setIcon('share-2')
         item.onClick(async () => {
           const result = await promptForSessionType(plugin.app)

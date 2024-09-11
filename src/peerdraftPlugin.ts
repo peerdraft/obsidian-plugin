@@ -1,4 +1,4 @@
-import { MarkdownView, Modal, Plugin, TFile, TFolder, normalizePath } from "obsidian"
+import { MarkdownView, Modal, Platform, Plugin, TFile, TFolder, normalizePath } from "obsidian"
 import * as path from "path"
 import { ActiveStreamClient } from "./activeStreamClient"
 import { prepareCommunication } from "./cookie"
@@ -11,7 +11,7 @@ import { fromShareURL } from "./sharedEntities/sharedEntityFactory"
 import { SharedFolder } from "./sharedEntities/sharedFolder"
 import { showNotice } from "./ui"
 import { promptForSessionType } from "./ui/chooseSessionType"
-import { createMenuAsSubMenu } from "./ui/createMenu"
+import { createMenu, createMenuAsSubMenu } from "./ui/createMenu"
 import { promptForName, promptForURL } from "./ui/enterText"
 import { PEERDRAFT_SHARE_VIEW_TYPE, PeerdraftShareView, activateView } from "./ui/shareView"
 import { PeerdraftRecord } from "./utils/peerdraftRecord"
@@ -117,7 +117,12 @@ export default class PeerdraftPlugin extends Plugin {
 		)
 
 		plugin.registerEvent(plugin.app.workspace.on('file-menu', (menu, file) => {
-			createMenuAsSubMenu(menu, file, plugin)
+			if (Platform.isMobile) {
+				menu.addSeparator()
+				createMenu(menu, file, plugin, 'Peerdraft: ')
+			} else {
+				createMenuAsSubMenu(menu, file, plugin)
+			}
 		}))
 
 		plugin.addCommand({
