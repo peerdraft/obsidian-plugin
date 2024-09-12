@@ -20,7 +20,8 @@ import { diff, diffCleanupEfficiency } from 'diff-match-patch-es'
 import { add, getDocByPath, moveDoc, removeDoc } from 'src/permanentShareStoreFS';
 import { openLoginModal } from 'src/ui/login';
 import { promptForText } from 'src/ui/enterText';
-import { addCanvasToYDoc, applyFileChangesToDoc, diffCanvases, yDocToCanvasJSON } from './canvas';
+import { addCanvasToYDoc, applyDataChangesToDoc, diffCanvases, yDocToCanvasJSON } from './canvas';
+import { addCanvasExtension, type CanvasView } from 'src/ui/canvas';
 
 export class SharedDocument extends SharedEntity {
 
@@ -30,6 +31,7 @@ export class SharedDocument extends SharedEntity {
   private _file: TFile
 
   private _extensions: PeerdraftRecord<Compartment>
+  private _canvasExtenstions: PeerdraftRecord<() => any>
 
   private statusBarEntry?: HTMLElement
 
@@ -219,7 +221,7 @@ export class SharedDocument extends SharedEntity {
 
     const doc = new SharedDocument({ path: file.path }, plugin)
 
-    if (file.extension === "canvas"){
+    if (file.extension === "canvas") {
       doc.isCanvas = true
       doc.setupFileSyncForCanvas()
     } else {
@@ -227,7 +229,7 @@ export class SharedDocument extends SharedEntity {
       doc.setupFileSyncForContent()
     }
 
-    const leafIds = getLeafIdsByPath(file.path, plugin.pws)
+    const leafIds = getLeafIdsByPath(file.path, plugin.pws.markdown)
 
     if (leafIds.length > 0) {
       const content = (plugin.app.workspace.getLeafById(leafIds[0])?.view as MarkdownView).editor.getValue()
@@ -306,7 +308,7 @@ export class SharedDocument extends SharedEntity {
         pendingUpdates.length = 0
       })
     }, 1000, true)
-    
+
     this.yDoc.on("update", (update: Uint8Array, origin: any, yDoc: Y.Doc, tr: Y.Transaction) => {
       if (tr.local && this.isPermanent) {
         pendingUpdates.push(update)
@@ -315,10 +317,18 @@ export class SharedDocument extends SharedEntity {
     })
 
     SharedDocument._sharedEntites.push(this)
+
     this._extensions = new PeerdraftRecord<Compartment>()
     this._extensions.on("delete", () => {
       if (this._extensions.size === 0 && this._webRTCProvider) {
         this._webRTCProvider.awareness.setLocalState({})
+      }
+    })
+
+    this._canvasExtenstions = new PeerdraftRecord<any>()
+    this._canvasExtenstions.on("delete", () => {
+      if (this._canvasExtenstions.size === 0 && this._webRTCProvider) {
+        // remove presence ???
       }
     })
 
@@ -344,19 +354,19 @@ export class SharedDocument extends SharedEntity {
     }, 1000, true)
 
     this.yDoc.getMap('canvas').observeDeep(async (events, tx) => {
-      if (this._file && !tx.local) {
+      if (this._file && !tx.local && this._canvasExtenstions.size === 0) {
         updateFile()
       }
     })
 
     this.plugin.registerEvent(this.plugin.app.vault.on("modify", async (file) => {
-      if (this.file === file && this.file.stat.mtime != this.lastUpdateTriggeredByDocChange) {
+      if (this.file === file && this.file.stat.mtime != this.lastUpdateTriggeredByDocChange && this._canvasExtenstions.size === 0) {
         // check if document and content actually are out of sync
         this.mutex.runExclusive(async () => {
 
           const fileContent = await this.plugin.app.vault.read(this._file)
 
-          applyFileChangesToDoc(JSON.parse(fileContent || '{}'), this.yDoc)
+          applyDataChangesToDoc(JSON.parse(fileContent || '{}'), this.yDoc)
 
         })
       }
@@ -378,6 +388,7 @@ export class SharedDocument extends SharedEntity {
         }
       })
     }, 1000, true)
+
     this.getContentFragment().observe(async () => {
       if (this._file && this._extensions.size === 0) {
         updateFile()
@@ -567,7 +578,7 @@ export class SharedDocument extends SharedEntity {
     // already there
     if (this._extensions.get(leafId)) return
     // need a pleaf
-    const pLeaf = this.plugin.pws.get(leafId)
+    const pLeaf = this.plugin.pws.markdown.get(leafId)
     if (!pLeaf) return
 
     // path needs to match
@@ -628,6 +639,47 @@ export class SharedDocument extends SharedEntity {
       }
     }
     this._extensions.delete(leafId)
+  }
+
+  addCanvasExtensionToLeaf(leafId: string) {
+    console.log("adding extension to leaf " + leafId)
+
+    // only makes sense if we have a webrct provider to sync with
+    const webRTCProvider = this.startWebRTCSync()
+    if (!webRTCProvider) return
+    // already there
+    if (this._canvasExtenstions.get(leafId)) return
+    // need a pcanvas
+    const pCanvas = this.plugin.pws.canvas.get(leafId)
+    if (!pCanvas) return
+    // path needs to match
+
+    if (pCanvas.path != this._path) return
+    const leaf = this.plugin.app.workspace.getLeafById(leafId)
+    if (!leaf) return
+
+    const view = leaf.view as CanvasView
+    const canvas = view.canvas
+    const extension = addCanvasExtension(this, view)
+    if (extension) {
+      this._canvasExtenstions.set(leafId, extension)
+    }
+
+
+
+  }
+
+  removeCanvasExtensionFromLeaf(leafId: string) {
+    console.log("removing extension from leaf " + leafId)
+
+    const leaf = this.plugin.app.workspace.getLeafById(leafId)
+    if (leaf) {
+      const uninstall = this._canvasExtenstions.get(leafId)
+      if (uninstall) {
+        uninstall()
+      }
+    }
+    this._canvasExtenstions.delete(leafId)
   }
 
   addStatusBarEntry() {

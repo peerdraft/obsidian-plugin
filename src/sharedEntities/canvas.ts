@@ -1,4 +1,5 @@
 import { diff, type IChange } from 'json-diff-ts';
+import { debounce } from 'obsidian';
 import * as Y from 'yjs'
 
 export const addCanvasToYDoc = (canvas: any, doc: Y.Doc) => {
@@ -33,20 +34,23 @@ export const addCanvasToYDoc = (canvas: any, doc: Y.Doc) => {
 
 export const yDocToCanvasJSON = (doc: Y.Doc) => {
   const canvas = doc.getMap('canvas').toJSON()
-  canvas.nodes = Object.values(canvas.nodes)
-  canvas.edges = Object.values(canvas.edges)
+  canvas.nodes = Object.values(canvas.nodes ?? [])
+  canvas.edges = Object.values(canvas.edges ?? [])
   return canvas
 }
 
-export const applyFileChangesToDoc = (canvas: any, yDoc: Y.Doc) => {
-
+export const applyDataChangesToDoc = (data: any, yDoc: Y.Doc) => {
   yDoc.transact(() => {
-    const diffs = diffCanvases(yDocToCanvasJSON(yDoc), canvas)
-
+    const diffs = diffCanvases(yDocToCanvasJSON(yDoc), data)
     const yCanvas = yDoc.getMap('canvas')
+    console.log("apply diffs")
+    console.log(diffs)
+    console.log
     applyChanges(yCanvas, diffs)
   })
 }
+
+export const debouncedApplyDataChangesToDoc = debounce(applyDataChangesToDoc, 10, true)
 
 export const diffCanvases = (oldCanvas: any, newCanvas: any) => {
   return diff(oldCanvas, newCanvas, {

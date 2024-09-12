@@ -16,12 +16,16 @@ import { promptForName, promptForURL } from "./ui/enterText"
 import { PEERDRAFT_SHARE_VIEW_TYPE, PeerdraftShareView, activateView } from "./ui/shareView"
 import { PeerdraftRecord } from "./utils/peerdraftRecord"
 import { PeerdraftLeaf } from "./workspace/peerdraftLeaf"
-import { getLeafsByPath, updatePeerdraftWorkspace } from "./workspace/peerdraftWorkspace"
+import { getCanvasLeafsByPath, getLeafsByPath, updatePeerdraftWorkspace } from "./workspace/peerdraftWorkspace"
+import type { PeerdraftCanvas } from "./workspace/peerdraftCanvas"
 
 export default class PeerdraftPlugin extends Plugin {
 
 	settings: Settings
-	pws: PeerdraftRecord<PeerdraftLeaf>
+	pws: {
+		markdown: PeerdraftRecord<PeerdraftLeaf>,
+		canvas: PeerdraftRecord<PeerdraftCanvas>,
+	}
 	serverAPI: ServerAPI
 	activeStreamClient: ActiveStreamClient
 	serverSync: PeerdraftWebsocketProvider
@@ -34,7 +38,10 @@ export default class PeerdraftPlugin extends Plugin {
 
 		await prepareCommunication(plugin)
 
-		plugin.pws = new PeerdraftRecord<PeerdraftLeaf>()
+		plugin.pws = {
+			markdown: new PeerdraftRecord<PeerdraftLeaf>(),
+			canvas: new PeerdraftRecord<PeerdraftCanvas>(),
+		}
 		plugin.serverAPI = new ServerAPI({
 			oid: plugin.settings.oid,
 			permanentSessionUrl: plugin.settings.sessionAPI
@@ -46,13 +53,13 @@ export default class PeerdraftPlugin extends Plugin {
 			resyncInterval: -1
 		})
 
-		plugin.pws.on('add', (key, leaf) => {
+		plugin.pws.markdown.on('add', (key, leaf) => {
 			SharedDocument.findByPath(leaf.path)?.addExtensionToLeaf(key)
 			leaf.on("changePath", (oldPath) => {
 				const doc = SharedDocument.findByPath(oldPath)
 				if (doc) {
 					doc.removeExtensionFromLeaf(key)
-					const leafs = getLeafsByPath(oldPath, plugin.pws)
+					const leafs = getLeafsByPath(oldPath, plugin.pws.markdown)
 					if (leafs.length === 0 && !doc.isPermanent) {
 						doc.unshare()
 					}
@@ -61,11 +68,39 @@ export default class PeerdraftPlugin extends Plugin {
 			})
 		})
 
-		plugin.pws.on('delete', async (key, leaf) => {
+		plugin.pws.markdown.on('delete', async (key, leaf) => {
 			const doc = SharedDocument.findByPath(leaf.path)
 			if (!doc) return
 			doc.removeExtensionFromLeaf(key)
-			const leafs = getLeafsByPath(leaf.path, plugin.pws)
+			const leafs = getLeafsByPath(leaf.path, plugin.pws.markdown)
+			if (leafs.length === 0) {
+				if (doc && !doc.isPermanent) {
+					await doc.unshare()
+				}
+			}
+			leaf.destroy()
+		})
+
+		plugin.pws.canvas.on('add', (key, leaf) => {
+			SharedDocument.findByPath(leaf.path)?.addCanvasExtensionToLeaf(key)
+			leaf.on("changePath", (oldPath) => {
+				const doc = SharedDocument.findByPath(oldPath)
+				if (doc) {
+					doc.removeCanvasExtensionFromLeaf(key)
+					const leafs = getCanvasLeafsByPath(oldPath, plugin.pws.canvas)
+					if (leafs.length === 0 && !doc.isPermanent) {
+						doc.unshare()
+					}
+				}
+				SharedDocument.findByPath(leaf.path)?.addCanvasExtensionToLeaf(key)
+			})
+		})
+
+		plugin.pws.canvas.on('delete', async (key, leaf) => {
+			const doc = SharedDocument.findByPath(leaf.path)
+			if (!doc) return
+			doc.removeCanvasExtensionFromLeaf(key)
+			const leafs = getCanvasLeafsByPath(leaf.path, plugin.pws.canvas)
 			if (leafs.length === 0) {
 				if (doc && !doc.isPermanent) {
 					await doc.unshare()
