@@ -484,7 +484,7 @@ export class SharedDocument extends SharedEntity {
           const states = provider.awareness.getStates()
           for (const key of added) {
             const peer = states.get(key)
-            if (peer && this.path && key != this._webRTCProvider?.awareness.clientID) {
+            if (peer && peer.cursor && this.path && key != this._webRTCProvider?.awareness.clientID) {
               showNotice(`${peer.user?.name} is working on ${this.path}`, 10000)
             }
           }
