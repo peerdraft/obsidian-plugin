@@ -108,11 +108,11 @@ export const migrateSettings = async (plugin: PeerdraftPlugin) => {
     folders.forEach(doc => {
       newSettings.serverShares.folders.set(normalizePath(doc.path), { persistenceId: doc.persistenceId, shareId: doc.shareId })
     })
-    saveSettings(newSettings, plugin)
+    await saveSettingsNow(newSettings, plugin)
     await db.deleteDB()
   }
 
-  saveSettings(newSettings, plugin)
+  await saveSettingsNow(newSettings, plugin)
 
   if (oldSettings && oldSettings.version != newSettings.version) {
     showTextModal(plugin.app, 'Peerdraft updated', 'A new version of Peerdraft was installed. Please restart Obsidian before you use Peerdraft again.')
@@ -133,8 +133,7 @@ export const getSettings = async (plugin: Plugin) => {
   return settings
 }
 
-
-export const saveSettings = debounce(async (settings: Settings, plugin: PeerdraftPlugin) => {
+export const saveSettingsNow = async (settings: Settings, plugin: PeerdraftPlugin) => {
 
   const serialized = JSON.parse(JSON.stringify(settings))
 
@@ -144,7 +143,9 @@ export const saveSettings = debounce(async (settings: Settings, plugin: Peerdraf
   }
 
   await plugin.saveData(serialized)
-}, 1000, true)
+}
+
+export const saveSettings = debounce(saveSettingsNow, 1000, true)
 
 export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) => {
   el.empty();

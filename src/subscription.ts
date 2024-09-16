@@ -1,5 +1,5 @@
-import { Plugin, requestUrl } from "obsidian"
-import { getSettings, saveSettings } from "./settings"
+import { requestUrl } from "obsidian"
+import { getSettings, saveSettingsNow } from "./settings"
 import PeerdraftPlugin from "./main"
 
 export const refreshSubscriptionData = async (plugin: PeerdraftPlugin) => {
@@ -14,7 +14,6 @@ export const refreshSubscriptionData = async (plugin: PeerdraftPlugin) => {
     if(data.usage) {
       settings.duration = data.usage
     }
-    await saveSettings(settings, plugin)
+    await saveSettingsNow(settings, plugin)
   }
 }
-
