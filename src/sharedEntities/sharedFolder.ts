@@ -192,7 +192,8 @@ export class SharedFolder extends SharedEntity {
 
     for (const entry of documentMap.entries()) {
       let docPath = entry[1]
-      const absPath = path.join(folderPath!, docPath)
+      let absPath = path.join(folderPath!, docPath)
+      console.log(absPath)
       // repair inconsistent server version
       if (docPath && paths.includes(normalizePath(docPath))) {
         // sanity check
@@ -206,6 +207,7 @@ export class SharedFolder extends SharedEntity {
         } else {
           docPath = normalizePath(path.join(path.dirname(docPath), path.basename(docPath, path.extname(docPath)) + "_" + generateRandomString() + path.extname(docPath)))
           documentMap.set(entry[0], docPath)
+          absPath = path.join(folderPath!, docPath)
         }
       }
       await SharedDocument.fromIdAndPath(entry[0], absPath, plugin)
