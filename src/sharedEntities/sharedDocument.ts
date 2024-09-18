@@ -21,11 +21,11 @@ import { add, getDocByPath, moveDoc, removeDoc } from 'src/permanentShareStoreFS
 import { openLoginModal } from 'src/ui/login';
 import { promptForText } from 'src/ui/enterText';
 import { addCanvasToYDoc, applyDataChangesToDoc, diffCanvases, yDocToCanvasJSON } from './canvas';
-import { addCanvasExtension, type CanvasView } from 'src/ui/canvas';
+import { addCanvasExtension, type CanvasView, type Node } from 'src/ui/canvas';
 
 export class SharedDocument extends SharedEntity {
 
-  private static _userColor = usercolors[randomUint32() % usercolors.length]
+  public static _userColor = usercolors[randomUint32() % usercolors.length]
 
   private _isPermanent: boolean
   private _file: TFile
@@ -325,12 +325,17 @@ export class SharedDocument extends SharedEntity {
       }
     })
 
-    this._canvasExtenstions = new PeerdraftRecord<any>()
-    this._canvasExtenstions.on("delete", () => {
-      if (this._canvasExtenstions.size === 0 && this._webRTCProvider) {
-        // remove presence ???
+    this._extensions.on("add", () => {
+      if (this._extensions.size === 1 && this._webRTCProvider) {
+        this._webRTCProvider.awareness.setLocalStateField('user', {
+          name: this.plugin.settings.name,
+          color: SharedDocument._userColor.dark,
+          colorLight: SharedDocument._userColor.light
+        })
       }
     })
+
+    this._canvasExtenstions = new PeerdraftRecord<any>()
 
     addIsSharedClass(this.path, this.plugin)
   }
@@ -452,16 +457,6 @@ export class SharedDocument extends SharedEntity {
 
   startWebRTCSync() {
     return super.startWebRTCSync((provider) => {
-
-      console.log(this.plugin.settings.name)
-
-      provider.awareness.setLocalStateField('user', {
-        name: this.plugin.settings.name,
-        color: SharedDocument._userColor.dark,
-        colorLight: SharedDocument._userColor.light
-      })
-
-
       provider.awareness.on("update", async (msg: { added: Array<number>, removed: Array<number> }) => {
         const removed = msg.removed ?? [];
         if (removed && removed.length > 0) {
@@ -664,9 +659,6 @@ export class SharedDocument extends SharedEntity {
     if (extension) {
       this._canvasExtenstions.set(leafId, extension)
     }
-
-
-
   }
 
   removeCanvasExtensionFromLeaf(leafId: string) {
@@ -680,6 +672,43 @@ export class SharedDocument extends SharedEntity {
       }
     }
     this._canvasExtenstions.delete(leafId)
+  }
+
+  addExtensionToCanvasFileNode(node: Node) {
+    // only makes sense if we have a webrct provider to sync with
+    const webRTCProvider = this.startWebRTCSync()
+    if (!webRTCProvider) return
+    // already there
+    if (this._extensions.get(node.id)) return
+    // path needs to match
+    if (node.file.path != this._path) return
+    // there needs to be an editor
+    const editor = node.child?.editor
+    if (!editor) return
+    editor.setValue(this.getValue())
+    const undoManager = new Y.UndoManager(this.getContentFragment())
+    const extension = yCollab(this.getContentFragment(), webRTCProvider.awareness, { undoManager })
+    const compartment = new Compartment()
+    const editorView = (editor as any).cm as EditorView;
+    editorView.dispatch({
+      effects: StateEffect.appendConfig.of(compartment.of(extension))
+    })
+    this._extensions.set(node.id, compartment)
+    return Compartment
+  }
+
+  removeExtensionFromCanvasFileNode(node: Node) {
+    const editor = node.child?.editor
+    if (editor) {
+      const editorView = (editor as any).cm as EditorView;
+      const compartment = this._extensions.get(node.id)
+      if (compartment) {
+        editorView.dispatch({
+          effects: compartment.reconfigure([])
+        })
+      }
+    }
+    this._extensions.delete(node.id)
   }
 
   addStatusBarEntry() {

@@ -63,7 +63,7 @@ export abstract class SharedEntity {
     return Object.assign([], this._sharedEntites) as Array<SharedEntity>
   }
 
-  constructor(protected plugin: PeerDraftPlugin) {}
+  constructor(public plugin: PeerDraftPlugin) {}
 
   abstract calculateHash (): string
 

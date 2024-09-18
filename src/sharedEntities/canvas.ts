@@ -43,9 +43,6 @@ export const applyDataChangesToDoc = (data: any, yDoc: Y.Doc) => {
   yDoc.transact(() => {
     const diffs = diffCanvases(yDocToCanvasJSON(yDoc), data)
     const yCanvas = yDoc.getMap('canvas')
-    console.log("apply diffs")
-    console.log(diffs)
-    console.log
     applyChanges(yCanvas, diffs)
   })
 }
@@ -64,7 +61,8 @@ export const diffCanvases = (oldCanvas: any, newCanvas: any) => {
 const applyChanges = (yMap: Y.Map<any>, changes: Array<IChange>) => {
   for (const change of changes) {
     if (change.changes) {
-      applyChanges(yMap.get(change.key) as Y.Map<any>, change.changes)
+      const entry = yMap.get(change.key) || yMap.set(change.key, new Y.Map())
+      applyChanges(entry, change.changes)
     } else if (change.value) {
       if (change.type === "UPDATE") {
         yMap.set(change.key, change.value)
@@ -86,7 +84,7 @@ const applyChanges = (yMap: Y.Map<any>, changes: Array<IChange>) => {
 }
 
 
-const createYMapFromObject = (object: any) => {
+export const createYMapFromObject = (object: any) => {
   const ymap = new Y.Map();
 
   for (const property in object) {
@@ -98,7 +96,11 @@ const createYMapFromObject = (object: any) => {
       ymap.set(property, createYMapFromObject(object[property]));
     }
     else {
-      ymap.set(property, object[property]);
+      if (property === "text" && typeof object[property] === "string" && object["type"] === "text") {
+        ymap.set(property, new Y.Text(object[property]))
+      } else {
+        ymap.set(property, object[property]);
+      }
     }
   }
 
