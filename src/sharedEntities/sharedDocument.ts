@@ -64,16 +64,16 @@ export class SharedDocument extends SharedEntity {
     if (this.findByPath(pd.path)) return
     //let fileAlreadyThere = false
     // check if path exists
-    const file = plugin.app.vault.getAbstractFileByPath(normalizePath(pd.path))
+    let file = plugin.app.vault.getAbstractFileByPath(normalizePath(pd.path))
     if (!file) {
       showNotice("File " + pd.path + " not found. Creating it now.")
       await SharedFolder.getOrCreatePath(path.dirname(pd.path), plugin)
-      const file = await plugin.app.vault.create(pd.path, '')
+      file = await plugin.app.vault.create(pd.path, '')
       if (!file) {
         showNotice("Error creating file " + pd.path + ".")
         return
       }
-      //fileAlreadyThere = true
+      // fileAlreadyThere = true
     }
 
     const doc = new SharedDocument({
