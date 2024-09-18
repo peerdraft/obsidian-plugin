@@ -637,8 +637,6 @@ export class SharedDocument extends SharedEntity {
   }
 
   addCanvasExtensionToLeaf(leafId: string) {
-    console.log("adding extension to leaf " + leafId)
-
     // only makes sense if we have a webrct provider to sync with
     const webRTCProvider = this.startWebRTCSync()
     if (!webRTCProvider) return
@@ -662,7 +660,6 @@ export class SharedDocument extends SharedEntity {
   }
 
   removeCanvasExtensionFromLeaf(leafId: string) {
-    console.log("removing extension from leaf " + leafId)
 
     const leaf = this.plugin.app.workspace.getLeafById(leafId)
     if (leaf) {

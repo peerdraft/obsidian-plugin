@@ -297,19 +297,6 @@ export const addCanvasExtension = (doc: SharedDocument, view: CanvasView) => {
   }
 
   doc.yDoc.getMap("canvas").observeDeep(observer)
-  /*
-
-  let pointer = canvas.pointer
-  Object.defineProperty(canvas, 'pointer', {
-    get: function () {
-      return pointer;
-    },
-    set: function (x) {
-      pointer = x;
-      console.log(x)
-      // triggerDocUpdate()
-    }
-  })*/
 
   return () => {
     unpatchCanvas()
@@ -355,7 +342,6 @@ const patchTextNode = (node: Node, triggerDocUpdate: () => any, yNodes: Y.Map<an
 
   let isEditing = node.isEditing
   if (isEditing) {
-    console.log(node)
     addExtensionToTextNode(yNodes, node.id, node.child.editor.cm, doc)
   }
   Object.defineProperty(node, 'isEditing', {

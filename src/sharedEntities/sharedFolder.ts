@@ -193,7 +193,6 @@ export class SharedFolder extends SharedEntity {
     for (const entry of documentMap.entries()) {
       let docPath = entry[1]
       let absPath = path.join(folderPath!, docPath)
-      console.log(absPath)
       // repair inconsistent server version
       if (docPath && paths.includes(normalizePath(docPath))) {
         // sanity check
