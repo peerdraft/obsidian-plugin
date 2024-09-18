@@ -86,6 +86,7 @@ const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: Share
       if (!document) return
       plugin.log("Delete " + document.path + "   " + key)
       const file = plugin.app.vault.getAbstractFileByPath(document.path)
+      document.unshare()
       if (!file) return
       plugin.app.vault.delete(file)
     }
