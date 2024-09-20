@@ -36,7 +36,9 @@ export const getCanvasLeafsByPath = (path: string, pws: PeerdraftRecord<Peerdraf
 }
 
 const handleCanvasLeafs = (ws: Workspace, canvas: PeerdraftRecord<PeerdraftCanvas>) => {
-  const leafs = ws.getLeavesOfType("canvas")
+  const leafs = ws.getLeavesOfType("canvas").filter(leaf => {
+    return !(leaf.isDeferred)
+  })
 
   const oldLeafIds = canvas.keys
   const existingLeafIds = leafs.map(leaf => {
@@ -67,7 +69,9 @@ const handleCanvasLeafs = (ws: Workspace, canvas: PeerdraftRecord<PeerdraftCanva
 }
 
 const handleMarkdownLeafs = (ws: Workspace, markdown: PeerdraftRecord<PeerdraftLeaf>) => {
-  const leafs = ws.getLeavesOfType("markdown")
+  const leafs = ws.getLeavesOfType("markdown").filter(leaf => {
+    return !(leaf.isDeferred)
+  })
 
   const oldLeafIds = markdown.keys
   const existingLeafIds = leafs.map(leaf => {
