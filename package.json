@@ -37,9 +37,8 @@
 		"y-indexeddb": "^9.0.12",
 		"y-webrtc": "^10.2.5",
 		"y-websocket": "^2.0.2",
-		"yjs": "^13.6.8"
-	},
-	"dependencies": {
-		"json-diff-ts": "^4.0.1"
+		"yjs": "^13.6.8",
+		"json-diff-ts": "^4.0.1",
+		"tiny-jsonc": "^1.0.1"
 	}
 }

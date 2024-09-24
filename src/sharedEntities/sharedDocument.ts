@@ -22,6 +22,7 @@ import { openLoginModal } from 'src/ui/login';
 import { promptForText } from 'src/ui/enterText';
 import { addCanvasToYDoc, applyDataChangesToDoc, diffCanvases, yDocToCanvasJSON } from './canvas';
 import { addCanvasExtension, type CanvasView, type Node } from 'src/ui/canvas';
+import JSONC from "tiny-jsonc"
 
 export class SharedDocument extends SharedEntity {
 
@@ -237,7 +238,7 @@ export class SharedDocument extends SharedEntity {
     } else {
       const content = await plugin.app.vault.read(file)
       if (doc.isCanvas) {
-        addCanvasToYDoc(JSON.parse(content || '{}'), doc.yDoc)
+        addCanvasToYDoc(JSONC.parse(content || '{}'), doc.yDoc)
       } else {
         doc.getContentFragment().insert(0, content)
       }
@@ -347,7 +348,7 @@ export class SharedDocument extends SharedEntity {
       this.mutex.runExclusive(async () => {
         const yCanvas = yDocToCanvasJSON(this.yDoc)
         const fileContent = await this.plugin.app.vault.read(this._file)
-        const fileCanvas = JSON.parse(fileContent || '{}')
+        const fileCanvas = JSONC.parse(fileContent || '{}')
         const diffs = diffCanvases(fileCanvas, yCanvas)
         if (diffs.length != 0) {
           this.lastUpdateTriggeredByDocChange = new Date().valueOf()
@@ -371,7 +372,7 @@ export class SharedDocument extends SharedEntity {
 
           const fileContent = await this.plugin.app.vault.read(this._file)
 
-          applyDataChangesToDoc(JSON.parse(fileContent || '{}'), this.yDoc)
+          applyDataChangesToDoc(JSONC.parse(fileContent || '{}'), this.yDoc)
 
         })
       }
