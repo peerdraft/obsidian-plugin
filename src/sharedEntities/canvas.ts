@@ -58,25 +58,40 @@ export const diffCanvases = (oldCanvas: any, newCanvas: any) => {
   })
 }
 
-const applyChanges = (yMap: Y.Map<any>, changes: Array<IChange>) => {
+const applyChanges = (yMap: Y.Map<any>, changes: Array<IChange>, path: Array<string> = []) => {
   for (const change of changes) {
     if (change.changes) {
+      path.push(change.key)
       const entry = yMap.get(change.key) || yMap.set(change.key, new Y.Map())
-      applyChanges(entry, change.changes)
+      applyChanges(entry, change.changes, path)
     } else if (change.value) {
+
+      let include = true
+      // postpone edges until they have an end-node
+      if (path.length === 1 && path[0] === "edges") {
+        const toNode = change.value?.toNode
+        if (toNode) {
+          const node = (yMap.doc?.getMap("canvas")?.get("nodes") as Y.Map<any>)?.get(toNode)
+          if (!node) {
+            include = false
+          }
+        }
+      }
+      if (include) {
       if (change.type === "UPDATE") {
         yMap.set(change.key, change.value)
       } else if (change.type === "ADD") {
-        if (change.value instanceof Array) {
-          yMap.set(change.key, createYArrayFromArray(change.value));
+          if (change.value instanceof Array) {
+            yMap.set(change.key, createYArrayFromArray(change.value));
+          }
+          else if (change.value instanceof Object) {
+            yMap.set(change.key, createYMapFromObject(change.value));
+          }
+          else {
+            yMap.set(change.key, change.value);
+          }
         }
-        else if (change.value instanceof Object) {
-          yMap.set(change.key, createYMapFromObject(change.value));
-        }
-        else {
-          yMap.set(change.key, change.value);
-        }
-      } else if (change.type === "REMOVE") {
+      } if (change.type === "REMOVE") {
         yMap.delete(change.key)
       }
     }

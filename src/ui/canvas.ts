@@ -72,6 +72,7 @@ export const addCanvasExtension = (doc: SharedDocument, view: CanvasView) => {
       applyDataChangesToDoc(data, doc.yDoc)
     })
   }
+
   const yNodes = yCanvas.get("nodes") as Y.Map<any>
   for (const node of canvas.nodes.values()) {
     const type = node.getData().type
@@ -98,6 +99,7 @@ export const addCanvasExtension = (doc: SharedDocument, view: CanvasView) => {
     addEdge(next) {
       return function (...args) {
         const result = next.apply(this, args)
+        edgeConstructor = edgeConstructor || args[0].constructor
         patchEdge(args[0], triggerDocUpdate)
         return result
       }
@@ -125,6 +127,7 @@ export const addCanvasExtension = (doc: SharedDocument, view: CanvasView) => {
         if (yNodes) {
           patchTextNode(result, triggerDocUpdate, yNodes, doc)
         }
+        triggerDocUpdate()
         return result
       }
     },
@@ -177,7 +180,6 @@ export const addCanvasExtension = (doc: SharedDocument, view: CanvasView) => {
   })
   const observer: (events: Array<Y.YEvent<any>>, tx: Y.Transaction) => void = (events, tx) => {
     if (view.file != doc.file || tx.local) return
-
     for (const event of events) {
       if (event.path?.length === 1) {
         if (event.path[0] === "edges") {
@@ -185,12 +187,16 @@ export const addCanvasExtension = (doc: SharedDocument, view: CanvasView) => {
             const change = key[1].action
             switch (change) {
               case "add":
+                // canvas.setData(yDocToCanvasJSON(doc.yDoc))
                 if (edgeConstructor) {
                   const yEdge = (doc.yDoc.getMap("canvas").get("edges") as Y.Map<Y.Map<any>>).get(key[0])
                   if (yEdge) {
                     const fromNodeId = yEdge.get('fromNode')
                     const toNodeId = yEdge.get('toNode')
-                    new edgeConstructor(canvas, key[0], fromNodeId, toNodeId)
+                    const edge = new edgeConstructor(canvas, key[0], fromNodeId, toNodeId)
+                    if (edge) {
+                      patchEdge(edge, triggerDocUpdate)
+                    }
                   } else {
                     canvas.setData(yDocToCanvasJSON(doc.yDoc))
                   }
@@ -294,6 +300,8 @@ export const addCanvasExtension = (doc: SharedDocument, view: CanvasView) => {
         canvas.setData(yDocToCanvasJSON(doc.yDoc))
       }
     }
+    //@ts-expect-error
+    view.requestSave()
   }
 
   doc.yDoc.getMap("canvas").observeDeep(observer)
