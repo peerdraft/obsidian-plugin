@@ -187,20 +187,7 @@ export const addCanvasExtension = (doc: SharedDocument, view: CanvasView) => {
             const change = key[1].action
             switch (change) {
               case "add":
-                // canvas.setData(yDocToCanvasJSON(doc.yDoc))
-                if (edgeConstructor) {
-                  const yEdge = (doc.yDoc.getMap("canvas").get("edges") as Y.Map<Y.Map<any>>).get(key[0])
-                  if (yEdge) {
-                    const fromNodeId = yEdge.get('fromNode')
-                    const toNodeId = yEdge.get('toNode')
-                    const edge = new edgeConstructor(canvas, key[0], fromNodeId, toNodeId)
-                    if (edge) {
-                      patchEdge(edge, triggerDocUpdate)
-                    }
-                  } else {
-                    canvas.setData(yDocToCanvasJSON(doc.yDoc))
-                  }
-                }
+                canvas.setData(yDocToCanvasJSON(doc.yDoc))
                 break;
               case "delete": {
                 const edge = canvas.edges.get(key[0])

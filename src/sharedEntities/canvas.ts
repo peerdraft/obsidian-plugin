@@ -78,9 +78,9 @@ const applyChanges = (yMap: Y.Map<any>, changes: Array<IChange>, path: Array<str
         }
       }
       if (include) {
-      if (change.type === "UPDATE") {
-        yMap.set(change.key, change.value)
-      } else if (change.type === "ADD") {
+        if (change.type === "UPDATE") {
+          yMap.set(change.key, change.value)
+        } else if (change.type === "ADD") {
           if (change.value instanceof Array) {
             yMap.set(change.key, createYArrayFromArray(change.value));
           }
