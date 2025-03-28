@@ -260,6 +260,7 @@ export class SharedDocument extends SharedEntity {
     }
 
     showNotice(`Inititialized share for ${file.path}`)
+    addIsSharedClass(file.path, plugin)
     return doc
   }
 
