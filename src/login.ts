@@ -47,7 +47,30 @@ export const saveJWT = (oid: string, jwt: string) => {
 }
 
 export const getJWT = (oid: string) => {
-  return localStorage.getItem(oid + "-peerdraft-jwt")
+  const jwt = localStorage.getItem(oid + "-peerdraft-jwt")
+  if (!jwt) return null
+  
+  // Check if JWT is valid by trying to parse and check expiration
+  try {
+    const parts = jwt.split('.')
+    if (parts.length !== 3) return null
+    
+    const payload = JSON.parse(atob(parts[1]))
+    if (!payload.exp) return jwt // No expiration set, assume valid
+    
+    // Check if JWT is expired (exp is in seconds since epoch)
+    if (payload.exp * 1000 < Date.now()) {
+      // JWT is expired, remove it
+      localStorage.removeItem(oid + "-peerdraft-jwt")
+      return null
+    }
+    
+    return jwt
+  } catch (e) {
+    // Invalid JWT format, remove it
+    localStorage.removeItem(oid + "-peerdraft-jwt")
+    return null
+  }
 }
 
 export const clearJWT = (oid: string) => {

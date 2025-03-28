@@ -6,3 +6,9 @@ dist
 
 # Exclude macOS Finder (System Explorer) View States
 .DS_Store
+
+# Coverage directory used by tools like jest
+/coverage/
+
+# Test output
+/.jest-cache
