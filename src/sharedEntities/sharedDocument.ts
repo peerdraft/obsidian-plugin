@@ -93,6 +93,7 @@ export class SharedDocument extends SharedEntity {
     doc.syncWithServer()
     //}
     plugin.activeStreamClient.add([doc.shareId])
+    addIsSharedClass(doc.path, plugin)
     return doc
   }
 
@@ -339,7 +340,7 @@ export class SharedDocument extends SharedEntity {
 
     this._canvasExtenstions = new PeerdraftRecord<any>()
 
-    addIsSharedClass(this.path, this.plugin)
+    // addIsSharedClass(this.path, this.plugin)
   }
 
 
