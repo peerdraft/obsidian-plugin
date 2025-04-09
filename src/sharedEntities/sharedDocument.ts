@@ -168,7 +168,6 @@ export class SharedDocument extends SharedEntity {
     }
 
     const leaf = await openFileInNewTab(file, plugin.app.workspace)
-    doc.addStatusBarEntry()
     if (leaf.view.getViewType() === "markdown") {
       // @ts-expect-error
       doc.addExtensionToLeaf(leaf.id)
