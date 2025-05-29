@@ -75,6 +75,37 @@ class SharedFolderOptionsModal extends Modal {
       })
     })
 
+    // File Extensions
+    const extensions = new Setting(this.contentEl)
+    extensions.setName("File Extensions")
+    extensions.setDesc("Comma-separated list of file extensions to sync (without leading .)")
+    const extensionsValue = Array.from(this.folder.fileExtensions).join(', ')
+    let currentExtensions = extensionsValue
+    
+    extensions.addText(text => {
+      text.setValue(extensionsValue)
+      text.onChange((value: string) => {
+        currentExtensions = value
+      })
+    })
+
+    extensions.addButton(button => {
+      button.setButtonText("Update Extensions")
+      button.onClick(() => {
+        const extensionsList = currentExtensions
+          .split(',')
+          .map((ext: string) => ext.trim())
+          .filter((ext: string) => ext.length > 0)
+        
+        if (extensionsList.length > 0) {
+          this.folder.setFileExtensions(extensionsList)
+          showNotice("File extensions updated")
+        } else {
+          showNotice("Please enter at least one file extension")
+        }
+      })
+    })
+
 
   }
 }

@@ -100,7 +100,8 @@ export class SharedFolder extends SharedEntity {
 
   static async fromTFolder(root: TFolder, plugin: PeerDraftPlugin) {
     showNotice(`Inititializing share for ${root.path}.`)
-    const files = this.getAllFilesInFolder(root)
+    const sharedFolder = new this(root, plugin)
+    const files = sharedFolder.getFilesInFolder(root)
 
     // check if docs for some of them are already there
     for (const file of files) {
@@ -122,26 +123,24 @@ export class SharedFolder extends SharedEntity {
       }, plugin)
     }))
 
-    const folder = new SharedFolder(root, plugin)
-
     for (const doc of docs) {
       if (doc) {
-        folder.addDocument(doc)
+        sharedFolder.addDocument(doc)
       }
     }
 
-    folder.yDoc.getText("originalFoldername").insert(0, root.name)
+    sharedFolder.yDoc.getText("originalFoldername").insert(0, root.name)
 
-    await folder.initServerYDoc()
+    await sharedFolder.initServerYDoc()
 
-    await add(folder, plugin)
-    await folder.startIndexedDBSync()
-    folder.startWebRTCSync()
+    await add(sharedFolder, plugin)
+    await sharedFolder.startIndexedDBSync()
+    sharedFolder.startWebRTCSync()
 
-    navigator.clipboard.writeText(plugin.settings.basePath + '/team/' + folder.shareId)
-    showNotice(`Folder ${folder.path} with ${docs.length} documents shared. URL copied to your clipboard.`, 0)
-    // openFolderOptions(plugin.app, folder)
-    return folder
+    navigator.clipboard.writeText(plugin.settings.basePath + '/team/' + sharedFolder.shareId)
+    showNotice(`Folder ${sharedFolder.path} with ${docs.length} documents shared. URL copied to your clipboard.`, 0)
+    // openFolderOptions(plugin.app, sharedFolder)
+    return sharedFolder
   }
 
   getShareURL() {
@@ -285,14 +284,22 @@ export class SharedFolder extends SharedEntity {
     this.root = root
     this._path = root.path
     this.yDoc = ydoc ?? new Y.Doc()
+    
+    // Initialize the Y.Doc with default values
+    this.initializeYDoc()
+    
+    // Set up observers and event handlers
     this.getDocsFragment().observe((ev, tx) => {
       handleUpdate(ev, tx, this, plugin)
     })
+    
     this.yDoc.on("update", (update: Uint8Array, origin: any, yDoc: Y.Doc, tr: Y.Transaction) => {
       if (tr.local && this.shareId) {
         plugin.serverSync.sendUpdate(this, update)
       }
     })
+    
+    // Add to shared entities and update UI
     SharedFolder._sharedEntites.push(this)
     addIsSharedClass(this.path, plugin)
   }
@@ -378,17 +385,56 @@ export class SharedFolder extends SharedEntity {
     return !(relativePath.startsWith('..'))
   }
 
-  private static getAllFilesInFolder(folder: TFolder): Array<TFile> {
+  private _fileExtensions: Set<string> = new Set(['md', 'MD'])
+
+  get fileExtensions(): Set<string> {
+    if (this.yDoc) {
+      const extensions = this.yDoc.getArray<string>('fileExtensions')
+      if (extensions.length > 0) {
+        return new Set(extensions.toArray())
+      }
+    }
+    return this._fileExtensions
+  }
+
+  setFileExtensions(extensions: string[]) {
+    const normalized = extensions.map(ext => ext.startsWith('.') ? ext.slice(1) : ext.toLowerCase())
+    this._fileExtensions = new Set(normalized)
+    
+    if (this.yDoc) {
+      const yExtensions = this.yDoc.getArray<string>('fileExtensions')
+      yExtensions.delete(0, yExtensions.length) // Clear existing extensions
+      yExtensions.push(normalized)
+    }
+  }
+
+  private static getAllFilesInFolder(folder: TFolder, allowedExtensions: Set<string>): Array<TFile> {
     const files = folder.children.flatMap((child) => {
       if (child instanceof TFile) {
-        return child
+        const ext = child.extension.toLowerCase()
+        return allowedExtensions.has(ext) ? [child] : []
       }
       if (child instanceof TFolder) {
-        return this.getAllFilesInFolder(child)
+        return this.getAllFilesInFolder(child, allowedExtensions)
       }
       return []
     })
     return files
+  }
+
+  private getFilesInFolder(folder: TFolder): Array<TFile> {
+    return SharedFolder.getAllFilesInFolder(folder, this.fileExtensions)
+  }
+
+  protected initializeYDoc() {
+    super.initializeYDoc()
+    if (!this.yDoc) return
+    
+    // Initialize file extensions in Y.Doc if not present
+    const yExtensions = this.yDoc.getArray<string>('fileExtensions')
+    if (yExtensions.length === 0) {
+      yExtensions.push(['md', 'MD'])
+    }
   }
 
   async setNewFolderLocation(folder: TFolder) {
