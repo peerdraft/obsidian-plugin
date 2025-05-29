@@ -31,7 +31,6 @@ export default class PeerdraftPlugin extends Plugin {
 	serverSync: PeerdraftWebsocketProvider
 
 	async onload() {
-
 		const plugin = this
 
 		plugin.settings = await migrateSettings(plugin)
