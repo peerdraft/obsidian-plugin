@@ -126,6 +126,8 @@ class SharedFolderOptionsModal extends Modal {
       const { valid, message } = validateExtensions(value);
       isValid = valid;
       
+      console.log('Input validation - valid:', valid, 'value:', value);
+      
       // Update input styling
       if (!valid) {
         // Invalid state
@@ -241,17 +243,111 @@ class SharedFolderOptionsModal extends Modal {
       button.setButtonText("Update Extensions")
       button.setDisabled(!isValid)
       
-      button.onClick(() => {
-        if (!isValid) return
+      button.onClick(async () => {
+        if (!isValid || !inputEl) return;
         
-        const extensionsList = currentExtensions
-          .split(',')
-          .map((ext: string) => ext.trim())
-          .filter((ext: string) => ext.length > 0)
+        // Get new extensions
+        const newExtensions = new Set(
+          currentExtensions
+            .split(',')
+            .map(ext => ext.trim())
+            .filter(ext => ext)
+        );
         
-        this.folder.setFileExtensions(extensionsList)
-        showNotice("File extensions updated")
-      })
+        // Get current files in the folder
+        const files = this.app.vault.getFiles()
+          .filter(file => file.path.startsWith(this.folder.root.path));
+        
+        // Find files that will be included/excluded
+        const currentExts = this.folder.fileExtensions;
+        const addedFiles: string[] = [];
+        const removedFiles: string[] = [];
+        
+        files.forEach(file => {
+          const ext = file.extension.toLowerCase();
+          const currentlyIncluded = currentExts.has(ext);
+          const willBeIncluded = newExtensions.has(ext);
+          
+          if (!currentlyIncluded && willBeIncluded) {
+            addedFiles.push(file.path);
+          } else if (currentlyIncluded && !willBeIncluded) {
+            removedFiles.push(file.path);
+          }
+        });
+        
+        // Show confirmation dialog if there are changes
+        if (addedFiles.length > 0 || removedFiles.length > 0) {
+          const modal = new Modal(this.app);
+          modal.titleEl.setText('Confirm File Sharing Changes');
+          
+          const content = modal.contentEl.createEl('div');
+          content.createEl('p', {
+            text: 'The following changes will be made to shared files:'
+          });
+          
+          if (addedFiles.length > 0) {
+            const addedSection = content.createEl('div');
+            addedSection.createEl('h4', {
+              text: `Files that will be SHARED (${addedFiles.length}):`
+            });
+            const addedList = addedSection.createEl('ul');
+            addedFiles.slice(0, 10).forEach(file => {
+              addedList.createEl('li', { text: file });
+            });
+            if (addedFiles.length > 10) {
+              addedSection.createEl('p', {
+                text: `...and ${addedFiles.length - 10} more files`
+              });
+            }
+          }
+          
+          if (removedFiles.length > 0) {
+            const removedSection = content.createEl('div');
+            removedSection.createEl('h4', {
+              text: `Files that will be UNSHARED (${removedFiles.length}):`
+            });
+            const removedList = removedSection.createEl('ul');
+            removedFiles.slice(0, 10).forEach(file => {
+              removedList.createEl('li', { text: file });
+            });
+            if (removedFiles.length > 10) {
+              removedSection.createEl('p', {
+                text: `...and ${removedFiles.length - 10} more files`
+              });
+            }
+          }
+          
+          const buttonContainer = content.createEl('div', {
+            cls: 'pd-button-container'
+          });
+          
+          buttonContainer.createEl('button', {
+            text: 'Cancel',
+            cls: 'mod-warning'
+          }).addEventListener('click', () => {
+            modal.close();
+          });
+          
+          const confirmBtn = buttonContainer.createEl('button', {
+            text: 'Confirm Changes',
+            cls: 'mod-cta'
+          });
+          
+          confirmBtn.addEventListener('click', async () => {
+            modal.close();
+            
+            // Update the extensions
+            this.folder.setFileExtensions(Array.from(newExtensions));
+            showNotice("File extensions updated successfully");
+          });
+          
+          modal.open();
+        } else {
+          // No changes to file sharing, just update extensions
+          this.folder.setFileExtensions(Array.from(newExtensions));
+          showNotice("File extensions updated");
+        }
+      });
     })
 
 
