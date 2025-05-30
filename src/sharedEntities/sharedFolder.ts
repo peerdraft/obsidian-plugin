@@ -385,7 +385,7 @@ export class SharedFolder extends SharedEntity {
     return !(relativePath.startsWith('..'))
   }
 
-  private _fileExtensions: Set<string> = new Set(['md', 'MD'])
+  private _fileExtensions: Set<string> = new Set(['md'])
 
   get fileExtensions(): Set<string> {
     if (this.yDoc) {
@@ -396,9 +396,8 @@ export class SharedFolder extends SharedEntity {
     }
     return this._fileExtensions
   }
-
   setFileExtensions(extensions: string[]) {
-    const normalized = extensions.map(ext => ext.startsWith('.') ? ext.slice(1) : ext.toLowerCase())
+    const normalized = extensions.map(ext => ext.startsWith('.') ? ext.slice(1) : ext)
     this._fileExtensions = new Set(normalized)
     
     if (this.yDoc) {
