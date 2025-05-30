@@ -1,4 +1,5 @@
-import { App, Modal, Setting } from "obsidian";
+import { App, Modal, Plugin, Setting } from "obsidian";
+import { SharedDocument } from "src/sharedEntities/sharedDocument";
 import { SharedFolder } from "src/sharedEntities/sharedFolder";
 import { showNotice } from "src/ui";
 
@@ -337,8 +338,36 @@ class SharedFolderOptionsModal extends Modal {
             modal.close();
             
             // Update the extensions
+            const oldExtensions = this.folder.fileExtensions;
             this.folder.setFileExtensions(Array.from(newExtensions));
-            showNotice("File extensions updated successfully");
+            
+            // Get all files in the folder
+            const files = this.app.vault.getFiles()
+              .filter(file => file.path.startsWith(this.folder.root.path));
+            
+            // Process files that need to be added/removed
+            for (const file of files) {
+              const ext = file.extension.toLowerCase();
+              const wasIncluded = oldExtensions.has(ext);
+              const isNowIncluded = newExtensions.has(ext);
+              
+              if (isNowIncluded && !wasIncluded) {
+                // Add document to shared folder
+                const doc = await SharedDocument.fromTFile(file, { permanent: true }, this.folder.plugin);
+                if (doc) {
+                  this.folder.addDocument(doc);
+                }
+              } else if (!isNowIncluded && wasIncluded) {
+                // Remove document from shared folder
+                const doc = SharedDocument.findByPath(file.path);
+                if (doc) {
+                  this.folder.removeDocument(doc);
+                  doc.unshare();
+                }
+              }
+            }
+            
+            showNotice("File extensions and sharing settings updated successfully");
           });
           
           modal.open();

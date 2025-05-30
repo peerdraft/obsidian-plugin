@@ -210,7 +210,6 @@ export class SharedDocument extends SharedEntity {
 
 
   static async fromTFile(file: TFile, opts: { permanent?: boolean, folder?: string }, plugin: PeerDraftPlugin) {
-    if (!['md', 'MD', 'canvas'].contains(file.extension)) return
     const existing = SharedDocument.findByPath(file.path)
     if (existing) return existing
 
