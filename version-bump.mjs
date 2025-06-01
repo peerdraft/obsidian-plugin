@@ -1,6 +1,11 @@
-import { execSync } from "child_process";
-import { readFileSync, writeFileSync } from "fs";
-import path from "path";
+import { execSync } from 'child_process';
+import { readFileSync, writeFileSync } from 'fs';
+import { createInterface } from 'readline/promises';
+import { fileURLToPath } from 'url';
+import path from 'path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Helper to execute shell commands
 const runCommand = (command) => {
@@ -39,18 +44,18 @@ const distManifestJsonPath = path.resolve("dist/manifest.json");
 const versionsJsonPath = path.resolve("versions.json");
 
 // Prompt user for bump type
-const promptBumpType = () => {
-  const readline = require('readline').createInterface({
+const promptBumpType = async () => {
+  const rl = createInterface({
     input: process.stdin,
     output: process.stdout
   });
 
-  return new Promise((resolve) => {
-    readline.question('Enter version bump type (major/minor/patch): ', (bumpType) => {
-      readline.close();
-      resolve(bumpType.toLowerCase());
-    });
-  });
+  try {
+    const answer = await rl.question('Enter version bump type (major/minor/patch): ');
+    return answer.trim().toLowerCase();
+  } finally {
+    rl.close();
+  }
 };
 
 // Main function
