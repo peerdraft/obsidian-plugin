@@ -421,7 +421,7 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
     return new Promise<string>(resolve => {
       const handler = (sessionId: string) => {
         if (sessionId === id) {
-          this.off("new-session-confirmed", handler)
+          this.off("stop-session-confirmed", handler)
           resolve(id)
         }
       }

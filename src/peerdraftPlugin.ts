@@ -31,7 +31,6 @@ export default class PeerdraftPlugin extends Plugin {
 	serverSync: PeerdraftWebsocketProvider
 
 	async onload() {
-
 		const plugin = this
 
 		plugin.settings = await migrateSettings(plugin)
@@ -244,11 +243,13 @@ export default class PeerdraftPlugin extends Plugin {
 					if (oldPathInFolder === newPathInFolder) {
 						oldPathInFolder.updatePath(oldPath, file.path)
 					} else {
-						const newDoc = await SharedDocument.fromTFile(file, { permanent: true, folder: newPathInFolder.shareId }, plugin)
-						if (newDoc) {
-							newPathInFolder.addDocument(newDoc)
-							const prop = newPathInFolder.getAutoFillProperty()
-							if (prop) newDoc.updateProperty(prop, newDoc.getShareURL())
+						if (newPathInFolder.fileExtensions.has(file.extension)) {
+							const newDoc = await SharedDocument.fromTFile(file, { permanent: true, folder: newPathInFolder.shareId }, plugin)
+							if (newDoc) {
+								newPathInFolder.addDocument(newDoc)
+								const prop = newPathInFolder.getAutoFillProperty()
+								if (prop) newDoc.updateProperty(prop, newDoc.getShareURL())
+							}
 						}
 						if (doc) {
 							// oldPathInFolder.removeDocument(doc)
@@ -269,11 +270,13 @@ export default class PeerdraftPlugin extends Plugin {
 						doc.syncWithServer()
 					}
 				} else if (!oldPathInFolder && newPathInFolder) {
-					const doc = await SharedDocument.fromTFile(file, { permanent: true, folder: newPathInFolder.shareId }, plugin)
-					if (doc) {
-						newPathInFolder.addDocument(doc)
-						const prop = newPathInFolder.getAutoFillProperty()
-						if (prop) doc.updateProperty(prop, doc.getShareURL())
+					if (newPathInFolder.fileExtensions.has(file.extension)) {
+						const doc = await SharedDocument.fromTFile(file, { permanent: true, folder: newPathInFolder.shareId }, plugin)
+						if (doc) {
+							newPathInFolder.addDocument(doc)
+							const prop = newPathInFolder.getAutoFillProperty()
+							if (prop) doc.updateProperty(prop, doc.getShareURL())
+						}
 					}
 				}
 			} else if (file instanceof TFolder) {
@@ -328,7 +331,7 @@ export default class PeerdraftPlugin extends Plugin {
 					if (SharedDocument.findByPath(file.path)) return
 
 					if (plugin.settings.serverShares.files.has(normalizePath(file.path))) return
-
+					if (!folder.fileExtensions.has(file.extension)) return
 					const doc = await SharedDocument.fromTFile(file, {
 						permanent: true,
 						folder: folder.shareId

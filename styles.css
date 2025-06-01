@@ -14,3 +14,10 @@
   border-radius: 4px;
   margin-right: 0.5em;
 }
+
+.pd-button-container {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
