@@ -16,10 +16,20 @@ const updateJsonFile = (filePath, updateFn) => {
   console.log(`Updated: ${filePath}`);
 };
 
-// Calculate the next minor version
-const getNextMinorVersion = (currentVersion) => {
-  const [major, minor] = currentVersion.split(".").map(Number);
-  return `${major}.${minor + 1}.0`;
+// Calculate the next version based on bump type
+const getNextVersion = (currentVersion, bumpType) => {
+  let [major, minor, patch] = currentVersion.split(".").map(Number);
+
+  switch (bumpType.toLowerCase()) {
+    case 'major':
+      return `${major + 1}.0.0`;
+    case 'minor':
+      return `${major}.${minor + 1}.0`;
+    case 'patch':
+      return `${major}.${minor}.${patch + 1}`;
+    default:
+      throw new Error(`Invalid bump type: ${bumpType}. Must be 'major', 'minor', or 'patch'`);
+  }
 };
 
 // Paths to files
@@ -28,58 +38,82 @@ const manifestJsonPath = path.resolve("manifest.json");
 const distManifestJsonPath = path.resolve("dist/manifest.json");
 const versionsJsonPath = path.resolve("versions.json");
 
-// Step 1: Read the current version from package.json
-const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8"));
-const currentVersion = packageJson.version;
-const nextVersion = getNextMinorVersion(currentVersion);
+// Prompt user for bump type
+const promptBumpType = () => {
+  const readline = require('readline').createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
 
-console.log(`Bumping version from ${currentVersion} to ${nextVersion}`);
+  return new Promise((resolve) => {
+    readline.question('Enter version bump type (major/minor/patch): ', (bumpType) => {
+      readline.close();
+      resolve(bumpType.toLowerCase());
+    });
+  });
+};
 
-// Step 2: Update package.json
-updateJsonFile(packageJsonPath, (json) => {
-  json.version = nextVersion;
-});
+// Main function
+const main = async () => {
+  try {
+    // Get bump type from user
+    const bumpType = await promptBumpType();
+    if (!['major', 'minor', 'patch'].includes(bumpType)) {
+      console.error('Error: Invalid bump type. Must be one of: major, minor, patch');
+      process.exit(1);
+    }
 
-// Step 3: Update manifest.json
-updateJsonFile(manifestJsonPath, (json) => {
-  json.version = nextVersion;
-});
+    // Step 1: Read the current version from package.json
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8"));
+    const currentVersion = packageJson.version;
+    const nextVersion = getNextVersion(currentVersion, bumpType);
 
-// Step 4: Update dist/manifest.json
-updateJsonFile(distManifestJsonPath, (json) => {
-  json.version = nextVersion;
-});
+    console.log(`Bumping version from ${currentVersion} to ${nextVersion} (${bumpType} bump)`);
 
-// Step 5: Add new version to versions.json
-const manifestJson = JSON.parse(readFileSync(manifestJsonPath, "utf8"));
-const minAppVersion = manifestJson.minAppVersion;
+    // Step 2: Update package.json
+    updateJsonFile(packageJsonPath, (json) => {
+      json.version = nextVersion;
+    });
 
-updateJsonFile(versionsJsonPath, (json) => {
-  json[nextVersion] = minAppVersion;
-});
+    // Step 3: Update manifest.json and dist/manifest.json
+    [manifestJsonPath, distManifestJsonPath].forEach((file) => {
+      updateJsonFile(file, (json) => {
+        json.version = nextVersion;
+      });
+    });
 
-// Step 6: Run npm install
-runCommand("npm i");
+    // Step 4: Update versions.json
+    const manifestJson = JSON.parse(readFileSync(manifestJsonPath, "utf8"));
+    const minAppVersion = manifestJson.minAppVersion;
 
-// Step 7: Run npm build
-runCommand("npm run build");
+    updateJsonFile(versionsJsonPath, (json) => {
+      json[nextVersion] = minAppVersion;
+    });
 
-// Step 8: Commit the changes
-runCommand(`git add .`);
-runCommand(`git commit -m "bump version to ${nextVersion}"`);
+    // Step 5: Run npm install and build
+    runCommand("npm i");
+    runCommand("npm run build");
 
-// Step 9: Create a tag
-runCommand(`git tag ${nextVersion}`);
+    // Step 6: Commit and tag the version
+    runCommand(`git add .`);
+    runCommand(`git commit -m "chore: bump ${bumpType} version to ${nextVersion}"`);
+    runCommand(`git tag -a v${nextVersion} -m "Version ${nextVersion}"`);
+    runCommand("git push");
+    runCommand("git push --tags");
+    // Step 11: Create a new release in GitHub
+    const releaseFiles = ["dist/main.js", "dist/manifest.json", "dist/styles.css"];
+    const releaseFilesArgs = releaseFiles.map((file) => `${file}`).join(" ");
+    runCommand(
+      `gh release create ${nextVersion} ${releaseFilesArgs} -t "${nextVersion}" --generate-notes`
+    );
 
-// Step 10: Push changes and tag to origin
-runCommand("git push");
-runCommand("git push --tags");
+    console.log(`Version bumped to ${nextVersion} and release created.`);
+  } catch (error) {
+    console.error('Error during version bump:', error.message);
+    process.exit(1);
+  }
+};
 
-// Step 11: Create a new release in GitHub
-const releaseFiles = ["dist/main.js", "dist/manifest.json", "dist/styles.css"];
-const releaseFilesArgs = releaseFiles.map((file) => `${file}`).join(" ");
-runCommand(
-  `gh release create ${nextVersion} ${releaseFilesArgs} -t "${nextVersion}" --generate-notes`
-);
+// Run the main function
+main()
 
-console.log(`Version bumped to ${nextVersion} and release created.`);
