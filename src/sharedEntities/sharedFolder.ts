@@ -385,7 +385,7 @@ export class SharedFolder extends SharedEntity {
     return !(relativePath.startsWith('..'))
   }
 
-  private _fileExtensions: Set<string> = new Set(['md'])
+  private _fileExtensions: Set<string> = new Set(['md', 'canvas', 'MD'])
 
   get fileExtensions(): Set<string> {
     if (this.yDoc) {
@@ -432,7 +432,7 @@ export class SharedFolder extends SharedEntity {
     // Initialize file extensions in Y.Doc if not present
     const yExtensions = this.yDoc.getArray<string>('fileExtensions')
     if (yExtensions.length === 0) {
-      yExtensions.push(['md', 'MD'])
+      yExtensions.push(['md', 'MD', 'canvas'])
     }
   }
 
