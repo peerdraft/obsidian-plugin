@@ -102,7 +102,7 @@ const main = async () => {
     // Step 6: Commit and tag the version
     runCommand(`git add .`);
     runCommand(`git commit -m "chore: bump ${bumpType} version to ${nextVersion}"`);
-    runCommand(`git tag -a v${nextVersion} -m "Version ${nextVersion}"`);
+    runCommand(`git tag -a ${nextVersion} -m "Version ${nextVersion}"`);
     runCommand("git push");
     runCommand("git push --tags");
     // Step 11: Create a new release in GitHub
