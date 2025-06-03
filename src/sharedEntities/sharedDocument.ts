@@ -210,6 +210,11 @@ export class SharedDocument extends SharedEntity {
 
 
   static async fromTFile(file: TFile, opts: { permanent?: boolean, folder?: string }, plugin: PeerDraftPlugin) {
+    const MAX_FILE_SIZE = 1 * 1024 * 1024; // 1MB in bytes
+    if (file.stat.size > MAX_FILE_SIZE) {
+      showNotice(`File is too large to share (${(file.stat.size / (1024 * 1024)).toFixed(2)}MB). Maximum size is 1MB.`);
+      return null;
+    }
     const existing = SharedDocument.findByPath(file.path)
     if (existing) return existing
 
