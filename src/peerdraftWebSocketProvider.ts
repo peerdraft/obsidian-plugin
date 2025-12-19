@@ -183,7 +183,7 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
 
 interface AuthResponseData {
   plan: {
-    type: "hobby" | "professional" | "team"
+    type: string  // Display name from backend (e.g., "Free", "Hobby", "Pro", "Business")
   }
 }
 

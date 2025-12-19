@@ -17,7 +17,7 @@ export interface Settings {
   name: string,
   oid: string,
   plan: {
-    type: "hobby" | "professional" | "team"
+    type: string  // Display name from backend (e.g., "Free", "Hobby", "Pro", "Business")
     email?: string
   },
   root: string,
@@ -41,7 +41,7 @@ const DEFAULT_SETTINGS: Omit<Settings, "oid"> = {
   name: "",
   root: "",
   plan: {
-    type: "hobby",
+    type: "Free",
     email: ""
   },
   duration: 0,
@@ -54,7 +54,7 @@ const DEFAULT_SETTINGS: Omit<Settings, "oid"> = {
 }
 
 const FORCE_SETTINGS: Partial<Settings> = {
-/*
+
   basePath: "http://localhost:5173",
   subscriptionAPI: "http://localhost:5173/subscription",
   connectAPI: "http://localhost:5173/subscription/connect",
@@ -62,7 +62,7 @@ const FORCE_SETTINGS: Partial<Settings> = {
   sync: "ws://localhost:5173/sync",
   signaling: "ws://localhost:5173/signal",
   actives: "ws://localhost:5173/actives"
-*/
+/*
   basePath: "https://www.peerdraft.app",
   subscriptionAPI: "https://www.peerdraft.app/subscription",
   connectAPI: "https://www.peerdraft.app/subscription/connect",
@@ -70,7 +70,7 @@ const FORCE_SETTINGS: Partial<Settings> = {
   sync: "wss://www.peerdraft.app/sync",
   signaling: "wss://www.peerdraft.app/signal",
   actives: "wss://www.peerdraft.app/actives",
-
+*/
 }
 
 export const migrateSettings = async (plugin: PeerdraftPlugin) => {
@@ -198,11 +198,11 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
     div.createSpan({ text: " plan."})
     el.createEl("p")
 
-    if (plugin.settings.plan.type === "hobby") {
+    if (plugin.settings.plan.type === "Free") {
       new Setting(el)
         .setName("Manage your subscription")
         .addButton(button => {
-          button.setButtonText("Upgrade to pro")
+          button.setButtonText("Upgrade")
           button.setCta()
           button.onClick((e) => {
             window.open(`https://peerdraft.app/checkout?email=${plugin.settings.plan.email}`)
