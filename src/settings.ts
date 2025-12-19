@@ -3,8 +3,34 @@ import { showTextModal } from "./ui";
 import PeerdraftPlugin from "./peerdraftPlugin";
 import { promptForFolderSelection } from "./ui/selectFolder";
 import { PermanentShareStoreIndexedDB } from "./permanentShareStore";
-import { logout } from "./login";
+import { getJWT, logout } from "./login";
 import { openLoginModal } from "./ui/login";
+
+interface ShareUsageResponse {
+  currentCount: number;
+  limit: number | null;
+  remaining: number | null;
+  tierDisplayName: string;
+}
+
+const fetchShareUsage = async (plugin: PeerdraftPlugin): Promise<ShareUsageResponse | null> => {
+  const jwt = getJWT(plugin.settings.oid);
+  if (!jwt) return null;
+  
+  try {
+    const response = await requestUrl({
+      url: plugin.settings.basePath + "/group/share-usage",
+      method: 'GET',
+      headers: {
+        "Authorization": "Bearer " + jwt
+      }
+    });
+    return response.json as ShareUsageResponse;
+  } catch (e) {
+    console.error("Error fetching share usage:", e);
+    return null;
+  }
+};
 
 export interface Settings {
   signaling: string,
@@ -196,6 +222,37 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
     const div = el.createEl("div")
     div.createSpan({ text: "You are on the "}).createEl('b', { text:  plugin.settings.plan.type})
     div.createSpan({ text: " plan."})
+    el.createEl("p")
+
+    // Display share usage
+    const usageDiv = el.createEl("div", { text: "Loading share usage..." })
+    fetchShareUsage(plugin).then(usage => {
+      if (usage) {
+        usageDiv.empty()
+        if (usage.limit === null) {
+          usageDiv.createSpan({ text: `You have ${usage.currentCount} active shares (unlimited).` })
+        } else {
+          usageDiv.createSpan({ text: `You have ` })
+          usageDiv.createEl('b', { text: `${usage.currentCount} / ${usage.limit}` })
+          usageDiv.createSpan({ text: ` active shares.` })
+          if (usage.remaining !== null && usage.remaining <= 2 && usage.remaining > 0) {
+            el.createEl("p")
+            el.createEl("div", { 
+              text: `⚠️ You have ${usage.remaining} share${usage.remaining === 1 ? '' : 's'} remaining.`,
+              cls: "mod-warning"
+            })
+          } else if (usage.remaining === 0) {
+            el.createEl("p")
+            el.createEl("div", { 
+              text: `⚠️ You have reached your share limit. Upgrade to create more shares.`,
+              cls: "mod-warning"
+            })
+          }
+        }
+      } else {
+        usageDiv.setText("Could not load share usage.")
+      }
+    })
     el.createEl("p")
 
     if (plugin.settings.plan.type === "Free") {
