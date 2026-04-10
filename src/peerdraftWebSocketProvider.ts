@@ -362,7 +362,7 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
     })
   }
 
-  sendMessage(buf: ArrayBuffer) {
+  sendMessage(buf: Uint8Array) {
     if (this.wsconnected && this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(buf)
     }

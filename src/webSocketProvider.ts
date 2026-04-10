@@ -127,7 +127,7 @@ const setupWS = (provider: WebsocketProvider) => {
   }
 }
 
-const broadcastMessage = (provider: WebsocketProvider, buf: ArrayBuffer) => {
+const broadcastMessage = (provider: WebsocketProvider, buf: Uint8Array) => {
   const ws = provider.ws
   if (provider.wsconnected && ws && ws.readyState === ws.OPEN) {
     ws.send(buf)
