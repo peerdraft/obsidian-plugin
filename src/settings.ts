@@ -16,7 +16,7 @@ interface ShareUsageResponse {
 const fetchShareUsage = async (plugin: PeerdraftPlugin): Promise<ShareUsageResponse | null> => {
   const jwt = getJWT(plugin.settings.oid);
   if (!jwt) return null;
-  
+
   try {
     const response = await requestUrl({
       url: plugin.settings.basePath + "/group/share-usage",
@@ -80,15 +80,15 @@ const DEFAULT_SETTINGS: Omit<Settings, "oid"> = {
 }
 
 const FORCE_SETTINGS: Partial<Settings> = {
-
-  basePath: "http://localhost:5173",
-  subscriptionAPI: "http://localhost:5173/subscription",
-  connectAPI: "http://localhost:5173/subscription/connect",
-  sessionAPI: "http://localhost:5173/session",
-  sync: "ws://localhost:5173/sync",
-  signaling: "ws://localhost:5173/signal",
-  actives: "ws://localhost:5173/actives"
-/*
+  /*
+    basePath: "http://localhost:5173",
+    subscriptionAPI: "http://localhost:5173/subscription",
+    connectAPI: "http://localhost:5173/subscription/connect",
+    sessionAPI: "http://localhost:5173/session",
+    sync: "ws://localhost:5173/sync",
+    signaling: "ws://localhost:5173/signal",
+    actives: "ws://localhost:5173/actives"
+  */
   basePath: "https://www.peerdraft.app",
   subscriptionAPI: "https://www.peerdraft.app/subscription",
   connectAPI: "https://www.peerdraft.app/subscription/connect",
@@ -96,7 +96,6 @@ const FORCE_SETTINGS: Partial<Settings> = {
   sync: "wss://www.peerdraft.app/sync",
   signaling: "wss://www.peerdraft.app/signal",
   actives: "wss://www.peerdraft.app/actives",
-*/
 }
 
 export const migrateSettings = async (plugin: PeerdraftPlugin) => {
@@ -220,8 +219,8 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
     el.createEl("div", { text: `You are logged in as ${plugin.settings.plan.email}.` })
     el.createEl("p")
     const div = el.createEl("div")
-    div.createSpan({ text: "You are on the "}).createEl('b', { text:  plugin.settings.plan.type})
-    div.createSpan({ text: " plan."})
+    div.createSpan({ text: "You are on the " }).createEl('b', { text: plugin.settings.plan.type })
+    div.createSpan({ text: " plan." })
     el.createEl("p")
 
     // Display share usage
@@ -237,13 +236,13 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
           usageDiv.createSpan({ text: ` active shares.` })
           if (usage.remaining !== null && usage.remaining <= 2 && usage.remaining > 0) {
             el.createEl("p")
-            el.createEl("div", { 
+            el.createEl("div", {
               text: `⚠️ You have ${usage.remaining} share${usage.remaining === 1 ? '' : 's'} remaining.`,
               cls: "mod-warning"
             })
           } else if (usage.remaining === 0) {
             el.createEl("p")
-            el.createEl("div", { 
+            el.createEl("div", {
               text: `⚠️ You have reached your share limit. Upgrade to create more shares.`,
               cls: "mod-warning"
             })
