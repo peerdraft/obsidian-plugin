@@ -11,7 +11,7 @@ type ClientMessage = {
 }
 
 type ServerMessage = {
-  type: "add" | "full" | "delete",
+  type: "add" | "full" | "delete" | "resync",
   docs: Array<string>
 }
 
@@ -29,6 +29,11 @@ const handleMessage = async (data: string) => {
     for (const id of message.docs) {
       SharedDocument.findById(id)?.startWebRTCSync()
       SharedFolder.findById(id)?.startWebRTCSync()
+    }
+  } else if (message.type === "resync") {
+    for (const id of message.docs) {
+      SharedDocument.findById(id)?.syncWithServer()
+      SharedFolder.findById(id)?.syncWithServer()
     }
   } else if (message.type === "delete") {
     for (const id of message.docs) {
