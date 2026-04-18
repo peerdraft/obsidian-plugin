@@ -12,3 +12,6 @@ dist
 
 # Test output
 /.jest-cache
+
+# Development plans
+dev-plans/
