@@ -271,8 +271,9 @@ export class SharedDocument extends SharedEntity {
       const folder = SharedFolder.findById(opts.folder)
       if (folder) {
         const authorProp = folder.getAutoFillAuthorProperty()
+        const authorPropType = folder.getAutoFillAuthorPropertyType()
         if (authorProp && authorProp !== "") {
-          doc.updateProperty(authorProp, plugin.settings.name)
+          doc.updateProperty(authorProp, plugin.settings.name, undefined, authorPropType)
         }
       }
     }
@@ -775,12 +776,35 @@ export class SharedDocument extends SharedEntity {
     return this.plugin.settings.basePath + "/cm/" + this.shareId
   }
 
-  updateProperty(name: string, value: string, oldProperty?: string) {
+  updateProperty(name: string, value: string, oldProperty?: string, type?: "string" | "array") {
     this.plugin.app.fileManager.processFrontMatter(this.file, (fm) => {
       if (oldProperty) {
         delete fm[oldProperty]
       }
-      fm[name] = value
+
+      if (type === "array") {
+        const trimmedValue = value.trim()
+
+        if (fm[name] !== undefined) {
+          if (Array.isArray(fm[name])) {
+            // Property exists as array - check for duplicates and append
+            const existingArray = fm[name] as string[]
+            const normalizedArray = existingArray.map(v => v.trim().toLowerCase())
+            if (!normalizedArray.includes(trimmedValue.toLowerCase())) {
+              existingArray.push(trimmedValue)
+            }
+          } else {
+            // Property exists as string - convert to array
+            fm[name] = [fm[name], trimmedValue]
+          }
+        } else {
+          // Property doesn't exist - create array
+          fm[name] = [trimmedValue]
+        }
+      } else {
+        // Default string behavior - overwrite
+        fm[name] = value
+      }
     })
   }
 

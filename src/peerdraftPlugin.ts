@@ -250,7 +250,8 @@ export default class PeerdraftPlugin extends Plugin {
 								const prop = newPathInFolder.getAutoFillProperty()
 								if (prop) newDoc.updateProperty(prop, newDoc.getShareURL())
 								const authorProp = newPathInFolder.getAutoFillAuthorProperty()
-								if (authorProp) newDoc.updateProperty(authorProp, plugin.settings.name)
+								const authorPropType = newPathInFolder.getAutoFillAuthorPropertyType()
+								if (authorProp) newDoc.updateProperty(authorProp, plugin.settings.name, undefined, authorPropType)
 							}
 						}
 						if (doc) {
@@ -279,7 +280,8 @@ export default class PeerdraftPlugin extends Plugin {
 							const prop = newPathInFolder.getAutoFillProperty()
 							if (prop) doc.updateProperty(prop, doc.getShareURL())
 							const authorProp = newPathInFolder.getAutoFillAuthorProperty()
-							if (authorProp) doc.updateProperty(authorProp, plugin.settings.name)
+							const authorPropType = newPathInFolder.getAutoFillAuthorPropertyType()
+							if (authorProp) doc.updateProperty(authorProp, plugin.settings.name, undefined, authorPropType)
 						}
 					}
 				}
@@ -345,7 +347,8 @@ export default class PeerdraftPlugin extends Plugin {
 						const prop = folder.getAutoFillProperty()
 						if (prop) doc.updateProperty(prop, doc.getShareURL())
 						const authorProp = folder.getAutoFillAuthorProperty()
-						if (authorProp) doc.updateProperty(authorProp, plugin.settings.name)
+						const authorPropType = folder.getAutoFillAuthorPropertyType()
+						if (authorProp) doc.updateProperty(authorProp, plugin.settings.name, undefined, authorPropType)
 					}
 				})))
 			}

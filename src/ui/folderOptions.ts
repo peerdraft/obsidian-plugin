@@ -89,6 +89,22 @@ class SharedFolderOptionsModal extends Modal {
       })
     })
 
+    const authorPropType = new Setting(this.contentEl)
+    authorPropType.setName("Property type")
+    authorPropType.setDesc("Choose whether to add author as a string property or as an array label")
+    let tempAuthorPropType = this.folder.getAutoFillAuthorPropertyType()
+
+    authorPropType.addDropdown(dropdown => {
+      dropdown.addOption("string", "String")
+      dropdown.addOption("array", "Array/Label")
+      dropdown.setValue(tempAuthorPropType)
+      dropdown.onChange(value => {
+        const type = value === "array" ? "array" : "string"
+        tempAuthorPropType = type
+        this.folder.setAutoFillAuthorPropertyType(type)
+      })
+    })
+
     const link = new Setting(this.contentEl)
     link.setName("Peerdraft URL")
     link.addButton(btn => {
