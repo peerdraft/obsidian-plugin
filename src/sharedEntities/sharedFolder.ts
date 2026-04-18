@@ -352,6 +352,16 @@ export class SharedFolder extends SharedEntity {
     prop.insert(0, property)
   }
 
+  getAutoFillAuthorProperty() {
+    return this.yDoc.getText("autoFillAuthorProperty").toString()
+  }
+
+  setAutoFillAuthorProperty(property: string) {
+    const prop = this.yDoc.getText("autoFillAuthorProperty")
+    prop.delete(0, prop.length)
+    prop.insert(0, property)
+  }
+
   async updatePropertiesOfAllDocuments(oldPropertyName?: string) {
     const prop = this.getAutoFillProperty()
     if (!prop || prop === "") return

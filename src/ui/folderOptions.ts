@@ -66,6 +66,29 @@ class SharedFolderOptionsModal extends Modal {
       })
     })
 
+    // Add author property
+
+    const authorProp = new Setting(this.contentEl)
+    authorProp.setName("Auto add property with author name")
+    authorProp.setDesc("Leave empty if no property should be added")
+    let tempAuthorProp = this.folder.getAutoFillAuthorProperty()
+
+    authorProp.addText(text => {
+      text.setValue(tempAuthorProp)
+      text.onChange(value => {
+        tempAuthorProp = value
+      })
+    })
+
+    authorProp.addButton(button => {
+      button.setButtonText("Save")
+      button.onClick(() => {
+        if (tempAuthorProp !== this.folder.getAutoFillAuthorProperty()) {
+          this.folder.setAutoFillAuthorProperty(tempAuthorProp)
+        }
+      })
+    })
+
     const link = new Setting(this.contentEl)
     link.setName("Peerdraft URL")
     link.addButton(btn => {

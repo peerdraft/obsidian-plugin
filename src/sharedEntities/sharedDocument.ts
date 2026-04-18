@@ -265,6 +265,18 @@ export class SharedDocument extends SharedEntity {
 
     showNotice(`Inititialized share for ${file.path}`)
     addIsSharedClass(file.path, plugin)
+
+    // Add author property if configured
+    if (opts.folder) {
+      const folder = SharedFolder.findById(opts.folder)
+      if (folder) {
+        const authorProp = folder.getAutoFillAuthorProperty()
+        if (authorProp && authorProp !== "") {
+          doc.updateProperty(authorProp, plugin.settings.name)
+        }
+      }
+    }
+
     return doc
   }
 
