@@ -12,6 +12,7 @@ import { showNotice } from "../ui";
 import { SharedDocument } from "./sharedDocument";
 import { SharedEntity } from "./sharedEntity";
 import { promptForText } from "src/ui/enterText";
+import { SyncableFolder } from "./syncableFolder";
 
 const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: SharedFolder, plugin: PeerDraftPlugin) => {
 
@@ -97,6 +98,19 @@ export class SharedFolder extends SharedEntity {
 
   root: TFolder
   protected static _sharedEntites: Array<SharedFolder> = new Array<SharedFolder>()
+
+  /**
+   * Sync-engine state (Y.Doc update forwarding, IndexedDB lifecycle,
+   * `syncWithServer`, registry for the provider's reconnect loop) is
+   * delegated to this composed instance. See
+   * `app/features/sync-engine-testability/implementation-plan.md`.
+   *
+   * Note: folders have no debounce and no `isPermanent` gate — updates
+   * are forwarded immediately once a shareId is set. That matches the
+   * previous inline `this.yDoc.on("update", ...)` listener in this
+   * file pre-refactor.
+   */
+  private _syncable!: SyncableFolder
 
   static async fromTFolder(root: TFolder, plugin: PeerDraftPlugin) {
     showNotice(`Inititializing share for ${root.path}.`)
@@ -214,7 +228,7 @@ export class SharedFolder extends SharedEntity {
     }
 
     const sFolder = new SharedFolder(folder, plugin, preFetchedDoc)
-    sFolder._shareId = id
+    sFolder.setShareIdInternal(id)
     plugin.activeStreamClient.add([id])
 
     await add(sFolder, plugin)
@@ -245,7 +259,7 @@ export class SharedFolder extends SharedEntity {
     }
 
     const folder = new SharedFolder(tFolder, plugin)
-    folder._shareId = psf.shareId
+    folder.setShareIdInternal(psf.shareId)
     plugin.activeStreamClient.add([psf.shareId])
     const local = await folder.startIndexedDBSync()
     if (local) {
@@ -284,24 +298,59 @@ export class SharedFolder extends SharedEntity {
     this.root = root
     this._path = root.path
     this.yDoc = ydoc ?? new Y.Doc()
-    
+
     // Initialize the Y.Doc with default values
     this.initializeYDoc()
-    
-    // Set up observers and event handlers
+
+    // Cross-FS semantics (create/rename/delete files when the docs-map
+    // changes) stays here because it is Obsidian-side behavior; the
+    // syncable only handles the wire protocol + IndexedDB.
     this.getDocsFragment().observe((ev, tx) => {
       handleUpdate(ev, tx, this, plugin)
     })
-    
-    this.yDoc.on("update", (update: Uint8Array, origin: any, yDoc: Y.Doc, tr: Y.Transaction) => {
-      if (tr.local && this.shareId) {
-        plugin.serverSync.sendUpdate(this, update)
-      }
+
+    // Local-update forwarding and sync-WS plumbing live on the
+    // syncable. Shares the same Y.Doc instance, so updates applied via
+    // either reference are observed by the syncable's listener.
+    this._syncable = new SyncableFolder({
+      yDoc: this.yDoc,
+      shareId: this._shareId,
+      serverSync: plugin.serverSync,
+      logger: { log: (...args: unknown[]) => plugin.log(args.map((a) => String(a)).join(' ')) }
     })
-    
+
     // Add to shared entities and update UI
     SharedFolder._sharedEntites.push(this)
     addIsSharedClass(this.path, plugin)
+  }
+
+  /**
+   * Update `_shareId` and propagate to the composed `SyncableFolder`
+   * so the provider's registry stays correct. Use this instead of
+   * assigning to `_shareId` directly.
+   */
+  private setShareIdInternal(id: string) {
+    this._shareId = id
+    this._syncable?.setShareId(id)
+  }
+
+  /**
+   * Override of `SharedEntity.initServerYDoc` so the post-assignment
+   * `_shareId` is reflected in the syncable's registry.
+   */
+  initServerYDoc(folderKey?: string) {
+    return super.initServerYDoc(folderKey).then((checksum) => {
+      this._syncable.setShareId(this._shareId)
+      return checksum
+    })
+  }
+
+  /**
+   * Override of `SharedEntity.syncWithServer` so the wire-protocol
+   * round-trip happens via the syncable.
+   */
+  syncWithServer() {
+    return this._syncable.syncWithServer()
   }
 
   getDocsFragment() {
@@ -328,8 +377,7 @@ export class SharedFolder extends SharedEntity {
   }
 
   calculateHash(): string {
-    const serialized = serialize(Array.from(this.getDocsFragment()))
-    return calculateHash(serialized)
+    return this._syncable.calculateHash()
   }
 
   getOriginalFolderName() {
@@ -520,7 +568,12 @@ export class SharedFolder extends SharedEntity {
     if (this._indexedDBProvider) return this._indexedDBProvider
     const id = getFolderByPath(this.path, this.plugin)?.persistenceId
     if (!id) return
-    this._indexedDBProvider = new IndexeddbPersistence(SharedEntity.DB_PERSISTENCE_PREFIX + id, this.yDoc)
+    // Delegate to the syncable so there is a single IndexedDB provider
+    // per Y.Doc. The base-class `_indexedDBProvider` is mirrored so any
+    // existing reads via `SharedEntity.indexedDBProvider` continue to
+    // work unchanged.
+    const provider = await this._syncable.startIndexedDBSync(id)
+    this._indexedDBProvider = provider
     return this._indexedDBProvider
   }
 
@@ -562,6 +615,7 @@ export class SharedFolder extends SharedEntity {
   }
 
   destroy() {
+    this._syncable.destroy()
     super.destroy()
     SharedFolder._sharedEntites.splice(SharedFolder._sharedEntites.indexOf(this), 1)
   }

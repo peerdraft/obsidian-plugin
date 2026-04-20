@@ -4,9 +4,8 @@ import * as encoding from 'lib0/encoding'
 import * as decoding from 'lib0/decoding'
 import { ObservableV2 } from 'lib0/observable'
 import * as math from 'lib0/math'
-import { SharedDocument } from './sharedEntities/sharedDocument'
-import { SharedEntity } from './sharedEntities/sharedEntity'
-import { SharedFolder } from './sharedEntities/sharedFolder'
+import { SyncableDocument, type SyncableEntity } from './sharedEntities/syncableDocument'
+import { SyncableFolder } from './sharedEntities/syncableFolder'
 import { calculateHash, createRandomId, serialize } from './tools'
 
 export const MESSAGE_SYNC = 0
@@ -67,7 +66,7 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
             const id = decoding.readVarString(decoder)
             const vector = decoding.readVarUint8Array(decoder)
             const hash = decoding.readVarString(decoder)
-            const doc = SharedDocument.findById(id) ?? SharedFolder.findById(id)
+            const doc = SyncableDocument.findById(id) ?? SyncableFolder.findById(id)
             if (doc && hash != doc.calculateHash()) {
               provider.sendSyncStep2(doc, vector)
             }
@@ -76,7 +75,7 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
             const id = decoding.readVarString(decoder)
             const update = decoding.readVarUint8Array(decoder)
             const hash = decoding.readVarString(decoder)
-            const doc = SharedDocument.findById(id) ?? SharedFolder.findById(id)
+            const doc = SyncableDocument.findById(id) ?? SyncableFolder.findById(id)
             if (doc) {
               Y.applyUpdate(doc.yDoc, update, provider)
               provider.emit('synced', [id, hash])
@@ -159,20 +158,27 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
         provider.authenticate(provider.jwt, provider.version)
       }
 
-      for (const folder of SharedFolder.getAll()) {
+      // Iterate the syncable registries rather than SharedFolder /
+      // SharedDocument. The set of entries is identical (every
+      // SharedFolder / SharedDocument owns one syncable registered by
+      // id), but this decouples the provider from the Obsidian-side
+      // wrapper classes — which is what lets the test harness register
+      // syncables without booting the full plugin.
+      for (const folder of SyncableFolder.getAll()) {
+        // Folders are always permanent (no isPermanent gate needed).
         if (folder.indexedDBProvider) {
           if (!folder.indexedDBProvider.synced) await folder.indexedDBProvider.whenSynced
           folder.syncWithServer()
         }
       }
 
-      for (const doc of SharedDocument.getAll()) {
-        if (doc.isPermanent && doc.indexedDBProvider) {
-          if (!doc.indexedDBProvider.synced) await doc.indexedDBProvider.whenSynced
-          doc.syncWithServer()
+      for (const syncable of SyncableDocument.getAll()) {
+        if (syncable.isPermanent && syncable.indexedDBProvider) {
+          if (!syncable.indexedDBProvider.synced) await syncable.indexedDBProvider.whenSynced
+          syncable.syncWithServer()
         }
       }
-
+      
     }
 
     provider.emit('status', [{
@@ -265,7 +271,11 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
     }
   }
 
-  sendSyncStep1(doc: SharedEntity) {
+  // Send methods accept any `SyncableEntity` (the structural shape
+  // `{ shareId, yDoc, calculateHash() }`). `SharedFolder` and
+  // `SyncableDocument` both satisfy it; `SharedDocument` does too via
+  // its composed syncable.
+  sendSyncStep1(doc: SyncableEntity) {
     const encoder = encoding.createEncoder()
     encoding.writeVarUint(encoder, MESSAGE_MULTIPLEX_SYNC)
     encoding.writeVarUint(encoder, SYNC_STEP_1)
@@ -275,7 +285,7 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
     this.sendMessage(encoding.toUint8Array(encoder))
   }
 
-  sendSyncStep2(doc: SharedEntity, vector?: Uint8Array) {
+  sendSyncStep2(doc: SyncableEntity, vector?: Uint8Array) {
     const encoder = encoding.createEncoder()
     encoding.writeVarUint(encoder, MESSAGE_MULTIPLEX_SYNC)
     encoding.writeVarUint(encoder, SYNC_STEP_2)
@@ -285,7 +295,7 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
     this.sendMessage(encoding.toUint8Array(encoder))
   }
 
-  sendUpdate(doc: SharedEntity, update: Uint8Array) {
+  sendUpdate(doc: SyncableEntity, update: Uint8Array) {
     const encoder = encoding.createEncoder()
     encoding.writeVarUint(encoder, MESSAGE_MULTIPLEX_SYNC)
     encoding.writeVarUint(encoder, UPDATE)
@@ -305,7 +315,7 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
     this.sendMessage(encoding.toUint8Array(encoder))
   }
 
-  sendNewDocument(doc: SharedEntity, tempId: string, folderKey?: string) {
+  sendNewDocument(doc: SyncableEntity, tempId: string, folderKey?: string) {
     const encoder = encoding.createEncoder()
     encoding.writeVarUint(encoder, MESSAGE_MULTIPLEX_SYNC)
     encoding.writeVarUint(encoder, NEW_DOCUMENT)

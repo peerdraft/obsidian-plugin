@@ -23,6 +23,7 @@ import { promptForText } from 'src/ui/enterText';
 import { addCanvasToYDoc, applyDataChangesToDoc, diffCanvases, yDocToCanvasJSON } from './canvas';
 import { addCanvasExtension, type CanvasView, type Node } from 'src/ui/canvas';
 import JSONC from "tiny-jsonc"
+import { SyncableDocument } from './syncableDocument';
 
 export class SharedDocument extends SharedEntity {
 
@@ -40,6 +41,19 @@ export class SharedDocument extends SharedEntity {
 
   private mutex = new Mutex
   private lastUpdateTriggeredByDocChange: number
+
+  /**
+   * Sync-engine state (Y.Doc batcher, IndexedDB lifecycle,
+   * `syncWithServer`, registry for the provider's reconnect loop) is
+   * delegated to this composed instance. See
+   * `app/features/sync-engine-testability/implementation-plan.md`.
+   *
+   * `SharedDocument` keeps its own `_shareId` / `_isPermanent` fields
+   * because `SharedEntity` already exposes them and `SharedFolder`
+   * relies on the shape; both are kept in sync with the syncable via
+   * `setShareIdInternal` / `setIsPermanentInternal`.
+   */
+  private _syncable!: SyncableDocument
 
   isCanvas: boolean
 
@@ -80,8 +94,8 @@ export class SharedDocument extends SharedEntity {
     const doc = new SharedDocument({
       path: pd.path
     }, plugin)
-    doc._isPermanent = true
-    doc._shareId = pd.shareId
+    doc.setIsPermanentInternal(true)
+    doc.setShareIdInternal(pd.shareId)
     doc.isCanvas = "canvas" === (file as TFile).extension
     if (doc.isCanvas) {
       doc.setupFileSyncForCanvas()
@@ -161,7 +175,7 @@ export class SharedDocument extends SharedEntity {
     doc._path = file.path
 
     if (isPermanent) {
-      doc._isPermanent = true
+      doc.setIsPermanentInternal(true)
       await add(doc, plugin)
       await doc.startIndexedDBSync()
       plugin.activeStreamClient.add([doc.shareId])
@@ -256,7 +270,7 @@ export class SharedDocument extends SharedEntity {
       // doc.startWebSocketSync()
       doc.startIndexedDBSync()
     } else {
-      doc._shareId = await plugin.serverSync.createNewSession()
+      doc.setShareIdInternal(await plugin.serverSync.createNewSession())
     }
 
     for (const id of leafIds) {
@@ -319,20 +333,16 @@ export class SharedDocument extends SharedEntity {
     if (opts.id) {
       this._shareId = opts.id
     }
-    const pendingUpdates: Array<Uint8Array> = []
 
-    const sendUpdates = debounce(() => {
-      this.mutex.runExclusive(() => {
-        plugin.serverSync.sendUpdate(this, Y.mergeUpdates(pendingUpdates))
-        pendingUpdates.length = 0
-      })
-    }, 1000, true)
-
-    this.yDoc.on("update", (update: Uint8Array, origin: any, yDoc: Y.Doc, tr: Y.Transaction) => {
-      if (tr.local && this.isPermanent) {
-        pendingUpdates.push(update)
-        sendUpdates()
-      }
+    // Local-update batcher + sync-WS plumbing live on the syncable.
+    // The syncable shares the same Y.Doc instance, so updates applied
+    // to either reference are observed by the syncable's listener.
+    this._syncable = new SyncableDocument({
+      yDoc: this.yDoc,
+      shareId: this._shareId,
+      isPermanent: this._isPermanent ?? false,
+      serverSync: plugin.serverSync,
+      logger: { log: (...args: unknown[]) => plugin.log(args.map((a) => String(a)).join(' ')) }
     })
 
     SharedDocument._sharedEntites.push(this)
@@ -470,8 +480,45 @@ export class SharedDocument extends SharedEntity {
   }
 
   calculateHash() {
-    const text = this.getContentFragment().toString()
-    return calculateHash(text)
+    return this._syncable.calculateHash()
+  }
+
+  /**
+   * Update `_shareId` and propagate to the composed `SyncableDocument`
+   * so the provider's registry stays correct. Use this instead of
+   * assigning to `_shareId` directly.
+   */
+  private setShareIdInternal(id: string) {
+    this._shareId = id
+    this._syncable?.setShareId(id)
+  }
+
+  /** Same as `setShareIdInternal` but for `_isPermanent`. */
+  private setIsPermanentInternal(value: boolean) {
+    this._isPermanent = value
+    this._syncable?.setPermanent(value)
+  }
+
+  /**
+   * Override of `SharedEntity.initServerYDoc` so the post-assignment
+   * `_shareId` is reflected in the syncable's registry.
+   */
+  initServerYDoc(folderKey?: string) {
+    return super.initServerYDoc(folderKey).then((checksum) => {
+      this._syncable.setShareId(this._shareId)
+      return checksum
+    })
+  }
+
+  /**
+   * Override of `SharedEntity.syncWithServer` so the wire-protocol
+   * round-trip happens via the syncable. The behavior is identical;
+   * routing through the syncable is what lets the harness (and any
+   * future tests) drive sync without instantiating the full
+   * Obsidian-side glue.
+   */
+  syncWithServer() {
+    return this._syncable.syncWithServer()
   }
 
   startWebRTCSync() {
@@ -547,7 +594,7 @@ export class SharedDocument extends SharedEntity {
 
   async setPermanent() {
     if (!this._isPermanent) {
-      this._isPermanent = true
+      this.setIsPermanentInternal(true)
       await add(this, this.plugin)
       this.plugin.activeStreamClient.add([this.shareId])
     }
@@ -578,10 +625,13 @@ export class SharedDocument extends SharedEntity {
     if (this._indexedDBProvider) return this._indexedDBProvider
     const id = (getDocByPath(this.path, this.plugin))?.persistenceId
     if (!id) return
-    const provider = new IndexeddbPersistence(SharedEntity.DB_PERSISTENCE_PREFIX + id, this.yDoc)
+    // Delegate to the syncable so there is a single IndexedDB provider
+    // per Y.Doc (sharing avoids two `y-indexeddb` providers writing the
+    // same key). The base-class `_indexedDBProvider` is mirrored so any
+    // existing reads via `SharedEntity.indexedDBProvider` continue to
+    // work unchanged.
+    const provider = await this._syncable.startIndexedDBSync(id)
     this._indexedDBProvider = provider
-    if (!provider.synced) await provider.whenSynced
-
     return this._indexedDBProvider
   }
 
@@ -831,6 +881,7 @@ export class SharedDocument extends SharedEntity {
       this.removeExtensionFromLeaf(key)
     }
     this._extensions.destroy()
+    this._syncable.destroy()
     super.destroy()
     this.removeStatusStatusBarEntry()
     SharedDocument._sharedEntites.splice(SharedDocument._sharedEntites.indexOf(this), 1)
