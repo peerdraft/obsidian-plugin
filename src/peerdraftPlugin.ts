@@ -135,7 +135,7 @@ export default class PeerdraftPlugin extends Plugin {
 				})
 
 				this.serverSync.connect()
-				await this.serverSync.connected()
+				this.serverSync.connected()
 
 				for (const docs of plugin.settings.serverShares.files) {
 					await SharedDocument.fromPermanentShareDocument({ path: docs[0], persistenceId: docs[1].persistenceId, shareId: docs[1].shareId }, plugin)

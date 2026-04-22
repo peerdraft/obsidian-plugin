@@ -226,21 +226,20 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
   wsLastMessageReceived: number
   shouldConnect: boolean
   _resyncInterval: number
-  _updateHandler: (update: Uint8Array, origin: any) => void
-  _awarenessUpdateHandler: ({ added, updated, removed }: any, _origin: any) => void
-  _exitHandler: () => void
   _checkInterval: number
   authenticated: boolean
   jwt: string | undefined
   version: string
+  registry?: Map<string, import('./sharedEntities/syncableDocument').SyncableDocument>
 
   constructor(serverUrl: string, {
     connect = true,
     resyncInterval = -1,
     maxBackoffTime = 2500,
     jwt = undefined,
-    version = ''
-  }: { version?: string; jwt?: string, connect?: boolean; params?: { [s: string]: string }; WebSocketPolyfill?: typeof WebSocket; resyncInterval?: number; maxBackoffTime?: number; disableBc?: boolean } = {}) {
+    version = '',
+    registry
+  }: { version?: string; jwt?: string, connect?: boolean; params?: { [s: string]: string }; WebSocketPolyfill?: typeof WebSocket; resyncInterval?: number; maxBackoffTime?: number; disableBc?: boolean; registry?: Map<string, import('./sharedEntities/syncableDocument').SyncableDocument> } = {}) {
     super()
     this.url = serverUrl
     this.maxBackoffTime = maxBackoffTime
@@ -251,6 +250,7 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
     this._synced = false
     this.ws = null
     this.wsLastMessageReceived = 0
+    this.registry = registry
     this.shouldConnect = connect
     this._resyncInterval = 0
     this.authenticated = false

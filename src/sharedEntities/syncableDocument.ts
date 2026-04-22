@@ -2,8 +2,29 @@ import { Mutex } from 'async-mutex'
 import { ObservableV2 } from 'lib0/observable'
 import { IndexeddbPersistence } from 'y-indexeddb'
 import * as Y from 'yjs'
+import { diff, diffCleanupEfficiency } from 'diff-match-patch-es'
 
 import { calculateHash } from '../tools'
+
+/**
+ * File I/O port for SyncableDocument. Abstracts vault read/write operations
+ * so the syncable can work with real vault I/O in production and fake I/O
+ * in tests.
+ */
+export interface SyncableFileIO {
+  read(): Promise<string>
+  modify(content: string, opts?: { mtime?: number }): Promise<void>
+  getMTime(): number
+}
+
+/**
+ * Clock port for SyncableDocument. Abstracts time access so the syncable
+ * can use real time in production and fake time in tests (for mtime-dependent
+ * logic like the self-echo guard).
+ */
+export interface SyncableClock {
+  now(): number
+}
 
 /**
  * Sync-engine logic extracted from `SharedDocument`. Owns:
@@ -75,6 +96,35 @@ export interface SyncableDocumentOptions {
   persistenceId?: string
   /** Default 1000 ms. */
   flushIntervalMs?: number
+  /**
+   * File I/O adapter. If provided, the syncable installs a
+   * `content` observer that schedules debounced flushes to the file
+   * and exposes `reconcileWithFileContent()` for the vault-modify
+   * path. Absent in pure server-sync harnesses (S1/S2/S3).
+   */
+  fileIO?: SyncableFileIO
+  /** Clock for the self-echo guard. Defaults to `Date.now()`. */
+  clock?: SyncableClock
+  /**
+   * Predicate returning how many CodeMirror editor extensions are
+   * attached. When > 0, the editor owns vault writes and the syncable
+   * skips its own file flush / reconcile work (matches the existing
+   * `_extensions.size === 0` guard in `SharedDocument`).
+   *
+   * Defaults to "no editor attached" so harnesses don't need to
+   * supply one.
+   */
+  editorAttachedCount?: () => number
+  /** Default 1000 ms. Debounce for yDoc → file flushes. */
+  fileFlushIntervalMs?: number
+  /**
+   * Optional custom registry for this syncable. If provided, this
+   * syncable will register itself in the custom registry instead of
+   * the static `SyncableDocument._registry`. Used by test harnesses
+   * to avoid registry conflicts when running multiple clients in the
+   * same process.
+   */
+  registry?: Map<string, SyncableDocument>
 }
 
 type Events = {
@@ -84,6 +134,15 @@ type Events = {
   flushed: (count: number) => void
   /** A `SYNC_STEP_2` for our shareId arrived from the server. */
   synced: (hash: SyncableHash) => void
+  /** The syncable wrote its current content out to the `FileIO`
+   *  port. Emitted AFTER the write resolves, with the mtime that was
+   *  recorded on the write so callers can correlate with
+   *  `getMTime()`. */
+  'file-flushed': (mtime: number) => void
+  /** `reconcileWithFileContent` merged an external diff into the
+   *  content fragment. Emitted ONLY when a transaction actually
+   *  happened (content differed and the echo guard cleared). */
+  reconciled: (hash: SyncableHash) => void
 }
 
 export class SyncableDocument extends ObservableV2<Events> implements SyncableEntity {
@@ -118,6 +177,53 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
     tx: Y.Transaction
   ) => void
 
+  // ---- File-sync state (only installed when `fileIO` is supplied) ----
+
+  private fileIO?: SyncableFileIO
+  private readonly clock: SyncableClock
+  private readonly editorAttachedCount: () => number
+  private readonly fileFlushIntervalMs: number
+  private fileFlushTimer: ReturnType<typeof setTimeout> | null = null
+  private readonly fileMutex = new Mutex()
+  private contentObserver?: () => void
+
+  private readonly registry: Map<string, SyncableDocument>
+
+  /**
+   * mtime of the most recent write this syncable performed through
+   * `fileIO.modify(...)`. The `reconcileWithFileContent` path
+   * compares this against `fileIO.getMTime()` to detect and skip
+   * its own echoes (same semantics as the legacy
+   * `SharedDocument.lastUpdateTriggeredByDocChange` guard).
+   */
+  private _lastUpdateTriggeredByDocChange = 0
+
+  /**
+   * Set or update the FileIO adapter after construction. This is needed
+   * when the file becomes available after the SyncableDocument is created
+   * (e.g., in `fromShareURL` where the file is created after syncable
+   * construction). Reinstalls the content observer if fileIO transitions
+   * from undefined to defined.
+   */
+  setFileIO(fileIO: SyncableFileIO | undefined): void {
+    if (this.fileIO === fileIO) return
+    // Uninstall old observer if present
+    if (this.contentObserver) {
+      this.yDoc.getText('content').unobserve(this.contentObserver)
+      this.contentObserver = undefined
+    }
+    this.fileIO = fileIO
+    // Install new observer if fileIO is now available
+    if (fileIO) {
+      this.contentObserver = () => {
+        if (this.editorAttachedCount() === 0) {
+          this.scheduleFileFlush()
+        }
+      }
+      this.yDoc.getText('content').observe(this.contentObserver)
+    }
+  }
+
   constructor(opts: SyncableDocumentOptions) {
     super()
     this.yDoc = opts.yDoc
@@ -126,6 +232,11 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
     this.serverSync = opts.serverSync
     this.logger = opts.logger ?? { log: () => undefined }
     this.flushIntervalMs = opts.flushIntervalMs ?? 1000
+    this.fileIO = opts.fileIO
+    this.clock = opts.clock ?? { now: () => Date.now() }
+    this.editorAttachedCount = opts.editorAttachedCount ?? (() => 0)
+    this.fileFlushIntervalMs = opts.fileFlushIntervalMs ?? 1000
+    this.registry = opts.registry ?? SyncableDocument._registry
 
     this.updateListener = (update, _origin, _doc, tx) => {
       // Only forward local edits, and only when this share is persistent.
@@ -137,8 +248,18 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
     }
     this.yDoc.on('update', this.updateListener)
 
+    // Install content observer if fileIO is provided
+    if (this.fileIO) {
+      this.contentObserver = () => {
+        if (this.editorAttachedCount() === 0) {
+          this.scheduleFileFlush()
+        }
+      }
+      this.yDoc.getText('content').observe(this.contentObserver)
+    }
+
     if (this._shareId) {
-      SyncableDocument._registry.set(this._shareId, this)
+      this.registry.set(this._shareId, this)
     }
 
     if (opts.persistenceId) {
@@ -186,11 +307,11 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
   setShareId(id: string): void {
     if (this._shareId === id) return
     if (this._shareId) {
-      SyncableDocument._registry.delete(this._shareId)
+      this.registry.delete(this._shareId)
     }
     this._shareId = id
     if (id) {
-      SyncableDocument._registry.set(id, this)
+      this.registry.set(id, this)
     }
   }
 
@@ -319,17 +440,97 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
   }
 
   // -------------------------------------------------------------------
+  // File sync (only active when fileIO is provided)
+  // -------------------------------------------------------------------
+
+  /**
+   * Write the current Y.Doc content to the file via the FileIO port.
+   * Debounced via scheduleFileFlush; call directly for deterministic
+   * behavior in tests.
+   */
+  async flushToFile(): Promise<void> {
+    if (!this.fileIO) return
+    if (this.fileFlushTimer) {
+      clearTimeout(this.fileFlushTimer)
+      this.fileFlushTimer = null
+    }
+    return this.fileMutex.runExclusive(async () => {
+      const content = this.yDoc.getText('content').toString()
+      const mtime = this.clock.now()
+      await this.fileIO!.modify(content, { mtime })
+      this._lastUpdateTriggeredByDocChange = mtime
+      this.emit('file-flushed', [mtime])
+    })
+  }
+
+  /**
+   * Merge external file content into the Y.Doc using diff-match-patch.
+   * Implements the self-echo guard to avoid re-ingesting the syncable's
+   * own writes by comparing file mtime with `_lastUpdateTriggeredByDocChange`.
+   */
+  reconcileWithFileContent(fileContent: string): Promise<void> {
+    const fileIO = this.fileIO
+    if (!fileIO) return Promise.resolve()
+    if (this.editorAttachedCount() > 0) return Promise.resolve()
+    if (fileIO.getMTime() === this._lastUpdateTriggeredByDocChange) {
+      return Promise.resolve()
+    }
+    return this.fileMutex.runExclusive(() => {
+      const yDocContent = this.yDoc.getText('content').toString()
+      if (yDocContent === fileContent) return
+      const diffs = diff(yDocContent, fileContent)
+      diffCleanupEfficiency(diffs)
+      const content = this.yDoc.getText('content')
+      let pos = 0
+      this.yDoc.transact(() => {
+        for (const d of diffs) {
+          const text = d[1] as string
+          const length = text.length
+          switch (d[0]) {
+            case 0:
+              pos += length
+              break
+            case -1:
+              content.delete(pos, length)
+              break
+            case 1:
+              content.insert(pos, text)
+              pos += length
+              break
+          }
+        }
+      })
+      this.emit('reconciled', [this.calculateHash()])
+    })
+  }
+
+  private scheduleFileFlush(): void {
+    if (this.fileFlushTimer) clearTimeout(this.fileFlushTimer)
+    this.fileFlushTimer = setTimeout(() => {
+      this.fileFlushTimer = null
+      this.flushToFile()
+    }, this.fileFlushIntervalMs)
+  }
+
+  // -------------------------------------------------------------------
   // Lifecycle
   // -------------------------------------------------------------------
 
   destroy(): void {
+    if (this.contentObserver) {
+      this.yDoc.getText('content').unobserve(this.contentObserver)
+    }
+    if (this.fileFlushTimer) {
+      clearTimeout(this.fileFlushTimer)
+      this.fileFlushTimer = null
+    }
     this.yDoc.off('update', this.updateListener)
     if (this.flushTimer) {
       clearTimeout(this.flushTimer)
       this.flushTimer = null
     }
     if (this._shareId) {
-      SyncableDocument._registry.delete(this._shareId)
+      this.registry.delete(this._shareId)
     }
     super.destroy()
   }

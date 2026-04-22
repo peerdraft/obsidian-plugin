@@ -16,14 +16,41 @@ import { IndexeddbPersistence } from 'y-indexeddb';
 import { addIsSharedClass, removeIsSharedClass } from 'src/workspace/explorerView';
 import { SharedFolder } from './sharedFolder';
 import { Mutex } from 'async-mutex';
-import { diff, diffCleanupEfficiency } from 'diff-match-patch-es'
 import { add, getDocByPath, moveDoc, removeDoc } from 'src/permanentShareStoreFS';
 import { openLoginModal } from 'src/ui/login';
 import { promptForText } from 'src/ui/enterText';
 import { addCanvasToYDoc, applyDataChangesToDoc, diffCanvases, yDocToCanvasJSON } from './canvas';
 import { addCanvasExtension, type CanvasView, type Node } from 'src/ui/canvas';
 import JSONC from "tiny-jsonc"
-import { SyncableDocument } from './syncableDocument';
+import { SyncableDocument, type SyncableFileIO, type SyncableClock } from './syncableDocument';
+
+/**
+ * FileIO adapter that wraps Obsidian's vault API for use with SyncableDocument.
+ */
+class VaultFileIO implements SyncableFileIO {
+  constructor(private file: TFile, private plugin: PeerDraftPlugin) {}
+
+  async read(): Promise<string> {
+    return await this.plugin.app.vault.read(this.file)
+  }
+
+  async modify(content: string, opts?: { mtime?: number }): Promise<void> {
+    await this.plugin.app.vault.modify(this.file, content, opts)
+  }
+
+  getMTime(): number {
+    return this.file.stat.mtime
+  }
+}
+
+/**
+ * Clock adapter that uses Date.now() for use with SyncableDocument.
+ */
+class RealClock implements SyncableClock {
+  now(): number {
+    return Date.now()
+  }
+}
 
 export class SharedDocument extends SharedEntity {
 
@@ -38,9 +65,6 @@ export class SharedDocument extends SharedEntity {
   private statusBarEntry?: HTMLElement
 
   protected static _sharedEntites: Array<SharedDocument> = new Array<SharedDocument>()
-
-  private mutex = new Mutex
-  private lastUpdateTriggeredByDocChange: number
 
   /**
    * Sync-engine state (Y.Doc batcher, IndexedDB lifecycle,
@@ -173,6 +197,8 @@ export class SharedDocument extends SharedEntity {
     addIsSharedClass(file.path, plugin)
     doc._file = file
     doc._path = file.path
+    // Set fileIO on the syncable now that the file is available
+    doc._syncable.setFileIO(new VaultFileIO(file, plugin))
 
     if (isPermanent) {
       doc.setIsPermanentInternal(true)
@@ -215,6 +241,8 @@ export class SharedDocument extends SharedEntity {
     doc._path = normalizedPath
     const file = await plugin.app.vault.create(normalizedPath, doc.getValue())
     doc._file = file
+    // Set fileIO on the syncable now that the file is available
+    doc._syncable.setFileIO(new VaultFileIO(file, plugin))
 
     doc.syncWithServer()
     await doc.setPermanent()
@@ -337,11 +365,16 @@ export class SharedDocument extends SharedEntity {
     // Local-update batcher + sync-WS plumbing live on the syncable.
     // The syncable shares the same Y.Doc instance, so updates applied
     // to either reference are observed by the syncable's listener.
+    const fileIO = this._file ? new VaultFileIO(this._file, plugin) : undefined
+    const clock = new RealClock()
     this._syncable = new SyncableDocument({
       yDoc: this.yDoc,
       shareId: this._shareId,
       isPermanent: this._isPermanent ?? false,
       serverSync: plugin.serverSync,
+      fileIO,
+      clock,
+      editorAttachedCount: () => this._extensions.size,
       logger: { log: (...args: unknown[]) => plugin.log(args.map((a) => String(a)).join(' ')) }
     })
 
@@ -371,17 +404,22 @@ export class SharedDocument extends SharedEntity {
 
 
   setupFileSyncForCanvas() {
+    // Canvas file sync still uses custom logic (diffCanvases, applyDataChangesToDoc)
+    // but should avoid the removed mutex and lastUpdateTriggeredByDocChange fields.
+    // For now, keep the existing implementation but use a local mutex.
+    const canvasMutex = new Mutex()
+    let lastCanvasUpdateMtime = 0
 
     const updateFile = debounce(() => {
-      this.mutex.runExclusive(async () => {
+      canvasMutex.runExclusive(async () => {
         const yCanvas = yDocToCanvasJSON(this.yDoc)
         const fileContent = await this.plugin.app.vault.read(this._file)
         const fileCanvas = JSONC.parse(fileContent || '{}')
         const diffs = diffCanvases(fileCanvas, yCanvas)
         if (diffs.length != 0) {
-          this.lastUpdateTriggeredByDocChange = new Date().valueOf()
+          lastCanvasUpdateMtime = new Date().valueOf()
           await this.plugin.app.vault.modify(this._file, JSON.stringify(yCanvas), {
-            mtime: this.lastUpdateTriggeredByDocChange
+            mtime: lastCanvasUpdateMtime
           })
         }
       })
@@ -394,14 +432,10 @@ export class SharedDocument extends SharedEntity {
     })
 
     this.plugin.registerEvent(this.plugin.app.vault.on("modify", async (file) => {
-      if (this.file === file && this.file.stat.mtime != this.lastUpdateTriggeredByDocChange && this._canvasExtenstions.size === 0) {
-        // check if document and content actually are out of sync
-        this.mutex.runExclusive(async () => {
-
+      if (this.file === file && this.file.stat.mtime != lastCanvasUpdateMtime && this._canvasExtenstions.size === 0) {
+        canvasMutex.runExclusive(async () => {
           const fileContent = await this.plugin.app.vault.read(this._file)
-
           applyDataChangesToDoc(JSONC.parse(fileContent || '{}'), this.yDoc)
-
         })
       }
     }))
@@ -409,68 +443,16 @@ export class SharedDocument extends SharedEntity {
 
 
   setupFileSyncForContent() {
-
-    const updateFile = debounce(() => {
-      this.mutex.runExclusive(async () => {
-        const yDocContent = this.getValue()
-        const fileContent = await this.plugin.app.vault.read(this._file)
-        if (yDocContent != fileContent) {
-          this.lastUpdateTriggeredByDocChange = new Date().valueOf()
-          await this.plugin.app.vault.modify(this._file, yDocContent, {
-            mtime: this.lastUpdateTriggeredByDocChange
-          })
-        }
-      })
-    }, 1000, true)
-
-    this.getContentFragment().observe(async () => {
-      if (this._file && this._extensions.size === 0) {
-        updateFile()
-      }
-    })
+    // The syncable now handles file reconciliation via its FileIO/Clock ports.
+    // We just need to:
+    // 1. Ensure the syncable has fileIO set (already done in constructor when file is available)
+    // 2. Provide the editorAttachedCount predicate so the syncable knows when to skip file work
+    // 3. Register the vault.on("modify") listener to call syncable.reconcileWithFileContent
 
     this.plugin.registerEvent(this.plugin.app.vault.on("modify", async (file) => {
-      // only react to changes of this file, and only if it didn't happen within the editor.
-      // The editor extension takes care of updates in that case.
-      if (this.file === file && this._extensions.size === 0 && this.file.stat.mtime != this.lastUpdateTriggeredByDocChange) {
-        // check if document and content actually are out of sync
-        this.mutex.runExclusive(async () => {
-          const yDocContent = this.getValue()
-          const fileContent = await this.plugin.app.vault.read(this._file)
-          if (yDocContent != fileContent) {
-            const diffs = diff(yDocContent, fileContent)
-            diffCleanupEfficiency(diffs)
-            const content = this.getContentFragment()
-            let pos = 0
-            this.yDoc.transact(() => {
-              for (const diff of diffs) {
-                const text = diff[1] as string
-                const length = text.length
-                switch (diff[0]) {
-                  // keep
-                  case 0:
-                    {
-                      pos += length
-                    }
-                    break;
-                  // remove
-                  case -1:
-                    {
-                      content.delete(pos, length)
-                    }
-                    break;
-                  // add
-                  case 1:
-                    {
-                      content.insert(pos, text)
-                      pos += length
-                    }
-                    break;
-                }
-              }
-            })
-          }
-        })
+      if (this.file === file) {
+        const fileContent = await this.plugin.app.vault.read(this._file)
+        await this._syncable.reconcileWithFileContent(fileContent)
       }
     }))
   }
