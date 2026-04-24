@@ -66,6 +66,10 @@ export class SharedDocument extends SharedEntity {
   private _initializationGuardMutex = new Mutex()
   private _vaultModifyListenerRegistered = false
 
+  get initializationGuardPassed(): boolean {
+    return this._initializationGuardPassed
+  }
+
   private statusBarEntry?: HTMLElement
 
   protected static _sharedEntites: Array<SharedDocument> = new Array<SharedDocument>()

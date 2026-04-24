@@ -53,7 +53,11 @@ export default class PeerdraftPlugin extends Plugin {
 		})
 
 		plugin.pws.markdown.on('add', (key, leaf) => {
-			SharedDocument.findByPath(leaf.path)?.addExtensionToLeaf(key)
+			const doc = SharedDocument.findByPath(leaf.path)
+			// For permanent shares, only add extension if guard has passed
+			if (doc && (doc.isPermanent === false || doc.initializationGuardPassed)) {
+				doc.addExtensionToLeaf(key)
+			}
 			leaf.on("changePath", (oldPath) => {
 				const doc = SharedDocument.findByPath(oldPath)
 				if (doc) {
@@ -63,7 +67,10 @@ export default class PeerdraftPlugin extends Plugin {
 						doc.unshare()
 					}
 				}
-				SharedDocument.findByPath(leaf.path)?.addExtensionToLeaf(key)
+				const newDoc = SharedDocument.findByPath(leaf.path)
+				if (newDoc && (newDoc.isPermanent === false || newDoc.initializationGuardPassed)) {
+					newDoc.addExtensionToLeaf(key)
+				}
 			})
 		})
 
