@@ -13,6 +13,7 @@ import { SharedDocument } from "./sharedDocument";
 import { SharedEntity } from "./sharedEntity";
 import { promptForText } from "src/ui/enterText";
 import { SyncableFolder } from "./syncableFolder";
+import { Mutex } from 'async-mutex';
 
 const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: SharedFolder, plugin: PeerDraftPlugin) => {
 
@@ -98,6 +99,9 @@ export class SharedFolder extends SharedEntity {
 
   root: TFolder
   protected static _sharedEntites: Array<SharedFolder> = new Array<SharedFolder>()
+
+  private _initializationGuardPassed = false
+  private _initializationGuardMutex = new Mutex()
 
   /**
    * Sync-engine state (Y.Doc update forwarding, IndexedDB lifecycle,
@@ -261,13 +265,11 @@ export class SharedFolder extends SharedEntity {
     const folder = new SharedFolder(tFolder, plugin)
     folder.setShareIdInternal(psf.shareId)
     plugin.activeStreamClient.add([psf.shareId])
-    const local = await folder.startIndexedDBSync()
-    if (local) {
-      if (local.synced || await local.whenSynced) {
-        folder.syncWithServer()
-        folder.startWebRTCSync()
-      }
-    }
+
+    folder._setupInitializationGuard()
+    await folder.startIndexedDBSync()
+    folder.syncWithServer()
+
     return folder
   }
 
@@ -575,6 +577,46 @@ export class SharedFolder extends SharedEntity {
     const provider = await this._syncable.startIndexedDBSync(id)
     this._indexedDBProvider = provider
     return this._indexedDBProvider
+  }
+
+  private _checkInitializationGuard(): boolean {
+    return this._syncable.serverSynced || (this._syncable.indexedDBLoaded && !this._syncable.indexedDBWasEmpty)
+  }
+
+  private _setupInitializationGuard() {
+    const handleGuardConditionMet = async () => {
+      const release = await this._initializationGuardMutex.acquire()
+      try {
+        if (this._initializationGuardPassed) return
+        this._initializationGuardPassed = true
+
+        this.startWebRTCSync()
+        this.plugin.log(`Initialization guard passed for folder ${this.path}`)
+      } finally {
+        release()
+      }
+    }
+
+    const indexedDBHandler = (data: { wasEmpty: boolean }) => {
+      if (this._checkInitializationGuard()) {
+        handleGuardConditionMet()
+      }
+    }
+    this._syncable.on('indexedDBLoaded', indexedDBHandler)
+
+    const serverSyncedHandler = () => {
+      if (this._checkInitializationGuard()) {
+        handleGuardConditionMet()
+      }
+    }
+    this._syncable.on('serverSynced', serverSyncedHandler)
+
+    const syncStateChangedHandler = () => {
+      if (this._checkInitializationGuard() && !this._initializationGuardPassed) {
+        handleGuardConditionMet()
+      }
+    }
+    this._syncable.on('syncStateChanged', syncStateChangedHandler)
   }
 
   static async stopSession(id: string, plugin: PeerDraftPlugin) {

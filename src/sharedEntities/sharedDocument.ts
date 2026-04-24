@@ -62,6 +62,10 @@ export class SharedDocument extends SharedEntity {
   private _extensions: PeerdraftRecord<Compartment>
   private _canvasExtenstions: PeerdraftRecord<() => any>
 
+  private _initializationGuardPassed = false
+  private _initializationGuardMutex = new Mutex()
+  private _vaultModifyListenerRegistered = false
+
   private statusBarEntry?: HTMLElement
 
   protected static _sharedEntites: Array<SharedDocument> = new Array<SharedDocument>()
@@ -101,8 +105,6 @@ export class SharedDocument extends SharedEntity {
 
   static async fromPermanentShareDocument(pd: PermanentShareDocument, plugin: PeerDraftPlugin) {
     if (this.findByPath(pd.path)) return
-    //let fileAlreadyThere = false
-    // check if path exists
     let file = plugin.app.vault.getAbstractFileByPath(normalizePath(pd.path))
     if (!file) {
       showNotice("File " + pd.path + " not found. Creating it now.")
@@ -112,7 +114,6 @@ export class SharedDocument extends SharedEntity {
         showNotice("Error creating file " + pd.path + ".")
         return
       }
-      // fileAlreadyThere = true
     }
 
     const doc = new SharedDocument({
@@ -121,17 +122,13 @@ export class SharedDocument extends SharedEntity {
     doc.setIsPermanentInternal(true)
     doc.setShareIdInternal(pd.shareId)
     doc.isCanvas = "canvas" === (file as TFile).extension
-    if (doc.isCanvas) {
-      doc.setupFileSyncForCanvas()
-    } else {
-      doc.setupFileSyncForContent()
-    }
+
+    doc._setupInitializationGuard()
     await doc.startIndexedDBSync()
-    //if (fileAlreadyThere) {
     doc.syncWithServer()
-    //}
     plugin.activeStreamClient.add([doc.shareId])
     addIsSharedClass(doc.path, plugin)
+
     return doc
   }
 
@@ -349,10 +346,8 @@ export class SharedDocument extends SharedEntity {
         this._file = file
         if (file.extension === "canvas") {
           this.isCanvas = true
-          this.setupFileSyncForCanvas()
         } else {
           this.isCanvas = false
-          this.setupFileSyncForContent()
         }
       } else {
         showNotice("ERROR creating sharedDoc")
@@ -407,6 +402,12 @@ export class SharedDocument extends SharedEntity {
     // Canvas file sync still uses custom logic (diffCanvases, applyDataChangesToDoc)
     // but should avoid the removed mutex and lastUpdateTriggeredByDocChange fields.
     // For now, keep the existing implementation but use a local mutex.
+
+    // Idempotent check - if canvas sync is already set up, return
+    if (this._vaultModifyListenerRegistered) {
+      return
+    }
+
     const canvasMutex = new Mutex()
     let lastCanvasUpdateMtime = 0
 
@@ -439,6 +440,8 @@ export class SharedDocument extends SharedEntity {
         })
       }
     }))
+
+    this._vaultModifyListenerRegistered = true
   }
 
 
@@ -449,12 +452,73 @@ export class SharedDocument extends SharedEntity {
     // 2. Provide the editorAttachedCount predicate so the syncable knows when to skip file work
     // 3. Register the vault.on("modify") listener to call syncable.reconcileWithFileContent
 
+    // Idempotent check to prevent duplicate listeners
+    if (this._vaultModifyListenerRegistered) {
+      return
+    }
+
     this.plugin.registerEvent(this.plugin.app.vault.on("modify", async (file) => {
       if (this.file === file) {
         const fileContent = await this.plugin.app.vault.read(this._file)
         await this._syncable.reconcileWithFileContent(fileContent)
       }
     }))
+    this._vaultModifyListenerRegistered = true
+  }
+
+  private _checkInitializationGuard(): boolean {
+    return this._syncable.serverSynced || (this._syncable.indexedDBLoaded && !this._syncable.indexedDBWasEmpty)
+  }
+
+  private _setupInitializationGuard() {
+    const handleGuardConditionMet = async () => {
+      const release = await this._initializationGuardMutex.acquire()
+      try {
+        if (this._initializationGuardPassed) return
+        this._initializationGuardPassed = true
+
+        if (this.isCanvas) {
+          this.setupFileSyncForCanvas()
+        } else {
+          this.setupFileSyncForContent()
+        }
+
+        const leafIds = getLeafIdsByPath(this.path, this.plugin.pws.markdown)
+        if (leafIds.length > 0) {
+          for (const id of leafIds) {
+            this.addExtensionToLeaf(id)
+          }
+        } else {
+          const fileContent = await this.plugin.app.vault.read(this._file)
+          await this._syncable.reconcileWithFileContent(fileContent)
+        }
+
+        this.plugin.log(`Initialization guard passed for ${this.path}`)
+      } finally {
+        release()
+      }
+    }
+
+    const indexedDBHandler = (data: { wasEmpty: boolean }) => {
+      if (this._checkInitializationGuard()) {
+        handleGuardConditionMet()
+      }
+    }
+    this._syncable.on('indexedDBLoaded', indexedDBHandler)
+
+    const serverSyncedHandler = () => {
+      if (this._checkInitializationGuard()) {
+        handleGuardConditionMet()
+      }
+    }
+    this._syncable.on('serverSynced', serverSyncedHandler)
+
+    const syncStateChangedHandler = () => {
+      if (this._checkInitializationGuard() && !this._initializationGuardPassed) {
+        handleGuardConditionMet()
+      }
+    }
+    this._syncable.on('syncStateChanged', syncStateChangedHandler)
   }
 
   get file() {
@@ -866,6 +930,10 @@ export class SharedDocument extends SharedEntity {
     this._syncable.destroy()
     super.destroy()
     this.removeStatusStatusBarEntry()
+
+    // Clean up guard state
+    this._initializationGuardPassed = false
+    this._vaultModifyListenerRegistered = false
     SharedDocument._sharedEntites.splice(SharedDocument._sharedEntites.indexOf(this), 1)
   }
 }
