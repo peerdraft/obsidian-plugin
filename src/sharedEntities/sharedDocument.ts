@@ -710,6 +710,7 @@ export class SharedDocument extends SharedEntity {
     const view = leaf.view as MarkdownView
     const editor = view.editor
 
+    this.plugin.log(`Attaching collaborative extension to leaf ${leafId} for ${this.path}`)
     editor.setValue(this.getValue())
 
     const undoManager = new Y.UndoManager(this.getContentFragment())
