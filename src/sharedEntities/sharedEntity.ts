@@ -65,13 +65,9 @@ export abstract class SharedEntity {
 
   constructor(public plugin: PeerDraftPlugin) {}
   
-  /**
-   * Initialize the Y.Doc with default values
-   * Should be called by subclasses after the Y.Doc is created
-   */
+  // Initialize Y.Doc with default values. Called by subclasses.
   protected initializeYDoc() {
-    // Base implementation does nothing
-    // Subclasses should override this to initialize their Y.Doc
+    // Base implementation does nothing. Subclasses override this.
   }
 
   abstract calculateHash (): string

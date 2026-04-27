@@ -24,9 +24,7 @@ import { addCanvasExtension, type CanvasView, type Node } from 'src/ui/canvas';
 import JSONC from "tiny-jsonc"
 import { SyncableDocument, type SyncableFileIO, type SyncableClock } from './syncableDocument';
 
-/**
- * FileIO adapter that wraps Obsidian's vault API for use with SyncableDocument.
- */
+// FileIO adapter wrapping Obsidian's vault API.
 class VaultFileIO implements SyncableFileIO {
   constructor(private file: TFile, private plugin: PeerDraftPlugin) {}
 
@@ -43,9 +41,7 @@ class VaultFileIO implements SyncableFileIO {
   }
 }
 
-/**
- * Clock adapter that uses Date.now() for use with SyncableDocument.
- */
+// Clock adapter using Date.now().
 class RealClock implements SyncableClock {
   now(): number {
     return Date.now()
@@ -74,17 +70,6 @@ export class SharedDocument extends SharedEntity {
 
   protected static _sharedEntites: Array<SharedDocument> = new Array<SharedDocument>()
 
-  /**
-   * Sync-engine state (Y.Doc batcher, IndexedDB lifecycle,
-   * `syncWithServer`, registry for the provider's reconnect loop) is
-   * delegated to this composed instance. See
-   * `app/features/sync-engine-testability/implementation-plan.md`.
-   *
-   * `SharedDocument` keeps its own `_shareId` / `_isPermanent` fields
-   * because `SharedEntity` already exposes them and `SharedFolder`
-   * relies on the shape; both are kept in sync with the syncable via
-   * `setShareIdInternal` / `setIsPermanentInternal`.
-   */
   private _syncable!: SyncableDocument
 
   isCanvas: boolean
@@ -361,9 +346,6 @@ export class SharedDocument extends SharedEntity {
       this._shareId = opts.id
     }
 
-    // Local-update batcher + sync-WS plumbing live on the syncable.
-    // The syncable shares the same Y.Doc instance, so updates applied
-    // to either reference are observed by the syncable's listener.
     const fileIO = this._file ? new VaultFileIO(this._file, plugin) : undefined
     const clock = new RealClock()
     this._syncable = new SyncableDocument({
@@ -398,16 +380,10 @@ export class SharedDocument extends SharedEntity {
 
     this._canvasExtenstions = new PeerdraftRecord<any>()
 
-    // addIsSharedClass(this.path, this.plugin)
   }
 
 
   setupFileSyncForCanvas() {
-    // Canvas file sync still uses custom logic (diffCanvases, applyDataChangesToDoc)
-    // but should avoid the removed mutex and lastUpdateTriggeredByDocChange fields.
-    // For now, keep the existing implementation but use a local mutex.
-
-    // Idempotent check - if canvas sync is already set up, return
     if (this._vaultModifyListenerRegistered) {
       return
     }
@@ -450,13 +426,6 @@ export class SharedDocument extends SharedEntity {
 
 
   setupFileSyncForContent() {
-    // The syncable now handles file reconciliation via its FileIO/Clock ports.
-    // We just need to:
-    // 1. Ensure the syncable has fileIO set (already done in constructor when file is available)
-    // 2. Provide the editorAttachedCount predicate so the syncable knows when to skip file work
-    // 3. Register the vault.on("modify") listener to call syncable.reconcileWithFileContent
-
-    // Idempotent check to prevent duplicate listeners
     if (this._vaultModifyListenerRegistered) {
       return
     }
@@ -533,40 +502,22 @@ export class SharedDocument extends SharedEntity {
     return this._syncable.calculateHash()
   }
 
-  /**
-   * Update `_shareId` and propagate to the composed `SyncableDocument`
-   * so the provider's registry stays correct. Use this instead of
-   * assigning to `_shareId` directly.
-   */
   private setShareIdInternal(id: string) {
     this._shareId = id
     this._syncable?.setShareId(id)
   }
 
-  /** Same as `setShareIdInternal` but for `_isPermanent`. */
   private setIsPermanentInternal(value: boolean) {
     this._isPermanent = value
     this._syncable?.setPermanent(value)
   }
 
-  /**
-   * Override of `SharedEntity.initServerYDoc` so the post-assignment
-   * `_shareId` is reflected in the syncable's registry.
-   */
-  initServerYDoc(folderKey?: string) {
-    return super.initServerYDoc(folderKey).then((checksum) => {
-      this._syncable.setShareId(this._shareId)
-      return checksum
-    })
+  async initServerYDoc(folderKey?: string) {
+    const checksum = await super.initServerYDoc(folderKey);
+    this._syncable.setShareId(this._shareId);
+    return checksum;
   }
 
-  /**
-   * Override of `SharedEntity.syncWithServer` so the wire-protocol
-   * round-trip happens via the syncable. The behavior is identical;
-   * routing through the syncable is what lets the harness (and any
-   * future tests) drive sync without instantiating the full
-   * Obsidian-side glue.
-   */
   syncWithServer() {
     return this._syncable.syncWithServer()
   }
@@ -675,27 +626,17 @@ export class SharedDocument extends SharedEntity {
     if (this._indexedDBProvider) return this._indexedDBProvider
     const id = (getDocByPath(this.path, this.plugin))?.persistenceId
     if (!id) return
-    // Delegate to the syncable so there is a single IndexedDB provider
-    // per Y.Doc (sharing avoids two `y-indexeddb` providers writing the
-    // same key). The base-class `_indexedDBProvider` is mirrored so any
-    // existing reads via `SharedEntity.indexedDBProvider` continue to
-    // work unchanged.
-    const provider = await this._syncable.startIndexedDBSync(id)
+      const provider = await this._syncable.startIndexedDBSync(id)
     this._indexedDBProvider = provider
     return this._indexedDBProvider
   }
 
   addExtensionToLeaf(leafId: string) {
-    // only makes sense if we have a webrct provider to sync with
     const webRTCProvider = this.startWebRTCSync()
     if (!webRTCProvider) return
-    // already there
     if (this._extensions.get(leafId)) return
-    // need a pleaf
     const pLeaf = this.plugin.pws.markdown.get(leafId)
     if (!pLeaf) return
-
-    // path needs to match
 
     if (pLeaf.path != this._path) return
     if (pLeaf.isPreview) {
@@ -725,13 +666,8 @@ export class SharedDocument extends SharedEntity {
 
     this._extensions.set(leafId, compartment)
 
-    // remove if switch to preview
     pLeaf.once("changeIsPreview", () => {
       this.removeExtensionFromLeaf(leafId)
-      // add again if switched back
-      pLeaf.once("changeIsPreview", () => {
-        this.addExtensionToLeaf(leafId)
-      })
     })
 
     return Compartment
@@ -757,15 +693,11 @@ export class SharedDocument extends SharedEntity {
   }
 
   addCanvasExtensionToLeaf(leafId: string) {
-    // only makes sense if we have a webrct provider to sync with
     const webRTCProvider = this.startWebRTCSync()
     if (!webRTCProvider) return
-    // already there
     if (this._canvasExtenstions.get(leafId)) return
-    // need a pcanvas
     const pCanvas = this.plugin.pws.canvas.get(leafId)
     if (!pCanvas) return
-    // path needs to match
 
     if (pCanvas.path != this._path) return
     const leaf = this.plugin.app.workspace.getLeafById(leafId)
@@ -792,14 +724,10 @@ export class SharedDocument extends SharedEntity {
   }
 
   addExtensionToCanvasFileNode(node: Node) {
-    // only makes sense if we have a webrct provider to sync with
     const webRTCProvider = this.startWebRTCSync()
     if (!webRTCProvider) return
-    // already there
     if (this._extensions.get(node.id)) return
-    // path needs to match
     if (node.file.path != this._path) return
-    // there needs to be an editor
     const editor = node.child?.editor
     if (!editor) return
     editor.setValue(this.getValue())
@@ -936,7 +864,6 @@ export class SharedDocument extends SharedEntity {
     super.destroy()
     this.removeStatusStatusBarEntry()
 
-    // Clean up guard state
     this._initializationGuardPassed = false
     this._vaultModifyListenerRegistered = false
     SharedDocument._sharedEntites.splice(SharedDocument._sharedEntites.indexOf(this), 1)

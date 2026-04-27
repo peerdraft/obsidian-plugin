@@ -2,7 +2,7 @@ import { ObservableV2 } from 'lib0/observable'
 import { IndexeddbPersistence } from 'y-indexeddb'
 import * as Y from 'yjs'
 
-import { calculateHash, serialize } from '../tools'
+import { calculateHash, serialize, checkIndexedDBAlreadyExists } from '../tools'
 import {
   SYNCABLE_DB_PERSISTENCE_PREFIX,
   type SyncableEntity,
@@ -11,33 +11,19 @@ import {
   type SyncableServerSync,
 } from './syncableDocument'
 
-/**
- * Folder counterpart of `SyncableDocument`. Owns the folder-level
- * Y.Doc, its IndexedDB persistence, `syncWithServer`, and the registry
- * the plugin's `PeerdraftWebsocketProvider` consults on reconnect.
- *
- * Deliberately has no imports from `obsidian`, `@codemirror/*`,
- * `src/ui/*`, `src/workspace/*`, `src/permanentShareStore*`, or
- * `./sharedDocument` / `./sharedFolder`. Only pure-TS deps, so the
- * sync-harness can instantiate folder-sync in tests without mocking
- * the plugin's Obsidian-side glue.
- *
- * Simpler than `SyncableDocument` because:
- *   - folders are always permanent, so there is no `isPermanent` gate
- *     on local-update forwarding,
- *   - folder updates are sent immediately (no debounced batcher) —
- *     matching the previous inline listener at
- *     `sharedFolder.ts:296-300` pre-refactor,
- *   - the hash is a deterministic serialization of the document map,
- *     not the content text.
- *
- * `SharedFolder` composes one of these and wires Obsidian-specific
- * concerns (vault file/folder mutations driven by the docs-map
- * `observe` callback, WebRTC lifecycle, etc.) around it.
- */
+// Folder counterpart of SyncableDocument. Owns folder-level Y.Doc, IndexedDB persistence,
+// syncWithServer, and registry for provider reconnect. Has no Obsidian imports for testability.
+// Simpler than SyncableDocument: folders are always permanent, updates sent immediately (no debounce),
+// and hash is deterministic serialization of document map.
 export class SyncableFolder extends ObservableV2<{
   flushed: (count: number) => void
   synced: (hash: SyncableHash) => void
+  indexedDBLoaded: (payload: { wasEmpty: boolean }) => void
+  indexedDBLoadFailed: (error: Error) => void
+  serverSyncing: () => void
+  serverSynced: (hash: SyncableHash) => void
+  serverSyncFailed: (error: Error) => void
+  syncStateChanged: (payload: { indexedDBLoaded: boolean, indexedDBWasEmpty: boolean, serverSyncing: boolean, serverSynced: boolean }) => void
 }> implements SyncableEntity {
   static readonly DB_PERSISTENCE_PREFIX = SYNCABLE_DB_PERSISTENCE_PREFIX
 
@@ -51,6 +37,27 @@ export class SyncableFolder extends ObservableV2<{
 
   private _indexedDBProvider?: IndexeddbPersistence
   private indexedDBSyncPromise?: Promise<void>
+
+  // Sync state tracking
+
+  private _indexedDBLoaded = false
+  private _indexedDBWasEmpty = false
+  private _serverSyncing = false
+  private _serverSynced = false
+
+  // Helper to build aggregate state snapshot for syncStateChanged events
+  private getStateSnapshot(): { indexedDBLoaded: boolean, indexedDBWasEmpty: boolean, serverSyncing: boolean, serverSynced: boolean } {
+    return {
+      indexedDBLoaded: this._indexedDBLoaded,
+      indexedDBWasEmpty: this._indexedDBWasEmpty,
+      serverSyncing: this._serverSyncing,
+      serverSynced: this._serverSynced,
+    }
+  }
+
+  private logEvent(event: 'indexedDBLoaded' | 'indexedDBLoadFailed' | 'serverSyncing' | 'serverSynced' | 'serverSyncFailed' | 'syncStateChanged', payload?: unknown): void {
+    console.log(`[SyncableFolder] event`, event, payload)
+  }
 
   private readonly updateListener: (
     update: Uint8Array,
@@ -73,9 +80,7 @@ export class SyncableFolder extends ObservableV2<{
     this.logger = opts.logger ?? { log: () => undefined }
 
     this.updateListener = (update, _origin, _doc, tx) => {
-      // Matches the previous SharedFolder inline listener: forward every
-      // local update immediately (no debounce), gated on having a
-      // shareId. Folders are always permanent so no extra gate.
+      // Forward every local update immediately (no debounce), gated on having a shareId.
       if (tx.local && this._shareId) {
         this.serverSync.sendUpdate(this, update)
         this.emit('flushed', [1])
@@ -110,6 +115,34 @@ export class SyncableFolder extends ObservableV2<{
     return this._indexedDBProvider
   }
 
+  // Sync state tracking
+
+  get indexedDBLoaded(): boolean {
+    return this._indexedDBLoaded
+  }
+
+  get indexedDBWasEmpty(): boolean {
+    return this._indexedDBWasEmpty
+  }
+
+  get serverSyncing(): boolean {
+    return this._serverSyncing
+  }
+
+  get serverSynced(): boolean {
+    return this._serverSynced
+  }
+
+  // True when IndexedDB is loaded AND server has synced at least once.
+  get isFullyInitialized(): boolean {
+    return this._indexedDBLoaded && this._serverSynced
+  }
+
+  // True when IndexedDB is loaded but server has never synced.
+  get isOffline(): boolean {
+    return this._indexedDBLoaded && !this._serverSynced
+  }
+
   setShareId(id: string): void {
     if (this._shareId === id) return
     if (this._shareId) {
@@ -118,14 +151,15 @@ export class SyncableFolder extends ObservableV2<{
     this._shareId = id
     if (id) {
       SyncableFolder._registry.set(id, this)
+      // Reset server sync state for new shareId
+      this._serverSyncing = false
+      this._serverSynced = false
+      this.logEvent('syncStateChanged', this.getStateSnapshot())
+      this.emit('syncStateChanged', [this.getStateSnapshot()])
     }
   }
 
-  /**
-   * Hash over the serialized `documents` Y.Map. Matches the previous
-   * `SharedFolder.calculateHash` byte-for-byte so server-side checksum
-   * comparisons keep working during the rollout.
-   */
+  // Hash over serialized documents Y.Map. Matches SharedFolder.calculateHash byte-for-byte.
   calculateHash(): SyncableHash {
     const docsMap = this.yDoc.getMap('documents') as Y.Map<string>
     const serialized = serialize(Array.from(docsMap))
@@ -139,20 +173,42 @@ export class SyncableFolder extends ObservableV2<{
         if (id !== this._shareId) return
         this.serverSync.off('synced', handler)
         if (timer) clearTimeout(timer)
+
+        // Update sync state on successful sync
+        this._serverSyncing = false
+        this._serverSynced = true
         this.emit('synced', [hash])
+        this.logEvent('serverSynced', hash)
+        this.emit('serverSynced', [hash])
+        this.logEvent('syncStateChanged', this.getStateSnapshot())
+        this.emit('syncStateChanged', [this.getStateSnapshot()])
         this.logger.log('synced ' + this._shareId)
         resolve(hash)
       }
       if (timeoutMs && timeoutMs > 0) {
         timer = setTimeout(() => {
           this.serverSync.off('synced', handler)
-          reject(
-            new Error(
-              `syncWithServer(${this._shareId}) timed out after ${timeoutMs}ms`
-            )
+
+          // Update sync state on timeout
+          this._serverSyncing = false
+          const error = new Error(
+            `syncWithServer(${this._shareId}) timed out after ${timeoutMs}ms`
           )
+          this.logEvent('serverSyncFailed', error)
+          this.emit('serverSyncFailed', [error])
+          this.logEvent('syncStateChanged', this.getStateSnapshot())
+          this.emit('syncStateChanged', [this.getStateSnapshot()])
+          reject(error)
         }, timeoutMs)
       }
+
+      // Update sync state before starting sync
+      this._serverSyncing = true
+      this.logEvent('serverSyncing')
+      this.emit('serverSyncing', [])
+      this.logEvent('syncStateChanged', this.getStateSnapshot())
+      this.emit('syncStateChanged', [this.getStateSnapshot()])
+
       this.serverSync.on('synced', handler)
       this.serverSync.sendSyncStep1(this)
       this.logger.log('syncing ' + this._shareId)
@@ -161,13 +217,43 @@ export class SyncableFolder extends ObservableV2<{
 
   async startIndexedDBSync(persistenceId: string): Promise<IndexeddbPersistence> {
     if (this._indexedDBProvider) return this._indexedDBProvider
-    const provider = new IndexeddbPersistence(
-      SyncableFolder.DB_PERSISTENCE_PREFIX + persistenceId,
-      this.yDoc
-    )
-    this._indexedDBProvider = provider
-    if (!provider.synced) await provider.whenSynced
-    return provider
+
+    const dbName = SyncableFolder.DB_PERSISTENCE_PREFIX + persistenceId
+
+    try {
+      // Check if IndexedDB already existed before this startup
+      const hadExistingData = await checkIndexedDBAlreadyExists(dbName)
+
+      const provider = new IndexeddbPersistence(dbName, this.yDoc)
+      this._indexedDBProvider = provider
+      if (!provider.synced) await provider.whenSynced
+
+      // Track IndexedDB state after sync completes
+      this._indexedDBLoaded = true
+      // Use pre-load check to determine if IndexedDB was empty
+      this._indexedDBWasEmpty = !hadExistingData
+      const payload = { wasEmpty: this._indexedDBWasEmpty }
+      this.logEvent('indexedDBLoaded', payload)
+      this.emit('indexedDBLoaded', [payload])
+      this.logEvent('syncStateChanged', this.getStateSnapshot())
+      this.emit('syncStateChanged', [this.getStateSnapshot()])
+
+      return provider
+    } catch (error) {
+      // Clean up partial state
+      this._indexedDBProvider = undefined
+      this._indexedDBLoaded = false
+      this._indexedDBWasEmpty = false
+
+      // Emit error event so callers know initialization failed
+      const failure = error instanceof Error ? error : new Error(String(error))
+      this.logEvent('indexedDBLoadFailed', failure)
+      this.emit('indexedDBLoadFailed', [failure])
+      this.logEvent('syncStateChanged', this.getStateSnapshot())
+      this.emit('syncStateChanged', [this.getStateSnapshot()])
+
+      throw error
+    }
   }
 
   whenIndexedDBSynced(): Promise<void> {
@@ -178,6 +264,12 @@ export class SyncableFolder extends ObservableV2<{
     if (this._indexedDBProvider) {
       await this._indexedDBProvider.destroy()
       this._indexedDBProvider = undefined
+
+      // Reset state tracking
+      this._indexedDBLoaded = false
+      this._indexedDBWasEmpty = false
+      this.logEvent('syncStateChanged', this.getStateSnapshot())
+      this.emit('syncStateChanged', [this.getStateSnapshot()])
     }
   }
 
@@ -186,6 +278,13 @@ export class SyncableFolder extends ObservableV2<{
     if (this._shareId) {
       SyncableFolder._registry.delete(this._shareId)
     }
+
+    // Reset sync state tracking
+    this._indexedDBLoaded = false
+    this._indexedDBWasEmpty = false
+    this._serverSyncing = false
+    this._serverSynced = false
+
     super.destroy()
   }
 }
