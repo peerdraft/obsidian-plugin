@@ -4,6 +4,7 @@ import process from "process";
 import builtins from "builtin-modules";
 import { sveltePreprocess } from "svelte-preprocess";
 import { nodeModulesPolyfillPlugin } from 'esbuild-plugins-node-modules-polyfill';
+import { copyFileSync, existsSync } from "fs";
 
 const banner =
 `/*
@@ -25,7 +26,17 @@ const context = await esbuild.context({
 			compilerOptions: {css: "injected"},
 			preprocess: sveltePreprocess()
 		}),
-		nodeModulesPolyfillPlugin()
+		nodeModulesPolyfillPlugin(),
+		{
+			name: 'copy-styles',
+			setup(build) {
+				build.onEnd(() => {
+					if (existsSync("styles.css")) {
+						copyFileSync("styles.css", "dist/styles.css");
+					}
+				});
+			},
+		}
 	],
 	external: [
 		"obsidian",
