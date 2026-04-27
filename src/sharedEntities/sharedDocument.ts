@@ -13,7 +13,7 @@ import { getLeafIdsByPath } from '../workspace/peerdraftWorkspace';
 import { SharedEntity } from './sharedEntity';
 import * as path from 'path';
 import { IndexeddbPersistence } from 'y-indexeddb';
-import { addIsSharedClass, removeIsSharedClass } from 'src/workspace/explorerView';
+import { addIsSharedClass, removeIsSharedClass, setStatusClass, removeStatusClass } from 'src/workspace/explorerView';
 import { SharedFolder } from './sharedFolder';
 import { Mutex } from 'async-mutex';
 import { add, getDocByPath, moveDoc, removeDoc } from 'src/permanentShareStoreFS';
@@ -113,10 +113,11 @@ export class SharedDocument extends SharedEntity {
     doc.isCanvas = "canvas" === (file as TFile).extension
 
     doc._setupInitializationGuard()
+    doc._setupStatusIndicatorSubscriptions()
     await doc.startIndexedDBSync()
     doc.syncWithServer()
     plugin.activeStreamClient.add([doc.shareId])
-    addIsSharedClass(doc.path, plugin)
+    // Don't add pd-explorer-shared class - status indicators replace it
 
     return doc
   }
@@ -467,6 +468,11 @@ export class SharedDocument extends SharedEntity {
         }
 
         this.plugin.log(`Initialization guard passed for ${this.path}`)
+        
+        // Set initial status after initialization
+        if (this.isPermanent) {
+          this._updateStatusIndicator()
+        }
       } finally {
         release()
       }
@@ -490,8 +496,33 @@ export class SharedDocument extends SharedEntity {
       if (this._checkInitializationGuard() && !this._initializationGuardPassed) {
         handleGuardConditionMet()
       }
+      // Update status indicator when sync state changes
+      if (this.isPermanent && this._initializationGuardPassed) {
+        this._updateStatusIndicator()
+      }
     }
     this._syncable.on('syncStateChanged', syncStateChangedHandler)
+  }
+
+  private _setupStatusIndicatorSubscriptions() {
+    // Subscribe to WebSocket connection state changes
+    this.plugin.serverSync.on('status', () => {
+      if (this.isPermanent) {
+        this._updateStatusIndicator()
+      }
+    })
+
+    // Subscribe to sync state changes
+    this._syncable.on('syncStateChanged', () => {
+      if (this.isPermanent) {
+        this._updateStatusIndicator()
+      }
+    })
+  }
+
+  private async _updateStatusIndicator() {
+    const status = this.getSyncStatus()
+    await setStatusClass(this.path, this.plugin, status)
   }
 
   get file() {
@@ -603,6 +634,36 @@ export class SharedDocument extends SharedEntity {
 
   get isPermanent() {
     return this._isPermanent
+  }
+
+  getSyncStatus(): 'offline' | 'syncing' | 'insync' | 'warning' | 'not-initialized' {
+    const wsconnected = this.plugin.serverSync.wsconnected
+    const serverSyncing = this._syncable.serverSyncing
+    const serverSynced = this._syncable.serverSynced
+    const indexedDBWasEmpty = this._syncable.indexedDBWasEmpty
+
+    // Warning takes precedence - show even if guard hasn't passed
+    if (!wsconnected && indexedDBWasEmpty && !serverSynced) {
+      return 'warning'
+    }
+
+    if (!this._initializationGuardPassed) {
+      return 'not-initialized'
+    }
+
+    if (!wsconnected) {
+      return 'offline'
+    }
+
+    if (serverSyncing) {
+      return 'syncing'
+    }
+
+    if (serverSynced) {
+      return 'insync'
+    }
+
+    return 'offline'
   }
 
   getValue() {
@@ -798,7 +859,8 @@ export class SharedDocument extends SharedEntity {
       await this._indexedDBProvider.clearData()
     }
     this.destroy()
-    removeIsSharedClass(this.path, this.plugin)
+    await removeStatusClass(this.path, this.plugin)
+    // Don't add back pd-explorer-shared since we're replacing it with status indicators
   }
 
   getShareURL() {

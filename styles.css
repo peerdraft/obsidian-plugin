@@ -15,6 +15,40 @@
   margin-right: 0.5em;
 }
 
+.pd-status-offline::before {
+  content: "○ ";
+  color: #666;
+  margin-right: 0.5em;
+}
+
+.pd-status-syncing::before {
+  content: "⟳ ";
+  color: #f59e0b;
+  margin-right: 0.5em;
+  animation: spin 1s linear infinite;
+}
+
+.pd-status-insync::before {
+  content: "✓ ";
+  color: #10b981;
+  margin-right: 0.5em;
+}
+
+.pd-status-warning::before {
+  content: "⚠ ";
+  color: #ef4444;
+  margin-right: 0.5em;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .pd-button-container {
   display: flex;
   justify-content: flex-end;
