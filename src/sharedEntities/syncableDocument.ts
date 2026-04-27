@@ -105,14 +105,17 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
   private _indexedDBWasEmpty = false
   private _serverSyncing = false
   private _serverSynced = false
+  private _newDocConfirmed = false
+  private _isNewDocument = false
 
   // Helper to build aggregate state snapshot for syncStateChanged events
-  private getStateSnapshot(): { indexedDBLoaded: boolean, indexedDBWasEmpty: boolean, serverSyncing: boolean, serverSynced: boolean } {
+  private getStateSnapshot(): { indexedDBLoaded: boolean, indexedDBWasEmpty: boolean, serverSyncing: boolean, serverSynced: boolean, newDocConfirmed: boolean } {
     return {
       indexedDBLoaded: this._indexedDBLoaded,
       indexedDBWasEmpty: this._indexedDBWasEmpty,
       serverSyncing: this._serverSyncing,
       serverSynced: this._serverSynced,
+      newDocConfirmed: this._newDocConfirmed,
     }
   }
 
@@ -252,6 +255,38 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
     return this._serverSynced
   }
 
+  get newDocConfirmed(): boolean {
+    return this._newDocConfirmed
+  }
+
+  get isNewDocument(): boolean {
+    return this._isNewDocument
+  }
+
+  _setNewDocConfirmed(value: boolean): void {
+    this._newDocConfirmed = value
+    // When document is confirmed by server, it's no longer a "new" document
+    if (value) {
+      this._isNewDocument = false
+    }
+    this.logEvent('syncStateChanged', this.getStateSnapshot())
+    this.emit('syncStateChanged', [this.getStateSnapshot()])
+  }
+
+  _setServerSynced(value: boolean): void {
+    this._serverSynced = value
+    // When document is fully synced, it's no longer a "new" document
+    if (value) {
+      this._isNewDocument = false
+    }
+    this.logEvent('syncStateChanged', this.getStateSnapshot())
+    this.emit('syncStateChanged', [this.getStateSnapshot()])
+  }
+
+  _setIsNewDocument(value: boolean): void {
+    this._isNewDocument = value
+  }
+
   // True when IndexedDB is loaded AND server has synced at least once.
   get isFullyInitialized(): boolean {
     return this._indexedDBLoaded && this._serverSynced
@@ -274,6 +309,7 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
       // Reset server sync state for new shareId
       this._serverSyncing = false
       this._serverSynced = false
+      // Don't reset newDocConfirmed - it's only reset for truly new documents
       this.logEvent('syncStateChanged', this.getStateSnapshot())
       this.emit('syncStateChanged', [this.getStateSnapshot()])
     }
@@ -301,7 +337,7 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
 
         // Update sync state on successful sync
         this._serverSyncing = false
-        this._serverSynced = true
+        this._setServerSynced(true)
         this.emit('synced', [hash])
         this.logEvent('serverSynced', hash)
         this.emit('serverSynced', [hash])

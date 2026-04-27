@@ -72,11 +72,11 @@ export abstract class SharedEntity {
 
   abstract calculateHash (): string
 
-  initServerYDoc(folderKey?: string) {
+  async initServerYDoc(folderKey?: string): Promise<string> {
     return new Promise<string>(resolve => {
       const tempId = createRandomId()
-      const handler = (serverTempId: string, id: string, checksum: string) => {
-        if (serverTempId === tempId) {
+      const handler = (confirmedTempId: string, id: string, checksum: string) => {
+        if (confirmedTempId === tempId) {
           this.plugin.serverSync.off('new-doc-confirmed', handler)
           this._shareId = id
           resolve(checksum)

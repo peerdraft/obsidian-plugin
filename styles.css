@@ -40,6 +40,18 @@
   margin-right: 0.5em;
 }
 
+.pd-status-disconnected::before {
+  content: "○ ";
+  color: #666;
+  margin-right: 0.5em;
+}
+
+.pd-status-connected::before {
+  content: "👥 ";
+  color: #3b82f6;
+  margin-right: 0.5em;
+}
+
 @keyframes spin {
   from {
     transform: rotate(0deg);

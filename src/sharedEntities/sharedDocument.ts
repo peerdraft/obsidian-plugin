@@ -111,6 +111,8 @@ export class SharedDocument extends SharedEntity {
     doc.setIsPermanentInternal(true)
     doc.setShareIdInternal(pd.shareId)
     doc.isCanvas = "canvas" === (file as TFile).extension
+    // Document loaded from DB is not new
+    doc._syncable._setIsNewDocument(false)
 
     doc._setupInitializationGuard()
     doc._setupStatusIndicatorSubscriptions()
@@ -118,6 +120,8 @@ export class SharedDocument extends SharedEntity {
     doc.syncWithServer()
     plugin.activeStreamClient.add([doc.shareId])
     // Don't add pd-explorer-shared class - status indicators replace it
+    // Existing document from permanent share is already confirmed
+    doc._syncable._setNewDocConfirmed(true)
 
     return doc
   }
@@ -181,7 +185,7 @@ export class SharedDocument extends SharedEntity {
     const filePath = path.join(parent, initialFileName)
     const folder = await SharedFolder.getOrCreatePath(path.dirname(filePath), plugin)
     const file = await plugin.app.vault.create(filePath, doc.getValue())
-    addIsSharedClass(file.path, plugin)
+    // Don't add pd-explorer-shared class - status indicators replace it
     doc._file = file
     doc._path = file.path
     // Set fileIO on the syncable now that the file is available
@@ -192,6 +196,10 @@ export class SharedDocument extends SharedEntity {
       await add(doc, plugin)
       await doc.startIndexedDBSync()
       plugin.activeStreamClient.add([doc.shareId])
+      // Status indicator will update when initialization guard passes via subscriptions
+    } else {
+      // Update status indicator for non-permanent documents
+      await doc._updateWebRTCStatusIndicator()
     }
 
     const leaf = await openFileInNewTab(file, plugin.app.workspace)
@@ -284,6 +292,14 @@ export class SharedDocument extends SharedEntity {
       await doc.setPermanent()
       // doc.startWebSocketSync()
       doc.startIndexedDBSync()
+      // Mark as new document - should show syncing even before guard passes
+      doc._syncable._setIsNewDocument(true)
+      doc._setupInitializationGuard()
+      doc._setupStatusIndicatorSubscriptions()
+      // Sync with server to set serverSynced=true
+      doc.syncWithServer()
+      // Status indicator will update when initialization guard passes via subscriptions
+      await doc._updateStatusIndicator()
     } else {
       doc.setShareIdInternal(await plugin.serverSync.createNewSession())
     }
@@ -293,7 +309,12 @@ export class SharedDocument extends SharedEntity {
     }
 
     showNotice(`Inititialized share for ${file.path}`)
-    addIsSharedClass(file.path, plugin)
+    // Don't add pd-explorer-shared class - status indicators replace it
+
+    // Update status indicator for non-permanent documents
+    if (!opts.permanent) {
+      await doc._updateWebRTCStatusIndicator()
+    }
 
     // Add author property if configured
     if (opts.folder) {
@@ -525,6 +546,22 @@ export class SharedDocument extends SharedEntity {
     await setStatusClass(this.path, this.plugin, status)
   }
 
+  private async _updateWebRTCStatusIndicator() {
+    const status = this.getWebRTCStatus()
+    await setStatusClass(this.path, this.plugin, status)
+  }
+
+  private getWebRTCStatus(): 'disconnected' | 'connected' | 'not-initialized' {
+    if (!this._webRTCProvider) {
+      return 'not-initialized'
+    }
+
+    const states = this._webRTCProvider.awareness.getStates()
+    const peerCount = states.size - 1 // Exclude self
+    
+    return peerCount > 0 ? 'connected' : 'disconnected'
+  }
+
   get file() {
     return this._file
   }
@@ -544,9 +581,20 @@ export class SharedDocument extends SharedEntity {
   }
 
   async initServerYDoc(folderKey?: string) {
-    const checksum = await super.initServerYDoc(folderKey);
-    this._syncable.setShareId(this._shareId);
-    return checksum;
+    return new Promise<string>(resolve => {
+      const tempId = generateRandomString()
+      const handler = (confirmedTempId: string, id: string, checksum: string) => {
+        if (confirmedTempId === tempId) {
+          this.plugin.serverSync.off('new-doc-confirmed', handler)
+          this._syncable._setNewDocConfirmed(true)
+          this._shareId = id
+          this._syncable.setShareId(id)
+          resolve(checksum)
+        }
+      }
+      this.plugin.serverSync.on('new-doc-confirmed', handler)
+      this.plugin.serverSync.sendNewDocument(this, tempId, folderKey)
+    })
   }
 
   syncWithServer() {
@@ -558,19 +606,15 @@ export class SharedDocument extends SharedEntity {
       provider.awareness.on("update", async (msg: { added: Array<number>, removed: Array<number> }) => {
         const removed = msg.removed ?? [];
         if (removed && removed.length > 0) {
-          const removedStrings = removed.map((id) => {
-            return id.toFixed(0);
-          });
-
+          const removedStrings = removed.map((n) => n.toString())
           const owner = this.getOwnerFragment().toString()
           if (owner != provider.awareness.clientID.toString()) {
             if (removedStrings.includes(owner) && !this.isPermanent) {
               showNotice("Shared session for " + this.path + " stopped by owner")
-              await this.unshare()
+              this.unshare()
             }
           }
         }
-
 
         const added = msg.added ?? [];
         if (added && added.length > 0) {
@@ -582,33 +626,13 @@ export class SharedDocument extends SharedEntity {
             }
           }
         }
-      })
 
-
-      /*
-      if (!this._webRTCTimeout) {
-
-        const handleTimeout = () => {
-          if (this._extensions.size > 0 || getLeafIdsByPath(this.path, this.plugin.pws).length > 0) {
-            this._webRTCTimeout = window.setTimeout(handleTimeout, 60000)
-          } else {
-            this.stopWebRTCSync()
-          }
+        // Update status indicator for non-permanent documents
+        if (!this.isPermanent) {
+          await this._updateWebRTCStatusIndicator()
         }
-
-        this._webRTCTimeout = window.setTimeout(handleTimeout, 60000)
-
-        provider.doc.on('update', async (update: Uint8Array, origin: any, doc: Y.Doc, tr: Y.Transaction) => {
-          if (this._webRTCTimeout != null) {
-            window.clearTimeout(this._webRTCTimeout)
-          }
-          this._webRTCTimeout = window.setTimeout(handleTimeout, 60000)
-        })
-      }
-      */
-
+      })
     })
-
   }
 
   async setNewFileLocation(file: TFile) {
@@ -641,10 +665,16 @@ export class SharedDocument extends SharedEntity {
     const serverSyncing = this._syncable.serverSyncing
     const serverSynced = this._syncable.serverSynced
     const indexedDBWasEmpty = this._syncable.indexedDBWasEmpty
+    const isNewDocument = this._syncable.isNewDocument
 
     // Warning takes precedence - show even if guard hasn't passed
     if (!wsconnected && indexedDBWasEmpty && !serverSynced) {
       return 'warning'
+    }
+
+    // If this is a newly created permanent document, show syncing even if guard hasn't passed
+    if (isNewDocument && this.isPermanent) {
+      return 'syncing'
     }
 
     if (!this._initializationGuardPassed) {

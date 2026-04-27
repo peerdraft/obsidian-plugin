@@ -23,7 +23,7 @@ export const removeIsSharedClass = async (path: string, plugin: PeerdraftPlugin)
   })
 }
 
-export const setStatusClass = async (path: string, plugin: PeerdraftPlugin, status: 'offline' | 'syncing' | 'insync' | 'warning' | 'not-initialized') => {
+export const setStatusClass = async (path: string, plugin: PeerdraftPlugin, status: 'offline' | 'syncing' | 'insync' | 'warning' | 'disconnected' | 'connected' | 'not-initialized') => {
   const fileExplorers = await getFileExplorers(plugin)
   fileExplorers.forEach(fileExplorer => {
     //@ts-expect-error
@@ -32,7 +32,7 @@ export const setStatusClass = async (path: string, plugin: PeerdraftPlugin, stat
     const el = fileItem.innerEl as HTMLElement
     
     // Remove peerdraft icon and all status classes first
-    el.removeClass('pd-explorer-shared', 'pd-status-offline', 'pd-status-syncing', 'pd-status-insync', 'pd-status-warning')
+    el.removeClass('pd-explorer-shared', 'pd-status-offline', 'pd-status-syncing', 'pd-status-insync', 'pd-status-warning', 'pd-status-disconnected', 'pd-status-connected')
     
     // Add the appropriate status class
     if (status !== 'not-initialized') {
@@ -49,6 +49,8 @@ function getStatusTooltip(status: string): string {
     case 'syncing': return 'Syncing - Synchronizing with server'
     case 'insync': return 'In sync - Synchronized with server'
     case 'warning': return 'Warning - Offline with no synced data (data may be lost!)'
+    case 'disconnected': return 'Disconnected - No peers connected'
+    case 'connected': return 'Connected - Peers connected'
     default: return ''
   }
 }
@@ -60,7 +62,7 @@ export const removeStatusClass = async (path: string, plugin: PeerdraftPlugin) =
     const fileItem = fileExplorer.view.fileItems[path];
     if (!fileItem) return
     const el = fileItem.innerEl as HTMLElement
-    el.removeClass('pd-status-offline', 'pd-status-syncing', 'pd-status-insync', 'pd-status-warning')
+    el.removeClass('pd-status-offline', 'pd-status-syncing', 'pd-status-insync', 'pd-status-warning', 'pd-status-disconnected', 'pd-status-connected')
     // Remove tooltip
     el.removeAttribute('title')
   })
