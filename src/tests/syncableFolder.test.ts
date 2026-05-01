@@ -129,7 +129,8 @@ describe('SyncableFolder State Tracking', () => {
   })
 
   describe('IndexedDB State Tracking', () => {
-    test('should set indexedDBLoaded and emit indexedDBLoaded event after startIndexedDBSync', async () => {
+    test('should set indexedDBLoaded and emit indexedDBLoaded event after startIndexedDBSync with existing DB', async () => {
+      setIndexedDBExisting(true)
       const indexedDBLoadedHandler = jest.fn()
       syncable.on('indexedDBLoaded', indexedDBLoadedHandler)
 
@@ -140,10 +141,69 @@ describe('SyncableFolder State Tracking', () => {
       expect(indexedDBLoadedHandler).toHaveBeenCalledWith({ wasEmpty: expect.any(Boolean) })
     })
 
+    test('should defer IndexedDB creation when DB does not exist and server has not synced', async () => {
+      setIndexedDBExisting(false)
+      const indexedDBLoadedHandler = jest.fn()
+      syncable.on('indexedDBLoaded', indexedDBLoadedHandler)
+
+      const result = await syncable.startIndexedDBSync('test-persistence-id')
+
+      // IndexedDB should NOT be created yet - creation is deferred
+      expect(result).toBeUndefined()
+      expect(syncable.indexedDBLoaded).toBe(false)
+      expect(syncable.indexedDBWasEmpty).toBe(false)
+      expect(indexedDBLoadedHandler).not.toHaveBeenCalled()
+    })
+
+    test('should create IndexedDB immediately when server has already synced even if DB does not exist', async () => {
+      setIndexedDBExisting(false)
+      const indexedDBLoadedHandler = jest.fn()
+      syncable.on('indexedDBLoaded', indexedDBLoadedHandler)
+
+      // Sync with server first
+      const syncPromise = syncable.syncWithServer()
+      syncedHandlers.forEach(handler => handler('test-share-id', 'test-hash'))
+      await syncPromise
+
+      // Now start IndexedDB - should create immediately since serverSynced is true
+      await syncable.startIndexedDBSync('test-persistence-id')
+
+      expect(syncable.indexedDBLoaded).toBe(true)
+      expect(syncable.indexedDBWasEmpty).toBe(true)
+      expect(indexedDBLoadedHandler).toHaveBeenCalledWith({ wasEmpty: true })
+    })
+
+    test('should create IndexedDB after server sync when previously deferred', async () => {
+      setIndexedDBExisting(false)
+      const indexedDBLoadedHandler = jest.fn()
+      syncable.on('indexedDBLoaded', indexedDBLoadedHandler)
+
+      // Start IndexedDB - should be deferred
+      const result = await syncable.startIndexedDBSync('test-persistence-id')
+      expect(result).toBeUndefined()
+      expect(syncable.indexedDBLoaded).toBe(false)
+
+      // Simulate server sync - should trigger deferred IndexedDB creation
+      const syncPromise = syncable.syncWithServer()
+      syncedHandlers.forEach(handler => handler('test-share-id', 'test-hash'))
+      await syncPromise
+
+      // Wait for deferred IndexedDB creation to complete
+      await syncable.whenIndexedDBSynced()
+
+      expect(syncable.indexedDBLoaded).toBe(true)
+      expect(indexedDBLoadedHandler).toHaveBeenCalledWith({ wasEmpty: true })
+    })
+
     test('should detect empty IndexedDB when no existing data', async () => {
       setIndexedDBExisting(false)
       const indexedDBLoadedHandler = jest.fn()
       syncable.on('indexedDBLoaded', indexedDBLoadedHandler)
+
+      // Sync with server first so IndexedDB creation isn't deferred
+      const syncPromise = syncable.syncWithServer()
+      syncedHandlers.forEach(handler => handler('test-share-id', 'test-hash'))
+      await syncPromise
 
       await syncable.startIndexedDBSync('test-persistence-id')
 
@@ -179,6 +239,7 @@ describe('SyncableFolder State Tracking', () => {
     })
 
     test('should emit indexedDBLoadFailed and reset state on IndexedDB initialization error', async () => {
+      setIndexedDBExisting(true) // DB must exist (or server synced) for creation to be attempted
       const { IndexeddbPersistence } = require('y-indexeddb')
       IndexeddbPersistence.mockImplementationOnce(() => {
         throw new Error('Quota exceeded')
@@ -287,7 +348,7 @@ describe('SyncableFolder State Tracking', () => {
 
   describe('Computed States After State Changes', () => {
     test('isFullyInitialized should be true when IndexedDB loaded and server synced', async () => {
-      setIndexedDBExisting(false)
+      setIndexedDBExisting(true)
       await syncable.startIndexedDBSync('test-persistence-id')
 
       const syncPromise = syncable.syncWithServer()
@@ -300,7 +361,7 @@ describe('SyncableFolder State Tracking', () => {
     })
 
     test('isOffline should be true when IndexedDB loaded but server not synced', async () => {
-      setIndexedDBExisting(false)
+      setIndexedDBExisting(true)
       await syncable.startIndexedDBSync('test-persistence-id')
 
       expect(syncable.isOffline).toBe(true)
@@ -334,15 +395,16 @@ describe('SyncableFolder State Tracking', () => {
       expect(guardPasses).toBe(true)
     })
 
-    test('guard condition does not pass when IndexedDB loads empty and server not synced', async () => {
+    test('guard condition does not pass when IndexedDB is deferred (no existing data, server not synced)', async () => {
       // Mock checkIndexedDBAlreadyExists to return false (no data)
       const { checkIndexedDBAlreadyExists } = require('../tools')
       checkIndexedDBAlreadyExists.mockResolvedValue(false)
 
       await syncable.startIndexedDBSync('test-persistence-id')
 
-      expect(syncable.indexedDBLoaded).toBe(true)
-      expect(syncable.indexedDBWasEmpty).toBe(true)
+      // IndexedDB creation is deferred - not loaded yet
+      expect(syncable.indexedDBLoaded).toBe(false)
+      expect(syncable.indexedDBWasEmpty).toBe(false)
       expect(syncable.serverSynced).toBe(false)
       // Guard should not pass
       const guardPasses = syncable.serverSynced || (syncable.indexedDBLoaded && !syncable.indexedDBWasEmpty)
@@ -423,6 +485,7 @@ describe('SyncableFolder State Tracking', () => {
 
   describe('State Reset on Lifecycle Transitions', () => {
     test('should reset state flags on stopIndexedDBSync', async () => {
+      setIndexedDBExisting(true)
       const syncStateChangedHandler = jest.fn()
       syncable.on('syncStateChanged', syncStateChangedHandler)
 
@@ -440,7 +503,22 @@ describe('SyncableFolder State Tracking', () => {
       expect(syncStateChangedHandler).toHaveBeenCalledTimes(2) // load + reset
     })
 
+    test('should clean up deferred IndexedDB on stopIndexedDBSync', async () => {
+      setIndexedDBExisting(false)
+      const syncStateChangedHandler = jest.fn()
+      syncable.on('syncStateChanged', syncStateChangedHandler)
+
+      // Start IndexedDB sync - should be deferred
+      await syncable.startIndexedDBSync('test-persistence-id')
+      expect(syncable.indexedDBLoaded).toBe(false)
+
+      // Stop should clean up deferred state without error
+      await syncable.stopIndexedDBSync()
+      expect(syncable.indexedDBLoaded).toBe(false)
+    })
+
     test('should reset state flags on destroy', async () => {
+      setIndexedDBExisting(true)
       // Start IndexedDB sync
       await syncable.startIndexedDBSync('test-persistence-id')
 

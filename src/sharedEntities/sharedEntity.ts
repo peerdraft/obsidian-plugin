@@ -14,6 +14,8 @@ export abstract class SharedEntity {
   protected _webRTCProvider?: WebrtcProvider
   protected _webRTCTimeout: number | null = null
 
+  // DEPRECATED: No longer set by SharedDocument or SharedFolder — they delegate
+  // to _syncable.indexedDBProvider. Kept for backward compat; remove when safe.
   protected _indexedDBProvider?: IndexeddbPersistence
 
   protected static _sharedEntites: Array<SharedEntity>;
@@ -128,6 +130,8 @@ export abstract class SharedEntity {
     this._webRTCProvider = undefined
   }
 
+  // DEPRECATED: This is now a no-op because _indexedDBProvider is never set
+  // by subclasses. SharedDocument/SharedFolder call _syncable.stopIndexedDBSync().
   async stopIndexedDBSync() {
     if (!this._indexedDBProvider) return
     await this._indexedDBProvider.destroy()

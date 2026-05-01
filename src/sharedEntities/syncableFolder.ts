@@ -38,12 +38,24 @@ export class SyncableFolder extends ObservableV2<{
   private _indexedDBProvider?: IndexeddbPersistence
   private indexedDBSyncPromise?: Promise<void>
 
+  // Deferred IndexedDB creation: when DB doesn't exist yet and server hasn't
+  // synced, we store the persistenceId and create the DB after server sync.
+  private _deferredIndexedDBId?: string
+  private _deferredIndexedDBHandler?: () => void
+
   // Sync state tracking
 
   private _indexedDBLoaded = false
   private _indexedDBWasEmpty = false
   private _serverSyncing = false
   private _serverSynced = false
+
+  // True when IndexedDB creation has been deferred (DB doesn't exist yet and
+  // server hasn't synced). Used by callers to decide whether to await
+  // indexedDBProvider.whenSynced before calling syncWithServer().
+  get isIndexedDBDeferred(): boolean {
+    return this._deferredIndexedDBId !== undefined
+  }
 
   // Helper to build aggregate state snapshot for syncStateChanged events
   private getStateSnapshot(): { indexedDBLoaded: boolean, indexedDBWasEmpty: boolean, serverSyncing: boolean, serverSynced: boolean } {
@@ -93,9 +105,13 @@ export class SyncableFolder extends ObservableV2<{
     }
 
     if (opts.persistenceId) {
-      this.indexedDBSyncPromise = this.startIndexedDBSync(opts.persistenceId).then(
-        () => undefined
-      )
+      // Fire-and-forget; callers can await whenIndexedDBSynced().
+      // When deferred, _setupDeferredIndexedDBCreation sets indexedDBSyncPromise
+      // to a promise that waits for actual creation — don't overwrite it.
+      const result = this.startIndexedDBSync(opts.persistenceId)
+      if (!this.indexedDBSyncPromise && result) {
+        this.indexedDBSyncPromise = result.then(() => undefined)
+      }
     }
   }
 
@@ -215,14 +231,26 @@ export class SyncableFolder extends ObservableV2<{
     })
   }
 
-  async startIndexedDBSync(persistenceId: string): Promise<IndexeddbPersistence> {
+  async startIndexedDBSync(persistenceId: string): Promise<IndexeddbPersistence | undefined> {
     if (this._indexedDBProvider) return this._indexedDBProvider
+    // If already deferred for this (or another) ID, don't set up another handler
+    if (this._deferredIndexedDBId) return undefined
 
     const dbName = SyncableFolder.DB_PERSISTENCE_PREFIX + persistenceId
 
     try {
       // Check if IndexedDB already existed before this startup
       const hadExistingData = await checkIndexedDBAlreadyExists(dbName)
+
+      // If DB doesn't exist yet and server hasn't synced, defer creation.
+      // This ensures the warning indicator works correctly on subsequent
+      // startups: if IndexedDB exists, it was created after a successful
+      // server sync and contains reliable data.
+      if (!hadExistingData && !this._serverSynced) {
+        this._deferredIndexedDBId = persistenceId
+        this._setupDeferredIndexedDBCreation()
+        return undefined
+      }
 
       const provider = new IndexeddbPersistence(dbName, this.yDoc)
       this._indexedDBProvider = provider
@@ -256,27 +284,79 @@ export class SyncableFolder extends ObservableV2<{
     }
   }
 
+  // Set up one-time listener that creates IndexedDB after first successful server sync.
+  // Also sets indexedDBSyncPromise to resolve only after the deferred creation completes,
+  // so that whenIndexedDBSynced() doesn't resolve prematurely.
+  private _setupDeferredIndexedDBCreation(): void {
+    const id = this._deferredIndexedDBId!
+    // Remove old handler if exists (avoid race condition where cleanup clears _deferredIndexedDBId)
+    if (this._deferredIndexedDBHandler) {
+      this.off('serverSynced', this._deferredIndexedDBHandler)
+      this._deferredIndexedDBHandler = undefined
+    }
+    let resolveSyncPromise: () => void
+    // Replace the prematurely-resolved promise with one that waits for actual creation
+    this.indexedDBSyncPromise = new Promise<void>(resolve => {
+      resolveSyncPromise = resolve
+    })
+    const handler = () => {
+      this._cleanupDeferredIndexedDBCreation()
+      try {
+        this.startIndexedDBSync(id).then(
+          () => resolveSyncPromise(),
+          () => resolveSyncPromise() // Resolve even on error — callers don't expect hang
+        ).catch(() => {
+          // Error already emitted via indexedDBLoadFailed; swallow unhandled rejection
+        })
+      } catch (e) {
+        // Handle synchronous errors from startIndexedDBSync
+        resolveSyncPromise()
+      }
+    }
+    this._deferredIndexedDBHandler = handler
+    this.on('serverSynced', handler)
+  }
+
+  // Remove deferred IndexedDB listener and reset deferred state.
+  private _cleanupDeferredIndexedDBCreation(): void {
+    if (this._deferredIndexedDBHandler) {
+      this.off('serverSynced', this._deferredIndexedDBHandler)
+      this._deferredIndexedDBHandler = undefined
+    }
+    this._deferredIndexedDBId = undefined
+  }
+
   whenIndexedDBSynced(): Promise<void> {
     return this.indexedDBSyncPromise ?? Promise.resolve()
   }
 
   async stopIndexedDBSync(): Promise<void> {
+    this._cleanupDeferredIndexedDBCreation()
     if (this._indexedDBProvider) {
       await this._indexedDBProvider.destroy()
       this._indexedDBProvider = undefined
-
-      // Reset state tracking
-      this._indexedDBLoaded = false
-      this._indexedDBWasEmpty = false
-      this.logEvent('syncStateChanged', this.getStateSnapshot())
-      this.emit('syncStateChanged', [this.getStateSnapshot()])
     }
+
+    // Always reset state tracking (even when only deferred cleanup occurred)
+    this._indexedDBLoaded = false
+    this._indexedDBWasEmpty = false
+    this.logEvent('syncStateChanged', this.getStateSnapshot())
+    this.emit('syncStateChanged', [this.getStateSnapshot()])
   }
 
   destroy(): void {
     this.yDoc.off('update', this.updateListener)
     if (this._shareId) {
       SyncableFolder._registry.delete(this._shareId)
+    }
+
+    // Clean up deferred IndexedDB creation if pending
+    this._cleanupDeferredIndexedDBCreation()
+
+    // Destroy IndexedDB provider to release DB connections and observers
+    if (this._indexedDBProvider) {
+      this._indexedDBProvider.destroy()
+      this._indexedDBProvider = undefined
     }
 
     // Reset sync state tracking

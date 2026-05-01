@@ -72,6 +72,10 @@ export class SharedDocument extends SharedEntity {
 
   private _syncable!: SyncableDocument
 
+  override get indexedDBProvider(): IndexeddbPersistence | undefined {
+    return this._syncable?.indexedDBProvider
+  }
+
   isCanvas: boolean
 
   static async fromView(view: MarkdownView, plugin: PeerDraftPlugin, opts = { permanent: false }) {
@@ -117,6 +121,9 @@ export class SharedDocument extends SharedEntity {
     doc._setupInitializationGuard()
     doc._setupStatusIndicatorSubscriptions()
     await doc.startIndexedDBSync()
+    if (doc.indexedDBProvider) {
+      if (!doc.indexedDBProvider.synced) await doc.indexedDBProvider.whenSynced
+    }
     doc.syncWithServer()
     plugin.activeStreamClient.add([doc.shareId])
     // Don't add pd-explorer-shared class - status indicators replace it
@@ -667,8 +674,11 @@ export class SharedDocument extends SharedEntity {
     const indexedDBWasEmpty = this._syncable.indexedDBWasEmpty
     const isNewDocument = this._syncable.isNewDocument
 
-    // Warning takes precedence - show even if guard hasn't passed
-    if (!wsconnected && indexedDBWasEmpty && !serverSynced) {
+    // Warning takes precedence - show even if guard hasn't passed.
+    // With deferred IndexedDB creation, IndexedDB may not exist at all
+    // (!indexedDBLoaded) if server never synced, which also means no
+    // reliable local data.
+    if (!wsconnected && !serverSynced && (!this._syncable.indexedDBLoaded || indexedDBWasEmpty)) {
       return 'warning'
     }
 
@@ -713,13 +723,12 @@ export class SharedDocument extends SharedEntity {
     return this.yDoc.getText("owner")
   }
 
-  async startIndexedDBSync() {
-    if (this._indexedDBProvider) return this._indexedDBProvider
+  async startIndexedDBSync(): Promise<IndexeddbPersistence | undefined> {
+    if (this._syncable.indexedDBProvider) return this._syncable.indexedDBProvider
     const id = (getDocByPath(this.path, this.plugin))?.persistenceId
     if (!id) return
-      const provider = await this._syncable.startIndexedDBSync(id)
-    this._indexedDBProvider = provider
-    return this._indexedDBProvider
+    const provider = await this._syncable.startIndexedDBSync(id)
+    return provider
   }
 
   addExtensionToLeaf(leafId: string) {
@@ -885,8 +894,9 @@ export class SharedDocument extends SharedEntity {
     if (dbEntry) {
       removeDoc(this.path, this.plugin)
     }
-    if (this._indexedDBProvider) {
-      await this._indexedDBProvider.clearData()
+    if (this._syncable.indexedDBProvider) {
+      await this._syncable.indexedDBProvider.clearData()
+      await this._syncable.indexedDBProvider.destroy()
     }
     this.destroy()
     await removeStatusClass(this.path, this.plugin)

@@ -102,6 +102,10 @@ export class SharedFolder extends SharedEntity {
   // Sync-engine state delegated to composed SyncableFolder instance.
   private _syncable!: SyncableFolder
 
+  override get indexedDBProvider(): IndexeddbPersistence | undefined {
+    return this._syncable?.indexedDBProvider
+  }
+
   static async fromTFolder(root: TFolder, plugin: PeerDraftPlugin) {
     showNotice(`Inititializing share for ${root.path}.`)
     const sharedFolder = new this(root, plugin)
@@ -222,9 +226,9 @@ export class SharedFolder extends SharedEntity {
     await sFolder.startIndexedDBSync()
     if (sFolder.indexedDBProvider) {
       if (!sFolder.indexedDBProvider.synced) await sFolder.indexedDBProvider.whenSynced
-      sFolder.syncWithServer()
-      sFolder.startWebRTCSync()
     }
+    sFolder.syncWithServer()
+    sFolder.startWebRTCSync()
     return sFolder
   }
 
@@ -251,6 +255,9 @@ export class SharedFolder extends SharedEntity {
 
     folder._setupInitializationGuard()
     await folder.startIndexedDBSync()
+    if (folder.indexedDBProvider) {
+      if (!folder.indexedDBProvider.synced) await folder.indexedDBProvider.whenSynced
+    }
     folder.syncWithServer()
 
     return folder
@@ -528,13 +535,12 @@ export class SharedFolder extends SharedEntity {
     })
   }
 
-  async startIndexedDBSync() {
-    if (this._indexedDBProvider) return this._indexedDBProvider
+  async startIndexedDBSync(): Promise<IndexeddbPersistence | undefined> {
+    if (this._syncable.indexedDBProvider) return this._syncable.indexedDBProvider
     const id = getFolderByPath(this.path, this.plugin)?.persistenceId
     if (!id) return
-      const provider = await this._syncable.startIndexedDBSync(id)
-    this._indexedDBProvider = provider
-    return this._indexedDBProvider
+    const provider = await this._syncable.startIndexedDBSync(id)
+    return provider
   }
 
   private _checkInitializationGuard(): boolean {
@@ -600,9 +606,9 @@ export class SharedFolder extends SharedEntity {
       removeFolder(this.path, this.plugin)
     }
 
-    if (this._indexedDBProvider) {
-      await this._indexedDBProvider.clearData()
-      await this._indexedDBProvider.destroy()
+    if (this._syncable.indexedDBProvider) {
+      await this._syncable.indexedDBProvider.clearData()
+      await this._syncable.indexedDBProvider.destroy()
     }
 
 

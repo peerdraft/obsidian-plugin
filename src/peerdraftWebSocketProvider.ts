@@ -166,15 +166,20 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
       // syncables without booting the full plugin.
       for (const folder of SyncableFolder.getAll()) {
         // Folders are always permanent (no isPermanent gate needed).
+        // Await IndexedDB sync if provider exists (may be deferred for new folders).
         if (folder.indexedDBProvider) {
           if (!folder.indexedDBProvider.synced) await folder.indexedDBProvider.whenSynced
-          folder.syncWithServer()
         }
+        folder.syncWithServer()
       }
 
       for (const syncable of SyncableDocument.getAll()) {
-        if (syncable.isPermanent && syncable.indexedDBProvider) {
-          if (!syncable.indexedDBProvider.synced) await syncable.indexedDBProvider.whenSynced
+        if (syncable.isPermanent) {
+          // Await IndexedDB sync if provider exists (may be deferred for new documents).
+          // Documents with deferred IndexedDB will sync with server first, then create DB.
+          if (syncable.indexedDBProvider) {
+            if (!syncable.indexedDBProvider.synced) await syncable.indexedDBProvider.whenSynced
+          }
           syncable.syncWithServer()
         }
       }
