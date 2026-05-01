@@ -101,6 +101,7 @@ export class SharedDocument extends SharedEntity {
   }
 
   static async fromPermanentShareDocument(pd: PermanentShareDocument, plugin: PeerDraftPlugin) {
+    if (this.findById(pd.shareId)) return
     if (this.findByPath(pd.path)) return
     let file = plugin.app.vault.getAbstractFileByPath(normalizePath(pd.path))
     if (!file) {
@@ -245,7 +246,10 @@ export class SharedDocument extends SharedEntity {
       doc.setupFileSyncForContent
     }
     doc._path = normalizedPath
-    const file = await plugin.app.vault.create(normalizedPath, doc.getValue())
+    const existingFile = plugin.app.vault.getAbstractFileByPath(normalizedPath)
+    const file = existingFile instanceof TFile
+      ? existingFile
+      : await plugin.app.vault.create(normalizedPath, doc.getValue())
     doc._file = file
     // Set fileIO on the syncable now that the file is available
     doc._syncable.setFileIO(new VaultFileIO(file, plugin))

@@ -164,16 +164,20 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
       // id), but this decouples the provider from the Obsidian-side
       // wrapper classes — which is what lets the test harness register
       // syncables without booting the full plugin.
-      for (const folder of SyncableFolder.getAll()) {
+
+      // Sync folders first (they contain the document map), then documents.
+      // Within each group, all items sync in parallel.
+      const folderPromises = SyncableFolder.getAll().map(async (folder) => {
         // Folders are always permanent (no isPermanent gate needed).
         // Await IndexedDB sync if provider exists (may be deferred for new folders).
         if (folder.indexedDBProvider) {
           if (!folder.indexedDBProvider.synced) await folder.indexedDBProvider.whenSynced
         }
         folder.syncWithServer()
-      }
+      })
+      await Promise.all(folderPromises)
 
-      for (const syncable of SyncableDocument.getAll()) {
+      const docPromises = SyncableDocument.getAll().map(async (syncable) => {
         if (syncable.isPermanent) {
           // Await IndexedDB sync if provider exists (may be deferred for new documents).
           // Documents with deferred IndexedDB will sync with server first, then create DB.
@@ -182,7 +186,8 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
           }
           syncable.syncWithServer()
         }
-      }
+      })
+      await Promise.all(docPromises)
       
     }
 

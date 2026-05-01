@@ -266,10 +266,11 @@ export class SharedFolder extends SharedEntity {
 
     folder._setupInitializationGuard()
     folder._setupStatusIndicatorSubscriptions()
+    // Show syncing state immediately
+    folder._updateStatusIndicator()
     await folder.startIndexedDBSync()
-    if (folder.indexedDBProvider) {
-      if (!folder.indexedDBProvider.synced) await folder.indexedDBProvider.whenSynced
-    }
+    // Don't await IndexedDB sync here - let it happen in background.
+    // Server sync and status updates will proceed independently.
     folder.syncWithServer()
 
     return folder
@@ -605,6 +606,9 @@ export class SharedFolder extends SharedEntity {
     const serverSynced = this._syncable.serverSynced
     const indexedDBWasEmpty = this._syncable.indexedDBWasEmpty
 
+    // Lazily subscribe to child documents that may have been loaded after folder setup
+    this._ensureChildSubscriptions()
+
     // Check if any child document is syncing
     const docsMap = this.getDocsFragment() as Y.Map<string>
     let anyChildSyncing = false
@@ -664,17 +668,10 @@ export class SharedFolder extends SharedEntity {
 
   private async _updateStatusIndicator() {
     const status = this.getSyncStatus()
-    console.log('[SharedFolder] _updateStatusIndicator', this.path, {
-      status,
-      wsconnected: this.plugin.serverSync.wsconnected,
-      serverSyncing: this._syncable.serverSyncing,
-      serverSynced: this._syncable.serverSynced,
-      indexedDBLoaded: this._syncable.indexedDBLoaded,
-      indexedDBWasEmpty: this._syncable.indexedDBWasEmpty,
-      initializationGuardPassed: this._initializationGuardPassed,
-    })
     await setStatusClass(this.path, this.plugin, status)
   }
+
+  private _subscribedChildDocs: Set<string> = new Set()
 
   private _setupStatusIndicatorSubscriptions() {
     // Subscribe to WebSocket connection state changes
@@ -687,31 +684,28 @@ export class SharedFolder extends SharedEntity {
       this._updateStatusIndicator()
     })
 
-    // Subscribe to child document sync state changes to update folder status
+    // Subscribe to child document additions/removals in the Y.Map
     const docsMap = this.getDocsFragment() as Y.Map<string>
-    docsMap.forEach((relativePath, shareId) => {
-      const doc = SharedDocument.findById(shareId)
-      if (doc) {
-        doc.syncable.on('syncStateChanged', () => {
-          this._updateStatusIndicator()
-        })
-      }
-    })
-
-    // Subscribe to child document additions/removals
     docsMap.observe((event) => {
-      event.changes.keys.forEach((change, key) => {
-        if (change.action === 'add') {
-          const doc = SharedDocument.findById(key)
-          if (doc) {
-            doc.syncable.on('syncStateChanged', () => {
-              this._updateStatusIndicator()
-            })
-          }
-        }
-      })
       this._updateStatusIndicator()
     })
+  }
+
+  // Lazily subscribe to child documents that weren't available at setup time.
+  // Called from getSyncStatus so we catch children loaded after the folder.
+  private _ensureChildSubscriptions() {
+    const docsMap = this.getDocsFragment() as Y.Map<string>
+    for (const [shareId, relativePath] of docsMap.entries()) {
+      if (!this._subscribedChildDocs.has(shareId)) {
+        const doc = SharedDocument.findById(shareId)
+        if (doc) {
+          this._subscribedChildDocs.add(shareId)
+          doc.syncable.on('syncStateChanged', () => {
+            this._updateStatusIndicator()
+          })
+        }
+      }
+    }
   }
 
   static async stopSession(id: string, plugin: PeerDraftPlugin) {
