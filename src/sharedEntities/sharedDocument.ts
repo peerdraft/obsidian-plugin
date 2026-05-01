@@ -76,6 +76,10 @@ export class SharedDocument extends SharedEntity {
     return this._syncable?.indexedDBProvider
   }
 
+  get syncable(): SyncableDocument {
+    return this._syncable
+  }
+
   isCanvas: boolean
 
   static async fromView(view: MarkdownView, plugin: PeerDraftPlugin, opts = { permanent: false }) {
@@ -248,8 +252,13 @@ export class SharedDocument extends SharedEntity {
 
     doc.syncWithServer()
     await doc.setPermanent()
+    // Set up status indicator system for permanent documents
+    doc._setupInitializationGuard()
+    doc._setupStatusIndicatorSubscriptions()
+    // Update status indicator immediately to show syncing state
+    doc._updateStatusIndicator()
     await doc.startIndexedDBSync()
-    addIsSharedClass(doc.path, plugin)
+    // Don't use old addIsSharedClass - status indicators replace it
   }
 
 
@@ -550,16 +559,6 @@ export class SharedDocument extends SharedEntity {
 
   private async _updateStatusIndicator() {
     const status = this.getSyncStatus()
-    console.log('[SharedDocument] _updateStatusIndicator', this.path, {
-      status,
-      wsconnected: this.plugin.serverSync.wsconnected,
-      serverSyncing: this._syncable.serverSyncing,
-      serverSynced: this._syncable.serverSynced,
-      indexedDBLoaded: this._syncable.indexedDBLoaded,
-      indexedDBWasEmpty: this._syncable.indexedDBWasEmpty,
-      initializationGuardPassed: this._initializationGuardPassed,
-      isNewDocument: this._syncable.isNewDocument
-    })
     await setStatusClass(this.path, this.plugin, status)
   }
 
@@ -662,7 +661,8 @@ export class SharedDocument extends SharedEntity {
     }
     await moveDoc(oldPath, file.path, this.plugin)
     removeIsSharedClass(oldPath, this.plugin)
-    addIsSharedClass(this.path, this.plugin)
+    // Use status indicator system instead of old addIsSharedClass
+    this._updateStatusIndicator()
   }
 
   async setPermanent() {

@@ -4,7 +4,7 @@ import PeerDraftPlugin from "src/main";
 import { type PermanentShareFolder } from "src/permanentShareStore";
 import { add, getFolderByPath, moveFolder, removeFolder } from "src/permanentShareStoreFS";
 import { openLoginModal } from "src/ui/login";
-import { addIsSharedClass, removeIsSharedClass } from "src/workspace/explorerView";
+import { addIsSharedClass, removeIsSharedClass, setStatusClass, removeStatusClass } from "src/workspace/explorerView";
 import { IndexeddbPersistence } from "y-indexeddb";
 import * as Y from 'yjs';
 import { calculateHash, generateRandomString, serialize } from "../tools";
@@ -124,6 +124,11 @@ export class SharedFolder extends SharedEntity {
       if (!auth) return
     }
 
+    // Set up status indicator early to show syncing state immediately
+    sharedFolder._setupInitializationGuard()
+    sharedFolder._setupStatusIndicatorSubscriptions()
+    sharedFolder._updateStatusIndicator()
+
     const docs = await Promise.all(files.map((file) => {
       return SharedDocument.fromTFile(file, {
         permanent: true
@@ -142,6 +147,7 @@ export class SharedFolder extends SharedEntity {
 
     await add(sharedFolder, plugin)
     await sharedFolder.startIndexedDBSync()
+    sharedFolder.syncWithServer()
     sharedFolder.startWebRTCSync()
 
     navigator.clipboard.writeText(plugin.settings.basePath + '/team/' + sharedFolder.shareId)
@@ -194,6 +200,16 @@ export class SharedFolder extends SharedEntity {
       return
     };
 
+    const sFolder = new SharedFolder(folder, plugin, preFetchedDoc)
+    sFolder.setShareIdInternal(id)
+    plugin.activeStreamClient.add([id])
+
+    await add(sFolder, plugin)
+    sFolder._setupInitializationGuard()
+    sFolder._setupStatusIndicatorSubscriptions()
+    // Show syncing state immediately - before child docs are created
+    sFolder._updateStatusIndicator()
+
     const paths: Array<string> = []
     const documentMap = preFetchedDoc.getMap("documents") as Y.Map<string>
 
@@ -218,11 +234,6 @@ export class SharedFolder extends SharedEntity {
       paths.push(normalizePath(docPath))
     }
 
-    const sFolder = new SharedFolder(folder, plugin, preFetchedDoc)
-    sFolder.setShareIdInternal(id)
-    plugin.activeStreamClient.add([id])
-
-    await add(sFolder, plugin)
     await sFolder.startIndexedDBSync()
     if (sFolder.indexedDBProvider) {
       if (!sFolder.indexedDBProvider.synced) await sFolder.indexedDBProvider.whenSynced
@@ -254,6 +265,7 @@ export class SharedFolder extends SharedEntity {
     plugin.activeStreamClient.add([psf.shareId])
 
     folder._setupInitializationGuard()
+    folder._setupStatusIndicatorSubscriptions()
     await folder.startIndexedDBSync()
     if (folder.indexedDBProvider) {
       if (!folder.indexedDBProvider.synced) await folder.indexedDBProvider.whenSynced
@@ -305,7 +317,6 @@ export class SharedFolder extends SharedEntity {
     })
 
     SharedFolder._sharedEntites.push(this)
-    addIsSharedClass(this.path, plugin)
   }
 
   private setShareIdInternal(id: string) {
@@ -556,6 +567,9 @@ export class SharedFolder extends SharedEntity {
 
         this.startWebRTCSync()
         this.plugin.log(`Initialization guard passed for folder ${this.path}`)
+        
+        // Set initial status after initialization
+        this._updateStatusIndicator()
       } finally {
         release()
       }
@@ -579,8 +593,125 @@ export class SharedFolder extends SharedEntity {
       if (this._checkInitializationGuard() && !this._initializationGuardPassed) {
         handleGuardConditionMet()
       }
+      // Update status indicator when sync state changes
+      this._updateStatusIndicator()
     }
     this._syncable.on('syncStateChanged', syncStateChangedHandler)
+  }
+
+  getSyncStatus(): 'offline' | 'syncing' | 'insync' | 'warning' | 'not-initialized' {
+    const wsconnected = this.plugin.serverSync.wsconnected
+    const serverSyncing = this._syncable.serverSyncing
+    const serverSynced = this._syncable.serverSynced
+    const indexedDBWasEmpty = this._syncable.indexedDBWasEmpty
+
+    // Check if any child document is syncing
+    const docsMap = this.getDocsFragment() as Y.Map<string>
+    let anyChildSyncing = false
+    let anyChildNotSynced = false
+    for (const [shareId, relativePath] of docsMap.entries()) {
+      const doc = SharedDocument.findById(shareId)
+      if (doc) {
+        const childStatus = doc.getSyncStatus()
+        if (childStatus === 'syncing') {
+          anyChildSyncing = true
+        }
+        // Consider child not synced if it's not 'insync'
+        if (childStatus !== 'insync') {
+          anyChildNotSynced = true
+        }
+      }
+    }
+
+    // Warning takes precedence - show even if guard hasn't passed.
+    // With deferred IndexedDB creation, IndexedDB may not exist at all
+    // (!indexedDBLoaded) if server never synced, which also means no
+    // reliable local data.
+    if (!wsconnected && !serverSynced && (!this._syncable.indexedDBLoaded || indexedDBWasEmpty)) {
+      return 'warning'
+    }
+
+    // Check initialization guard for offline state
+    if (!wsconnected) {
+      if (!this._initializationGuardPassed) {
+        return 'not-initialized'
+      }
+      return 'offline'
+    }
+
+    // When connected but guard hasn't passed, show syncing instead of not-initialized
+    // This handles the transition from warning state when going online
+    if (!this._initializationGuardPassed) {
+      return 'syncing'
+    }
+
+    // Show syncing if folder or any child is syncing
+    if (serverSyncing || anyChildSyncing) {
+      return 'syncing'
+    }
+
+    // Show syncing if folder is synced but any child is not synced yet
+    if (serverSynced && anyChildNotSynced) {
+      return 'syncing'
+    }
+
+    if (serverSynced) {
+      return 'insync'
+    }
+
+    return 'offline'
+  }
+
+  private async _updateStatusIndicator() {
+    const status = this.getSyncStatus()
+    console.log('[SharedFolder] _updateStatusIndicator', this.path, {
+      status,
+      wsconnected: this.plugin.serverSync.wsconnected,
+      serverSyncing: this._syncable.serverSyncing,
+      serverSynced: this._syncable.serverSynced,
+      indexedDBLoaded: this._syncable.indexedDBLoaded,
+      indexedDBWasEmpty: this._syncable.indexedDBWasEmpty,
+      initializationGuardPassed: this._initializationGuardPassed,
+    })
+    await setStatusClass(this.path, this.plugin, status)
+  }
+
+  private _setupStatusIndicatorSubscriptions() {
+    // Subscribe to WebSocket connection state changes
+    this.plugin.serverSync.on('status', () => {
+      this._updateStatusIndicator()
+    })
+
+    // Subscribe to sync state changes
+    this._syncable.on('syncStateChanged', () => {
+      this._updateStatusIndicator()
+    })
+
+    // Subscribe to child document sync state changes to update folder status
+    const docsMap = this.getDocsFragment() as Y.Map<string>
+    docsMap.forEach((relativePath, shareId) => {
+      const doc = SharedDocument.findById(shareId)
+      if (doc) {
+        doc.syncable.on('syncStateChanged', () => {
+          this._updateStatusIndicator()
+        })
+      }
+    })
+
+    // Subscribe to child document additions/removals
+    docsMap.observe((event) => {
+      event.changes.keys.forEach((change, key) => {
+        if (change.action === 'add') {
+          const doc = SharedDocument.findById(key)
+          if (doc) {
+            doc.syncable.on('syncStateChanged', () => {
+              this._updateStatusIndicator()
+            })
+          }
+        }
+      })
+      this._updateStatusIndicator()
+    })
   }
 
   static async stopSession(id: string, plugin: PeerDraftPlugin) {
@@ -607,7 +738,6 @@ export class SharedFolder extends SharedEntity {
     }
 
     if (this._syncable.indexedDBProvider) {
-      await this._syncable.indexedDBProvider.clearData()
       await this._syncable.indexedDBProvider.destroy()
     }
 
@@ -618,6 +748,7 @@ export class SharedFolder extends SharedEntity {
 
     this.destroy()
     removeIsSharedClass(this.path, this.plugin)
+    await removeStatusClass(this.path, this.plugin)
   }
 
   destroy() {
