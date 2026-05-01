@@ -6,28 +6,20 @@ import { diff, diffCleanupEfficiency } from 'diff-match-patch-es'
 
 import { calculateHash, checkIndexedDBAlreadyExists } from '../tools'
 
-// File I/O port for SyncableDocument. Abstracts vault read/write operations.
 export interface SyncableFileIO {
   read(): Promise<string>
   modify(content: string, opts?: { mtime?: number }): Promise<void>
   getMTime(): number
 }
 
-// Clock port for SyncableDocument. Abstracts time access for testing.
 export interface SyncableClock {
   now(): number
 }
 
-// Sync-engine logic extracted from SharedDocument. Owns Y.Doc, IndexedDB persistence,
-// local-update batcher, syncWithServer, and static registry for provider reconnect.
-// Has no Obsidian imports for testability.
-
-// xxhash hex string of the doc's content text fragment.
 export type SyncableHash = string
 
 export const SYNCABLE_DB_PERSISTENCE_PREFIX = 'peerdraft_persistence_'
 
-// Subset of PeerdraftWebsocketProvider that SyncableDocument depends on.
 export interface SyncableServerSync {
   on(event: 'synced', handler: (id: string, hash: string) => void): unknown
   off(event: 'synced', handler: (id: string, hash: string) => void): unknown
@@ -35,7 +27,6 @@ export interface SyncableServerSync {
   sendUpdate(entity: SyncableEntity, update: Uint8Array): void
 }
 
-// Minimal entity shape the provider's send methods consume.
 export interface SyncableEntity {
   shareId: string
   yDoc: Y.Doc
@@ -84,7 +75,6 @@ type Events = {
 export class SyncableDocument extends ObservableV2<Events> implements SyncableEntity {
   static readonly DB_PERSISTENCE_PREFIX = SYNCABLE_DB_PERSISTENCE_PREFIX
 
-  // Registry for provider reconnect/lookup paths.
   private static _registry = new Map<string, SyncableDocument>()
 
   readonly yDoc: Y.Doc
@@ -99,12 +89,8 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
   private _indexedDBProvider?: IndexeddbPersistence
   private indexedDBSyncPromise?: Promise<void>
 
-  // Deferred IndexedDB creation: when DB doesn't exist yet and server hasn't
-  // synced, we store the persistenceId and create the DB after server sync.
   private _deferredIndexedDBId?: string
   private _deferredIndexedDBHandler?: () => void
-
-  // Sync state tracking
 
   private _indexedDBLoaded = false
   private _indexedDBWasEmpty = false
@@ -113,14 +99,10 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
   private _newDocConfirmed = false
   private _isNewDocument = false
 
-  // True when IndexedDB creation has been deferred (DB doesn't exist yet and
-  // server hasn't synced). Used by callers to decide whether to await
-  // indexedDBProvider.whenSynced before calling syncWithServer().
   get isIndexedDBDeferred(): boolean {
     return this._deferredIndexedDBId !== undefined
   }
 
-  // Helper to build aggregate state snapshot for syncStateChanged events
   private getStateSnapshot(): { indexedDBLoaded: boolean, indexedDBWasEmpty: boolean, serverSyncing: boolean, serverSynced: boolean, newDocConfirmed: boolean } {
     return {
       indexedDBLoaded: this._indexedDBLoaded,
@@ -132,7 +114,6 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
   }
 
   private logEvent(event: keyof Events, payload?: unknown): void {
-    console.log(`[SyncableDocument] event`, event, payload)
   }
 
   private pendingUpdates: Uint8Array[] = []
@@ -145,8 +126,6 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
     tx: Y.Transaction
   ) => void
 
-  // File-sync state (only installed when fileIO is supplied)
-
   private fileIO?: SyncableFileIO
   private readonly clock: SyncableClock
   private readonly editorAttachedCount: () => number
@@ -157,19 +136,15 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
 
   private readonly registry: Map<string, SyncableDocument>
 
-  // mtime of most recent write through fileIO.modify(). Used for self-echo guard.
   private _lastUpdateTriggeredByDocChange = 0
 
-  // Set or update FileIO adapter after construction.
   setFileIO(fileIO: SyncableFileIO | undefined): void {
     if (this.fileIO === fileIO) return
-    // Uninstall old observer if present
     if (this.contentObserver) {
       this.yDoc.getText('content').unobserve(this.contentObserver)
       this.contentObserver = undefined
     }
     this.fileIO = fileIO
-    // Install new observer if fileIO is now available
     if (fileIO) {
       this.contentObserver = () => {
         if (this.editorAttachedCount() === 0) {
@@ -195,7 +170,6 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
     this.registry = opts.registry ?? SyncableDocument._registry
 
     this.updateListener = (update, _origin, _doc, tx) => {
-      // Only forward local edits when this share is persistent.
       if (tx.local && this._isPermanent) {
         this.pendingUpdates.push(update)
         this.scheduleFlush()
@@ -203,7 +177,6 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
     }
     this.yDoc.on('update', this.updateListener)
 
-    // Install content observer if fileIO is provided
     if (this.fileIO) {
       this.contentObserver = () => {
         if (this.editorAttachedCount() === 0) {
@@ -218,17 +191,12 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
     }
 
     if (opts.persistenceId) {
-      // Fire-and-forget; callers can await whenIndexedDBSynced().
-      // When deferred, _setupDeferredIndexedDBCreation sets indexedDBSyncPromise
-      // to a promise that waits for actual creation — don't overwrite it.
       const result = this.startIndexedDBSync(opts.persistenceId)
       if (!this.indexedDBSyncPromise && result) {
         this.indexedDBSyncPromise = result.then(() => undefined)
       }
     }
   }
-
-  // Static registry — used by PeerdraftWebsocketProvider's onopen loop
 
   static findById(id: string): SyncableDocument | undefined {
     return this._registry.get(id)
@@ -237,8 +205,6 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
   static getAll(): SyncableDocument[] {
     return Array.from(this._registry.values())
   }
-
-  // SyncableEntity surface
 
   get shareId(): string {
     return this._shareId
@@ -251,8 +217,6 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
   get indexedDBProvider(): IndexeddbPersistence | undefined {
     return this._indexedDBProvider
   }
-
-  // ---- Sync state tracking ----
 
   get indexedDBLoaded(): boolean {
     return this._indexedDBLoaded
@@ -280,7 +244,6 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
 
   _setNewDocConfirmed(value: boolean): void {
     this._newDocConfirmed = value
-    // When document is confirmed by server, it's no longer a "new" document
     if (value) {
       this._isNewDocument = false
     }
@@ -290,7 +253,6 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
 
   _setServerSynced(value: boolean): void {
     this._serverSynced = value
-    // When document is fully synced, it's no longer a "new" document
     if (value) {
       this._isNewDocument = false
     }
@@ -302,17 +264,14 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
     this._isNewDocument = value
   }
 
-  // True when IndexedDB is loaded AND server has synced at least once.
   get isFullyInitialized(): boolean {
     return this._indexedDBLoaded && this._serverSynced
   }
 
-  // True when IndexedDB is loaded but server has never synced.
   get isOffline(): boolean {
     return this._indexedDBLoaded && !this._serverSynced
   }
 
-  // Set or update the shareId.
   setShareId(id: string): void {
     if (this._shareId === id) return
     if (this._shareId) {
@@ -321,10 +280,8 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
     this._shareId = id
     if (id) {
       this.registry.set(id, this)
-      // Reset server sync state for new shareId
       this._serverSyncing = false
       this._serverSynced = false
-      // Don't reset newDocConfirmed - it's only reset for truly new documents
       this.logEvent('syncStateChanged', this.getStateSnapshot())
       this.emit('syncStateChanged', [this.getStateSnapshot()])
     }
@@ -334,14 +291,10 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
     this._isPermanent = value
   }
 
-  // Hash of the content Y.Text. Matches SharedDocument.calculateHash byte-for-byte.
   calculateHash(): SyncableHash {
     return calculateHash(this.yDoc.getText('content').toString())
   }
 
-  // Server sync
-
-  // Send SYNC_STEP_1 and resolve when matching SYNC_STEP_2 arrives.
   syncWithServer(timeoutMs?: number): Promise<SyncableHash> {
     return new Promise<SyncableHash>((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | null = null
@@ -350,7 +303,6 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
         this.serverSync.off('synced', handler)
         if (timer) clearTimeout(timer)
 
-        // Update sync state on successful sync
         this._serverSyncing = false
         this._setServerSynced(true)
         this.emit('synced', [hash])
@@ -363,7 +315,6 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
         timer = setTimeout(() => {
           this.serverSync.off('synced', handler)
 
-          // Update sync state on timeout
           this._serverSyncing = false
           const error = new Error(
             `syncWithServer(${this._shareId}) timed out after ${timeoutMs}ms`
@@ -376,7 +327,6 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
         }, timeoutMs)
       }
 
-      // Update sync state before starting sync
       this._serverSyncing = true
       this.logEvent('serverSyncing')
       this.emit('serverSyncing', [])
@@ -389,26 +339,15 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
     })
   }
 
-  // IndexedDB persistence
-
-  // Start y-indexeddb persistence for this Y.Doc. Idempotent.
-  // If the database doesn't exist yet and server hasn't synced, creation is
-  // deferred until after a successful server sync. Returns undefined when deferred.
   async startIndexedDBSync(persistenceId: string): Promise<IndexeddbPersistence | undefined> {
     if (this._indexedDBProvider) return this._indexedDBProvider
-    // If already deferred for this (or another) ID, don't set up another handler
     if (this._deferredIndexedDBId) return undefined
 
     const dbName = SyncableDocument.DB_PERSISTENCE_PREFIX + persistenceId
 
     try {
-      // Check if IndexedDB already existed before instantiation
       const hadExistingData = await checkIndexedDBAlreadyExists(dbName)
 
-      // If DB doesn't exist yet and server hasn't synced, defer creation.
-      // This ensures the warning indicator works correctly on subsequent
-      // startups: if IndexedDB exists, it was created after a successful
-      // server sync and contains reliable data.
       if (!hadExistingData && !this._serverSynced) {
         this._deferredIndexedDBId = persistenceId
         this._setupDeferredIndexedDBCreation()
@@ -419,9 +358,7 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
       this._indexedDBProvider = provider
       if (!provider.synced) await provider.whenSynced
 
-      // Track IndexedDB state after sync completes
       this._indexedDBLoaded = true
-      // Use pre-load check to determine if IndexedDB was empty
       this._indexedDBWasEmpty = !hadExistingData
       const indexedPayload = { wasEmpty: this._indexedDBWasEmpty }
       this.logEvent('indexedDBLoaded', indexedPayload)
@@ -431,12 +368,9 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
 
       return provider
     } catch (error) {
-      // Clean up partial state
       this._indexedDBProvider = undefined
       this._indexedDBLoaded = false
       this._indexedDBWasEmpty = false
-
-      // Emit error event so callers know initialization failed
       const failure = error instanceof Error ? error : new Error(String(error))
       this.logEvent('indexedDBLoadFailed', failure)
       this.emit('indexedDBLoadFailed', [failure])
@@ -447,18 +381,13 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
     }
   }
 
-  // Set up one-time listener that creates IndexedDB after first successful server sync.
-  // Also sets indexedDBSyncPromise to resolve only after the deferred creation completes,
-  // so that whenIndexedDBSynced() doesn't resolve prematurely.
   private _setupDeferredIndexedDBCreation(): void {
     const id = this._deferredIndexedDBId!
-    // Remove old handler if exists (avoid race condition where cleanup clears _deferredIndexedDBId)
     if (this._deferredIndexedDBHandler) {
       this.off('serverSynced', this._deferredIndexedDBHandler)
       this._deferredIndexedDBHandler = undefined
     }
     let resolveSyncPromise: () => void
-    // Replace the prematurely-resolved promise with one that waits for actual creation
     this.indexedDBSyncPromise = new Promise<void>(resolve => {
       resolveSyncPromise = resolve
     })
@@ -467,12 +396,10 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
       try {
         this.startIndexedDBSync(id).then(
           () => resolveSyncPromise(),
-          () => resolveSyncPromise() // Resolve even on error — callers don't expect hang
+          () => resolveSyncPromise()
         ).catch(() => {
-          // Error already emitted via indexedDBLoadFailed; swallow unhandled rejection
         })
       } catch (e) {
-        // Handle synchronous errors from startIndexedDBSync
         resolveSyncPromise()
       }
     }
@@ -480,7 +407,6 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
     this.on('serverSynced', handler)
   }
 
-  // Remove deferred IndexedDB listener and reset deferred state.
   private _cleanupDeferredIndexedDBCreation(): void {
     if (this._deferredIndexedDBHandler) {
       this.off('serverSynced', this._deferredIndexedDBHandler)
@@ -489,7 +415,6 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
     this._deferredIndexedDBId = undefined
   }
 
-  // Resolve when IndexedDB sync has finished. No-op if not configured.
   whenIndexedDBSynced(): Promise<void> {
     return this.indexedDBSyncPromise ?? Promise.resolve()
   }
@@ -501,16 +426,12 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
       this._indexedDBProvider = undefined
     }
 
-    // Always reset state tracking (even when only deferred cleanup occurred)
     this._indexedDBLoaded = false
     this._indexedDBWasEmpty = false
     this.logEvent('syncStateChanged', this.getStateSnapshot())
     this.emit('syncStateChanged', [this.getStateSnapshot()])
   }
 
-  // Local-update batcher
-
-  // Force-flush pending local updates to the server.
   flushPendingUpdates(): Promise<void> {
     if (this.flushTimer) {
       clearTimeout(this.flushTimer)
@@ -526,13 +447,11 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
     })
   }
 
-  // Number of local updates currently buffered. Test-introspection only.
   get pendingUpdateCount(): number {
     return this.pendingUpdates.length
   }
 
   private scheduleFlush(): void {
-    // Reset timer on every edit so flush happens after the last edit.
     if (this.flushTimer) clearTimeout(this.flushTimer)
     this.flushTimer = setTimeout(() => {
       this.flushTimer = null
@@ -540,9 +459,6 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
     }, this.flushIntervalMs)
   }
 
-  // File sync (only active when fileIO is provided)
-
-  // Write current Y.Doc content to file via FileIO port.
   async flushToFile(): Promise<void> {
     if (!this.fileIO) return
     if (this.fileFlushTimer) {
@@ -558,7 +474,6 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
     })
   }
 
-  // Merge external file content into Y.Doc using diff-match-patch.
   reconcileWithFileContent(fileContent: string): Promise<void> {
     const fileIO = this.fileIO
     if (!fileIO) return Promise.resolve()
@@ -603,8 +518,6 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
     }, this.fileFlushIntervalMs)
   }
 
-  // Lifecycle
-
   destroy(): void {
     if (this.contentObserver) {
       this.yDoc.getText('content').unobserve(this.contentObserver)
@@ -622,16 +535,12 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
       this.registry.delete(this._shareId)
     }
 
-    // Clean up deferred IndexedDB creation if pending
     this._cleanupDeferredIndexedDBCreation()
 
-    // Destroy IndexedDB provider to release DB connections and observers
     if (this._indexedDBProvider) {
       this._indexedDBProvider.destroy()
       this._indexedDBProvider = undefined
     }
-
-    // Reset sync state tracking
     this._indexedDBLoaded = false
     this._indexedDBWasEmpty = false
     this._serverSyncing = false

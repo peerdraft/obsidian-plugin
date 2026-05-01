@@ -22,7 +22,6 @@ const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: Share
   const changedKeys = ev.changes.keys
 
   changedKeys.forEach(async (data, key) => {
-    plugin.log("Action: " + data.action + "for " + key + " --> " + tx.doc.getMap("documents").get(key) as string)
 
     if (data.action === "add") {
       const relativePath = tx.doc.getMap("documents").get(key) as string
@@ -33,7 +32,6 @@ const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: Share
         const existingDoc = SharedDocument.findById(key)
         if (existingDoc) {
           if (existingDoc.file.path === file.path) {
-            plugin.log("Received update, but FS is already in correct state")
           } else {
             showNotice("There is something wrong with your synced file " + file.path + ". Consider re-creating the synced folder from server.")
           }
@@ -57,7 +55,6 @@ const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: Share
         showNotice("Document at " + newPath + " doesn't exist in your vault. Consider re-creating the synced folder from server.")
         return
       }
-      plugin.log("Update " + document.path + "   " + key)
       const folder = SharedFolder.getSharedFolderForSubPath(document.path)
       if (!folder) return
       let newAbsolutePath = path.join(folder.root.path, newPath)
@@ -65,10 +62,7 @@ const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: Share
 
       const alreadyExists = SharedDocument.findByPath(newAbsolutePath)
       if (alreadyExists) {
-        // check if in sync already
         if (alreadyExists.shareId === key) {
-          // Do nothing.
-          plugin.log("Received update, but FS is already in correct state.")
         } else {
           showNotice("File " + newPath + " already exists. Renaming local file.")
           const alteredPath = path.join(path.dirname(newPath), path.basename(newPath, path.extname(newPath)) + "_" + generateRandomString() + path.extname(newPath))
@@ -82,7 +76,6 @@ const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: Share
     } else if (data.action === "delete") {
       const document = SharedDocument.findById(key)
       if (!document) return
-      plugin.log("Delete " + document.path + "   " + key)
       const file = plugin.app.vault.getAbstractFileByPath(document.path)
       document.unshare()
       if (!file) return
@@ -124,7 +117,6 @@ export class SharedFolder extends SharedEntity {
       if (!auth) return
     }
 
-    // Set up status indicator early to show syncing state immediately
     sharedFolder._setupInitializationGuard()
     sharedFolder._setupStatusIndicatorSubscriptions()
     sharedFolder._updateStatusIndicator()
@@ -152,7 +144,6 @@ export class SharedFolder extends SharedEntity {
 
     navigator.clipboard.writeText(plugin.settings.basePath + '/team/' + sharedFolder.shareId)
     showNotice(`Folder ${sharedFolder.path} with ${docs.length} documents shared. URL copied to your clipboard.`, 0)
-    // openFolderOptions(plugin.app, sharedFolder)
     return sharedFolder
   }
 
@@ -207,7 +198,6 @@ export class SharedFolder extends SharedEntity {
     await add(sFolder, plugin)
     sFolder._setupInitializationGuard()
     sFolder._setupStatusIndicatorSubscriptions()
-    // Show syncing state immediately - before child docs are created
     sFolder._updateStatusIndicator()
 
     const paths: Array<string> = []
@@ -220,7 +210,6 @@ export class SharedFolder extends SharedEntity {
         const existingDoc = SharedDocument.findById(entry[0])
         if (existingDoc) {
           if (existingDoc.path === absPath) {
-            plugin.log("already synced")
           } else {
             plugin.app.fileManager.renameFile(existingDoc.file, absPath)
           }
@@ -266,11 +255,8 @@ export class SharedFolder extends SharedEntity {
 
     folder._setupInitializationGuard()
     folder._setupStatusIndicatorSubscriptions()
-    // Show syncing state immediately
     folder._updateStatusIndicator()
     await folder.startIndexedDBSync()
-    // Don't await IndexedDB sync here - let it happen in background.
-    // Server sync and status updates will proceed independently.
     folder.syncWithServer()
 
     return folder
@@ -314,7 +300,7 @@ export class SharedFolder extends SharedEntity {
       yDoc: this.yDoc,
       shareId: this._shareId,
       serverSync: plugin.serverSync,
-      logger: { log: (...args: unknown[]) => plugin.log(args.map((a) => String(a)).join(' ')) }
+      logger: { log: (...args: unknown[]) => {} }
     })
 
     SharedFolder._sharedEntites.push(this)
@@ -416,9 +402,7 @@ export class SharedFolder extends SharedEntity {
   }
 
   addDocument(doc: SharedDocument) {
-    // doesn't exist yet
     if (this.getDocsFragment().get(doc.shareId)) return
-    // check if doc is under root
     const relativePath = path.relative(this.root.path, doc.path)
     if (relativePath.startsWith('..')) return
     this.getDocsFragment().set(doc.shareId, relativePath)
@@ -454,7 +438,7 @@ export class SharedFolder extends SharedEntity {
     
     if (this.yDoc) {
       const yExtensions = this.yDoc.getArray<string>('fileExtensions')
-      yExtensions.delete(0, yExtensions.length) // Clear existing extensions
+      yExtensions.delete(0, yExtensions.length)
       yExtensions.push(normalized)
     }
   }
@@ -481,7 +465,6 @@ export class SharedFolder extends SharedEntity {
     super.initializeYDoc()
     if (!this.yDoc) return
     
-    // Initialize file extensions in Y.Doc if not present
     const yExtensions = this.yDoc.getArray<string>('fileExtensions')
     if (yExtensions.length === 0) {
       yExtensions.push(['md', 'MD', 'canvas'])
@@ -534,7 +517,6 @@ export class SharedFolder extends SharedEntity {
     return super.startWebRTCSync((provider) => {
 
       const handleTimeout = () => {
-        // this.stopWebRTCSync()
       }
 
       this._webRTCTimeout = window.setTimeout(handleTimeout, 60000)
@@ -567,9 +549,6 @@ export class SharedFolder extends SharedEntity {
         this._initializationGuardPassed = true
 
         this.startWebRTCSync()
-        this.plugin.log(`Initialization guard passed for folder ${this.path}`)
-        
-        // Set initial status after initialization
         this._updateStatusIndicator()
       } finally {
         release()
@@ -594,7 +573,6 @@ export class SharedFolder extends SharedEntity {
       if (this._checkInitializationGuard() && !this._initializationGuardPassed) {
         handleGuardConditionMet()
       }
-      // Update status indicator when sync state changes
       this._updateStatusIndicator()
     }
     this._syncable.on('syncStateChanged', syncStateChangedHandler)
@@ -606,10 +584,7 @@ export class SharedFolder extends SharedEntity {
     const serverSynced = this._syncable.serverSynced
     const indexedDBWasEmpty = this._syncable.indexedDBWasEmpty
 
-    // Lazily subscribe to child documents that may have been loaded after folder setup
     this._ensureChildSubscriptions()
-
-    // Check if any child document is syncing
     const docsMap = this.getDocsFragment() as Y.Map<string>
     let anyChildSyncing = false
     let anyChildNotSynced = false
@@ -620,22 +595,16 @@ export class SharedFolder extends SharedEntity {
         if (childStatus === 'syncing') {
           anyChildSyncing = true
         }
-        // Consider child not synced if it's not 'insync'
         if (childStatus !== 'insync') {
           anyChildNotSynced = true
         }
       }
     }
 
-    // Warning takes precedence - show even if guard hasn't passed.
-    // With deferred IndexedDB creation, IndexedDB may not exist at all
-    // (!indexedDBLoaded) if server never synced, which also means no
-    // reliable local data.
     if (!wsconnected && !serverSynced && (!this._syncable.indexedDBLoaded || indexedDBWasEmpty)) {
       return 'warning'
     }
 
-    // Check initialization guard for offline state
     if (!wsconnected) {
       if (!this._initializationGuardPassed) {
         return 'not-initialized'
@@ -643,19 +612,15 @@ export class SharedFolder extends SharedEntity {
       return 'offline'
     }
 
-    // When connected but guard hasn't passed, show syncing instead of not-initialized
-    // This handles the transition from warning state when going online
     if (!this._initializationGuardPassed) {
       return 'syncing'
     }
 
-    // Show syncing if folder or any child is syncing
     if (serverSyncing || anyChildSyncing) {
       return 'syncing'
     }
 
-    // Show syncing if folder is synced but any child is not synced yet
-    if (serverSynced && anyChildNotSynced) {
+    if (serverSynced && anyChildNotSyncing) {
       return 'syncing'
     }
 
@@ -674,25 +639,19 @@ export class SharedFolder extends SharedEntity {
   private _subscribedChildDocs: Set<string> = new Set()
 
   private _setupStatusIndicatorSubscriptions() {
-    // Subscribe to WebSocket connection state changes
     this.plugin.serverSync.on('status', () => {
       this._updateStatusIndicator()
     })
 
-    // Subscribe to sync state changes
     this._syncable.on('syncStateChanged', () => {
       this._updateStatusIndicator()
     })
-
-    // Subscribe to child document additions/removals in the Y.Map
     const docsMap = this.getDocsFragment() as Y.Map<string>
     docsMap.observe((event) => {
       this._updateStatusIndicator()
     })
   }
 
-  // Lazily subscribe to child documents that weren't available at setup time.
-  // Called from getSyncStatus so we catch children loaded after the folder.
   private _ensureChildSubscriptions() {
     const docsMap = this.getDocsFragment() as Y.Map<string>
     for (const [shareId, relativePath] of docsMap.entries()) {

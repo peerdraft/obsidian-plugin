@@ -24,7 +24,6 @@ import { addCanvasExtension, type CanvasView, type Node } from 'src/ui/canvas';
 import JSONC from "tiny-jsonc"
 import { SyncableDocument, type SyncableFileIO, type SyncableClock } from './syncableDocument';
 
-// FileIO adapter wrapping Obsidian's vault API.
 class VaultFileIO implements SyncableFileIO {
   constructor(private file: TFile, private plugin: PeerDraftPlugin) {}
 
@@ -41,7 +40,6 @@ class VaultFileIO implements SyncableFileIO {
   }
 }
 
-// Clock adapter using Date.now().
 class RealClock implements SyncableClock {
   now(): number {
     return Date.now()
@@ -120,7 +118,6 @@ export class SharedDocument extends SharedEntity {
     doc.setIsPermanentInternal(true)
     doc.setShareIdInternal(pd.shareId)
     doc.isCanvas = "canvas" === (file as TFile).extension
-    // Document loaded from DB is not new
     doc._syncable._setIsNewDocument(false)
 
     doc._setupInitializationGuard()
@@ -131,8 +128,6 @@ export class SharedDocument extends SharedEntity {
     }
     doc.syncWithServer()
     plugin.activeStreamClient.add([doc.shareId])
-    // Don't add pd-explorer-shared class - status indicators replace it
-    // Existing document from permanent share is already confirmed
     doc._syncable._setNewDocConfirmed(true)
 
     return doc
@@ -161,8 +156,6 @@ export class SharedDocument extends SharedEntity {
       id,
       yDoc
     }, plugin)
-
-    // wait for first update to make sure it works and to get the filename
 
     await new Promise<void>((resolve) => {
       doc.startWebRTCSync()
@@ -197,10 +190,8 @@ export class SharedDocument extends SharedEntity {
     const filePath = path.join(parent, initialFileName)
     const folder = await SharedFolder.getOrCreatePath(path.dirname(filePath), plugin)
     const file = await plugin.app.vault.create(filePath, doc.getValue())
-    // Don't add pd-explorer-shared class - status indicators replace it
     doc._file = file
     doc._path = file.path
-    // Set fileIO on the syncable now that the file is available
     doc._syncable.setFileIO(new VaultFileIO(file, plugin))
 
     if (isPermanent) {
@@ -208,9 +199,7 @@ export class SharedDocument extends SharedEntity {
       await add(doc, plugin)
       await doc.startIndexedDBSync()
       plugin.activeStreamClient.add([doc.shareId])
-      // Status indicator will update when initialization guard passes via subscriptions
     } else {
-      // Update status indicator for non-permanent documents
       await doc._updateWebRTCStatusIndicator()
     }
 
@@ -251,18 +240,14 @@ export class SharedDocument extends SharedEntity {
       ? existingFile
       : await plugin.app.vault.create(normalizedPath, doc.getValue())
     doc._file = file
-    // Set fileIO on the syncable now that the file is available
     doc._syncable.setFileIO(new VaultFileIO(file, plugin))
 
     doc.syncWithServer()
     await doc.setPermanent()
-    // Set up status indicator system for permanent documents
     doc._setupInitializationGuard()
     doc._setupStatusIndicatorSubscriptions()
-    // Update status indicator immediately to show syncing state
     doc._updateStatusIndicator()
     await doc.startIndexedDBSync()
-    // Don't use old addIsSharedClass - status indicators replace it
   }
 
 
@@ -310,15 +295,11 @@ export class SharedDocument extends SharedEntity {
     if (opts.permanent) {
       await doc.initServerYDoc(opts.folder)
       await doc.setPermanent()
-      // doc.startWebSocketSync()
       doc.startIndexedDBSync()
-      // Mark as new document - should show syncing even before guard passes
       doc._syncable._setIsNewDocument(true)
       doc._setupInitializationGuard()
       doc._setupStatusIndicatorSubscriptions()
-      // Sync with server to set serverSynced=true
       doc.syncWithServer()
-      // Status indicator will update when initialization guard passes via subscriptions
       await doc._updateStatusIndicator()
     } else {
       doc.setShareIdInternal(await plugin.serverSync.createNewSession())
@@ -329,14 +310,10 @@ export class SharedDocument extends SharedEntity {
     }
 
     showNotice(`Inititialized share for ${file.path}`)
-    // Don't add pd-explorer-shared class - status indicators replace it
-
-    // Update status indicator for non-permanent documents
     if (!opts.permanent) {
       await doc._updateWebRTCStatusIndicator()
     }
 
-    // Add author property if configured
     if (opts.folder) {
       const folder = SharedFolder.findById(opts.folder)
       if (folder) {
@@ -508,9 +485,6 @@ export class SharedDocument extends SharedEntity {
           await this._syncable.reconcileWithFileContent(fileContent)
         }
 
-        this.plugin.log(`Initialization guard passed for ${this.path}`)
-        
-        // Set initial status after initialization
         if (this.isPermanent) {
           this._updateStatusIndicator()
         }
@@ -537,7 +511,6 @@ export class SharedDocument extends SharedEntity {
       if (this._checkInitializationGuard() && !this._initializationGuardPassed) {
         handleGuardConditionMet()
       }
-      // Update status indicator when sync state changes
       if (this.isPermanent && this._initializationGuardPassed) {
         this._updateStatusIndicator()
       }
@@ -546,14 +519,12 @@ export class SharedDocument extends SharedEntity {
   }
 
   private _setupStatusIndicatorSubscriptions() {
-    // Subscribe to WebSocket connection state changes
     this.plugin.serverSync.on('status', () => {
       if (this.isPermanent) {
         this._updateStatusIndicator()
       }
     })
 
-    // Subscribe to sync state changes
     this._syncable.on('syncStateChanged', () => {
       if (this.isPermanent) {
         this._updateStatusIndicator()
@@ -665,7 +636,6 @@ export class SharedDocument extends SharedEntity {
     }
     await moveDoc(oldPath, file.path, this.plugin)
     removeIsSharedClass(oldPath, this.plugin)
-    // Use status indicator system instead of old addIsSharedClass
     this._updateStatusIndicator()
   }
 
@@ -688,20 +658,14 @@ export class SharedDocument extends SharedEntity {
     const indexedDBWasEmpty = this._syncable.indexedDBWasEmpty
     const isNewDocument = this._syncable.isNewDocument
 
-    // Warning takes precedence - show even if guard hasn't passed.
-    // With deferred IndexedDB creation, IndexedDB may not exist at all
-    // (!indexedDBLoaded) if server never synced, which also means no
-    // reliable local data.
     if (!wsconnected && !serverSynced && (!this._syncable.indexedDBLoaded || indexedDBWasEmpty)) {
       return 'warning'
     }
 
-    // If this is a newly created permanent document, show syncing even if guard hasn't passed
     if (isNewDocument && this.isPermanent) {
       return 'syncing'
     }
 
-    // Check initialization guard for offline state
     if (!wsconnected) {
       if (!this._initializationGuardPassed) {
         return 'not-initialized'
@@ -709,8 +673,6 @@ export class SharedDocument extends SharedEntity {
       return 'offline'
     }
 
-    // When connected but guard hasn't passed, show syncing instead of not-initialized
-    // This handles the transition from warning state when going online
     if (!this._initializationGuardPassed) {
       return 'syncing'
     }
@@ -771,7 +733,6 @@ export class SharedDocument extends SharedEntity {
     const view = leaf.view as MarkdownView
     const editor = view.editor
 
-    this.plugin.log(`Attaching collaborative extension to leaf ${leafId} for ${this.path}`)
     editor.setValue(this.getValue())
 
     const undoManager = new Y.UndoManager(this.getContentFragment())
@@ -920,7 +881,6 @@ export class SharedDocument extends SharedEntity {
     }
     this.destroy()
     await removeStatusClass(this.path, this.plugin)
-    // Don't add back pd-explorer-shared since we're replacing it with status indicators
   }
 
   getShareURL() {
@@ -938,22 +898,18 @@ export class SharedDocument extends SharedEntity {
 
         if (fm[name] !== undefined) {
           if (Array.isArray(fm[name])) {
-            // Property exists as array - check for duplicates and append
             const existingArray = fm[name] as string[]
             const normalizedArray = existingArray.map(v => v.trim().toLowerCase())
             if (!normalizedArray.includes(trimmedValue.toLowerCase())) {
               existingArray.push(trimmedValue)
             }
           } else {
-            // Property exists as string - convert to array
             fm[name] = [fm[name], trimmedValue]
           }
         } else {
-          // Property doesn't exist - create array
           fm[name] = [trimmedValue]
         }
       } else {
-        // Default string behavior - overwrite
         fm[name] = value
       }
     })

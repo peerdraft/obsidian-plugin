@@ -85,8 +85,6 @@ const setupWS = (client: ActiveStreamClient) => {
       } else {
         client.wsUnsuccessfulReconnects++
       }
-      // Start with no reconnect timeout and increase timeout by
-      // using exponential backoff starting with 100ms
       setTimeout(
         setupWS,
         math.min(

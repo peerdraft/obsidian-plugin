@@ -100,7 +100,6 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
             break;
           }
           default:
-            console.log(syncMessageType)
             break;
         }
       }
@@ -158,18 +157,7 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
         provider.authenticate(provider.jwt, provider.version)
       }
 
-      // Iterate the syncable registries rather than SharedFolder /
-      // SharedDocument. The set of entries is identical (every
-      // SharedFolder / SharedDocument owns one syncable registered by
-      // id), but this decouples the provider from the Obsidian-side
-      // wrapper classes — which is what lets the test harness register
-      // syncables without booting the full plugin.
-
-      // Sync folders first (they contain the document map), then documents.
-      // Within each group, all items sync in parallel.
       const folderPromises = SyncableFolder.getAll().map(async (folder) => {
-        // Folders are always permanent (no isPermanent gate needed).
-        // Await IndexedDB sync if provider exists (may be deferred for new folders).
         if (folder.indexedDBProvider) {
           if (!folder.indexedDBProvider.synced) await folder.indexedDBProvider.whenSynced
         }
@@ -179,8 +167,6 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
 
       const docPromises = SyncableDocument.getAll().map(async (syncable) => {
         if (syncable.isPermanent) {
-          // Await IndexedDB sync if provider exists (may be deferred for new documents).
-          // Documents with deferred IndexedDB will sync with server first, then create DB.
           if (syncable.indexedDBProvider) {
             if (!syncable.indexedDBProvider.synced) await syncable.indexedDBProvider.whenSynced
           }
@@ -188,7 +174,6 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
         }
       })
       await Promise.all(docPromises)
-      
     }
 
     provider.emit('status', [{
@@ -205,18 +190,14 @@ interface AuthResponseData {
 
 type Events = {
   synced: (id: string, hash: string) => void
-  // sync: (state: boolean) => void
   "connection-error": (event: Event, provider: PeerdraftWebsocketProvider) => void
   "connection-close": (event: Event, provider: PeerdraftWebsocketProvider) => void
   status: (status: { status: string }) => void
   connected: () => void
   'document-received': (id: string, update: Uint8Array, checksum: string) => void
-  // 'sync-confirmed': (id: string, checksum: string) => void
   'new-doc-confirmed': (tempId: string, id: string, checksum: string) => void
   'new-session-confirmed': (tempId: string, id: string) => void
   'stop-session-confirmed': (id: string) => void
-  // 'my-update-sent': (id: string, update: Uint8Array, checksum: string) => void
-  // 'other-document-received-if-checksum-differs': (id: string, myChecksum: string, yourChecksum: string, update?: Uint8Array) => void
   'authenticated': (data: AuthResponseData) => void
   'showMessage': (title: string, content: string) => void
 }
@@ -281,10 +262,6 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
     }
   }
 
-  // Send methods accept any `SyncableEntity` (the structural shape
-  // `{ shareId, yDoc, calculateHash() }`). `SharedFolder` and
-  // `SyncableDocument` both satisfy it; `SharedDocument` does too via
-  // its composed syncable.
   sendSyncStep1(doc: SyncableEntity) {
     const encoder = encoding.createEncoder()
     encoding.writeVarUint(encoder, MESSAGE_MULTIPLEX_SYNC)
@@ -406,7 +383,6 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
           const doc = new Y.Doc()
           Y.applyUpdate(doc, update)
 
-          // correct hash for folders
           const docs = Array.from(doc.getMap("documents"))
           if (docs.length > 0) {
             const serialized = serialize(Array.from(docs))
