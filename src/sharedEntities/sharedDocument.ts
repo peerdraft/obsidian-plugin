@@ -550,6 +550,16 @@ export class SharedDocument extends SharedEntity {
 
   private async _updateStatusIndicator() {
     const status = this.getSyncStatus()
+    console.log('[SharedDocument] _updateStatusIndicator', this.path, {
+      status,
+      wsconnected: this.plugin.serverSync.wsconnected,
+      serverSyncing: this._syncable.serverSyncing,
+      serverSynced: this._syncable.serverSynced,
+      indexedDBLoaded: this._syncable.indexedDBLoaded,
+      indexedDBWasEmpty: this._syncable.indexedDBWasEmpty,
+      initializationGuardPassed: this._initializationGuardPassed,
+      isNewDocument: this._syncable.isNewDocument
+    })
     await setStatusClass(this.path, this.plugin, status)
   }
 
@@ -687,12 +697,18 @@ export class SharedDocument extends SharedEntity {
       return 'syncing'
     }
 
-    if (!this._initializationGuardPassed) {
-      return 'not-initialized'
+    // Check initialization guard for offline state
+    if (!wsconnected) {
+      if (!this._initializationGuardPassed) {
+        return 'not-initialized'
+      }
+      return 'offline'
     }
 
-    if (!wsconnected) {
-      return 'offline'
+    // When connected but guard hasn't passed, show syncing instead of not-initialized
+    // This handles the transition from warning state when going online
+    if (!this._initializationGuardPassed) {
+      return 'syncing'
     }
 
     if (serverSyncing) {
