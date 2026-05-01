@@ -292,7 +292,7 @@ export default class PeerdraftPlugin extends Plugin {
           await folder.setNewFolderLocation(file)
         }
       }
-    })
+    }))
 
     plugin.registerEvent(plugin.app.vault.on('delete', async (file) => {
       if (file instanceof TFolder) {
@@ -308,7 +308,7 @@ export default class PeerdraftPlugin extends Plugin {
           }
         }
       }
-    })
+    }))
 
     plugin.app.workspace.onLayoutReady(
       () => {

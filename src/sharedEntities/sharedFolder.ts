@@ -1,19 +1,19 @@
+import { Mutex } from 'async-mutex';
 import { TAbstractFile, TFile, TFolder, normalizePath } from "obsidian";
 import * as path from 'path';
 import PeerDraftPlugin from "src/main";
 import { type PermanentShareFolder } from "src/permanentShareStore";
 import { add, getFolderByPath, moveFolder, removeFolder } from "src/permanentShareStoreFS";
+import { promptForText } from "src/ui/enterText";
 import { openLoginModal } from "src/ui/login";
-import { addIsSharedClass, removeIsSharedClass, setStatusClass, removeStatusClass } from "src/workspace/explorerView";
+import { removeIsSharedClass, removeStatusClass, setStatusClass } from "src/workspace/explorerView";
 import { IndexeddbPersistence } from "y-indexeddb";
 import * as Y from 'yjs';
-import { calculateHash, generateRandomString, serialize } from "../tools";
+import { generateRandomString } from "../tools";
 import { showNotice } from "../ui";
 import { SharedDocument } from "./sharedDocument";
 import { SharedEntity } from "./sharedEntity";
-import { promptForText } from "src/ui/enterText";
 import { SyncableFolder } from "./syncableFolder";
-import { Mutex } from 'async-mutex';
 
 const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: SharedFolder, plugin: PeerDraftPlugin) => {
 
@@ -619,10 +619,11 @@ export class SharedFolder extends SharedEntity {
     if (serverSyncing || anyChildSyncing) {
       return 'syncing'
     }
-
-    if (serverSynced && anyChildNotSyncing) {
+    
+    if (serverSynced && anyChildNotSynced) {
       return 'syncing'
     }
+
 
     if (serverSynced) {
       return 'insync'
