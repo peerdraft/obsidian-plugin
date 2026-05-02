@@ -4,9 +4,8 @@ import * as encoding from 'lib0/encoding'
 import * as decoding from 'lib0/decoding'
 import { ObservableV2 } from 'lib0/observable'
 import * as math from 'lib0/math'
-import { SharedDocument } from './sharedEntities/sharedDocument'
-import { SharedEntity } from './sharedEntities/sharedEntity'
-import { SharedFolder } from './sharedEntities/sharedFolder'
+import { SyncableDocument, type SyncableEntity } from './sharedEntities/syncableDocument'
+import { SyncableFolder } from './sharedEntities/syncableFolder'
 import { calculateHash, createRandomId, serialize } from './tools'
 
 export const MESSAGE_SYNC = 0
@@ -67,7 +66,7 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
             const id = decoding.readVarString(decoder)
             const vector = decoding.readVarUint8Array(decoder)
             const hash = decoding.readVarString(decoder)
-            const doc = SharedDocument.findById(id) ?? SharedFolder.findById(id)
+            const doc = SyncableDocument.findById(id) ?? SyncableFolder.findById(id)
             if (doc && hash != doc.calculateHash()) {
               provider.sendSyncStep2(doc, vector)
             }
@@ -76,7 +75,7 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
             const id = decoding.readVarString(decoder)
             const update = decoding.readVarUint8Array(decoder)
             const hash = decoding.readVarString(decoder)
-            const doc = SharedDocument.findById(id) ?? SharedFolder.findById(id)
+            const doc = SyncableDocument.findById(id) ?? SyncableFolder.findById(id)
             if (doc) {
               Y.applyUpdate(doc.yDoc, update, provider)
               provider.emit('synced', [id, hash])
@@ -101,7 +100,6 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
             break;
           }
           default:
-            console.log(syncMessageType)
             break;
         }
       }
@@ -159,20 +157,23 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
         provider.authenticate(provider.jwt, provider.version)
       }
 
-      for (const folder of SharedFolder.getAll()) {
+      const folderPromises = SyncableFolder.getAll().map(async (folder) => {
         if (folder.indexedDBProvider) {
           if (!folder.indexedDBProvider.synced) await folder.indexedDBProvider.whenSynced
-          folder.syncWithServer()
         }
-      }
+        folder.syncWithServer()
+      })
+      await Promise.all(folderPromises)
 
-      for (const doc of SharedDocument.getAll()) {
-        if (doc.isPermanent && doc.indexedDBProvider) {
-          if (!doc.indexedDBProvider.synced) await doc.indexedDBProvider.whenSynced
-          doc.syncWithServer()
+      const docPromises = SyncableDocument.getAll().map(async (syncable) => {
+        if (syncable.isPermanent) {
+          if (syncable.indexedDBProvider) {
+            if (!syncable.indexedDBProvider.synced) await syncable.indexedDBProvider.whenSynced
+          }
+          syncable.syncWithServer()
         }
-      }
-
+      })
+      await Promise.all(docPromises)
     }
 
     provider.emit('status', [{
@@ -189,18 +190,14 @@ interface AuthResponseData {
 
 type Events = {
   synced: (id: string, hash: string) => void
-  // sync: (state: boolean) => void
   "connection-error": (event: Event, provider: PeerdraftWebsocketProvider) => void
   "connection-close": (event: Event, provider: PeerdraftWebsocketProvider) => void
   status: (status: { status: string }) => void
   connected: () => void
   'document-received': (id: string, update: Uint8Array, checksum: string) => void
-  // 'sync-confirmed': (id: string, checksum: string) => void
   'new-doc-confirmed': (tempId: string, id: string, checksum: string) => void
   'new-session-confirmed': (tempId: string, id: string) => void
   'stop-session-confirmed': (id: string) => void
-  // 'my-update-sent': (id: string, update: Uint8Array, checksum: string) => void
-  // 'other-document-received-if-checksum-differs': (id: string, myChecksum: string, yourChecksum: string, update?: Uint8Array) => void
   'authenticated': (data: AuthResponseData) => void
   'showMessage': (title: string, content: string) => void
 }
@@ -220,21 +217,20 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
   wsLastMessageReceived: number
   shouldConnect: boolean
   _resyncInterval: number
-  _updateHandler: (update: Uint8Array, origin: any) => void
-  _awarenessUpdateHandler: ({ added, updated, removed }: any, _origin: any) => void
-  _exitHandler: () => void
   _checkInterval: number
   authenticated: boolean
   jwt: string | undefined
   version: string
+  registry?: Map<string, import('./sharedEntities/syncableDocument').SyncableDocument>
 
   constructor(serverUrl: string, {
     connect = true,
     resyncInterval = -1,
     maxBackoffTime = 2500,
     jwt = undefined,
-    version = ''
-  }: { version?: string; jwt?: string, connect?: boolean; params?: { [s: string]: string }; WebSocketPolyfill?: typeof WebSocket; resyncInterval?: number; maxBackoffTime?: number; disableBc?: boolean } = {}) {
+    version = '',
+    registry
+  }: { version?: string; jwt?: string, connect?: boolean; params?: { [s: string]: string }; WebSocketPolyfill?: typeof WebSocket; resyncInterval?: number; maxBackoffTime?: number; disableBc?: boolean; registry?: Map<string, import('./sharedEntities/syncableDocument').SyncableDocument> } = {}) {
     super()
     this.url = serverUrl
     this.maxBackoffTime = maxBackoffTime
@@ -245,6 +241,7 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
     this._synced = false
     this.ws = null
     this.wsLastMessageReceived = 0
+    this.registry = registry
     this.shouldConnect = connect
     this._resyncInterval = 0
     this.authenticated = false
@@ -265,7 +262,7 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
     }
   }
 
-  sendSyncStep1(doc: SharedEntity) {
+  sendSyncStep1(doc: SyncableEntity) {
     const encoder = encoding.createEncoder()
     encoding.writeVarUint(encoder, MESSAGE_MULTIPLEX_SYNC)
     encoding.writeVarUint(encoder, SYNC_STEP_1)
@@ -275,7 +272,7 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
     this.sendMessage(encoding.toUint8Array(encoder))
   }
 
-  sendSyncStep2(doc: SharedEntity, vector?: Uint8Array) {
+  sendSyncStep2(doc: SyncableEntity, vector?: Uint8Array) {
     const encoder = encoding.createEncoder()
     encoding.writeVarUint(encoder, MESSAGE_MULTIPLEX_SYNC)
     encoding.writeVarUint(encoder, SYNC_STEP_2)
@@ -285,7 +282,7 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
     this.sendMessage(encoding.toUint8Array(encoder))
   }
 
-  sendUpdate(doc: SharedEntity, update: Uint8Array) {
+  sendUpdate(doc: SyncableEntity, update: Uint8Array) {
     const encoder = encoding.createEncoder()
     encoding.writeVarUint(encoder, MESSAGE_MULTIPLEX_SYNC)
     encoding.writeVarUint(encoder, UPDATE)
@@ -305,7 +302,7 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
     this.sendMessage(encoding.toUint8Array(encoder))
   }
 
-  sendNewDocument(doc: SharedEntity, tempId: string, folderKey?: string) {
+  sendNewDocument(doc: SyncableEntity, tempId: string, folderKey?: string) {
     const encoder = encoding.createEncoder()
     encoding.writeVarUint(encoder, MESSAGE_MULTIPLEX_SYNC)
     encoding.writeVarUint(encoder, NEW_DOCUMENT)
@@ -386,7 +383,6 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
           const doc = new Y.Doc()
           Y.applyUpdate(doc, update)
 
-          // correct hash for folders
           const docs = Array.from(doc.getMap("documents"))
           if (docs.length > 0) {
             const serialized = serialize(Array.from(docs))

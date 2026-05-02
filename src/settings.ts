@@ -27,7 +27,6 @@ const fetchShareUsage = async (plugin: PeerdraftPlugin): Promise<ShareUsageRespo
     });
     return response.json as ShareUsageResponse;
   } catch (e) {
-    console.error("Error fetching share usage:", e);
     return null;
   }
 };
@@ -43,7 +42,7 @@ export interface Settings {
   name: string,
   oid: string,
   plan: {
-    type: string  // Display name from backend (e.g., "Free", "Hobby", "Pro", "Business")
+    type: string
     email?: string
   },
   root: string,
@@ -88,7 +87,7 @@ const FORCE_SETTINGS: Partial<Settings> = {
     sync: "ws://localhost:5173/sync",
     signaling: "ws://localhost:5173/signal",
     actives: "ws://localhost:5173/actives"
-  */
+    */
   basePath: "https://www.peerdraft.app",
   subscriptionAPI: "https://www.peerdraft.app/subscription",
   connectAPI: "https://www.peerdraft.app/subscription/connect",
@@ -223,7 +222,6 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
     div.createSpan({ text: " plan." })
     el.createEl("p")
 
-    // Display share usage
     const usageDiv = el.createEl("div", { text: "Loading share usage..." })
     fetchShareUsage(plugin).then(usage => {
       if (usage) {

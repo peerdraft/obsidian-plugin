@@ -14,6 +14,8 @@ export abstract class SharedEntity {
   protected _webRTCProvider?: WebrtcProvider
   protected _webRTCTimeout: number | null = null
 
+  // DEPRECATED: No longer set by SharedDocument or SharedFolder — they delegate
+  // to _syncable.indexedDBProvider. Kept for backward compat; remove when safe.
   protected _indexedDBProvider?: IndexeddbPersistence
 
   protected static _sharedEntites: Array<SharedEntity>;
@@ -65,22 +67,18 @@ export abstract class SharedEntity {
 
   constructor(public plugin: PeerDraftPlugin) {}
   
-  /**
-   * Initialize the Y.Doc with default values
-   * Should be called by subclasses after the Y.Doc is created
-   */
+  // Initialize Y.Doc with default values. Called by subclasses.
   protected initializeYDoc() {
-    // Base implementation does nothing
-    // Subclasses should override this to initialize their Y.Doc
+    // Base implementation does nothing. Subclasses override this.
   }
 
   abstract calculateHash (): string
 
-  initServerYDoc(folderKey?: string) {
+  async initServerYDoc(folderKey?: string): Promise<string> {
     return new Promise<string>(resolve => {
       const tempId = createRandomId()
-      const handler = (serverTempId: string, id: string, checksum: string) => {
-        if (serverTempId === tempId) {
+      const handler = (confirmedTempId: string, id: string, checksum: string) => {
+        if (confirmedTempId === tempId) {
           this.plugin.serverSync.off('new-doc-confirmed', handler)
           this._shareId = id
           resolve(checksum)
@@ -132,6 +130,8 @@ export abstract class SharedEntity {
     this._webRTCProvider = undefined
   }
 
+  // DEPRECATED: This is now a no-op because _indexedDBProvider is never set
+  // by subclasses. SharedDocument/SharedFolder call _syncable.stopIndexedDBSync().
   async stopIndexedDBSync() {
     if (!this._indexedDBProvider) return
     await this._indexedDBProvider.destroy()

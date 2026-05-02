@@ -29,3 +29,30 @@ export const serialize = (obj: any): string => {
   }
   return `${JSON.stringify(obj)}`
 }
+
+export const checkIndexedDBAlreadyExists = async (dbName: string): Promise<boolean> => {
+  if (typeof indexedDB?.databases === 'function') {
+    try {
+      const dbs = await indexedDB.databases()
+      return dbs.some(db => db.name === dbName)
+    } catch (error) {
+    }
+  }
+
+  return new Promise((resolve) => {
+    let existed = true
+    const request = indexedDB.open(dbName)
+    request.onupgradeneeded = () => {
+      existed = false
+    }
+    request.onsuccess = () => {
+      const db = request.result
+      db.close()
+      if (!existed) {
+        indexedDB.deleteDatabase(dbName)
+      }
+      resolve(existed)
+    }
+    request.onerror = () => resolve(false)
+  })
+}

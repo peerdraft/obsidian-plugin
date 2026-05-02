@@ -13,16 +13,38 @@ import { getLeafIdsByPath } from '../workspace/peerdraftWorkspace';
 import { SharedEntity } from './sharedEntity';
 import * as path from 'path';
 import { IndexeddbPersistence } from 'y-indexeddb';
-import { addIsSharedClass, removeIsSharedClass } from 'src/workspace/explorerView';
+import { addIsSharedClass, removeIsSharedClass, setStatusClass, removeStatusClass } from 'src/workspace/explorerView';
 import { SharedFolder } from './sharedFolder';
 import { Mutex } from 'async-mutex';
-import { diff, diffCleanupEfficiency } from 'diff-match-patch-es'
 import { add, getDocByPath, moveDoc, removeDoc } from 'src/permanentShareStoreFS';
 import { openLoginModal } from 'src/ui/login';
 import { promptForText } from 'src/ui/enterText';
 import { addCanvasToYDoc, applyDataChangesToDoc, diffCanvases, yDocToCanvasJSON } from './canvas';
 import { addCanvasExtension, type CanvasView, type Node } from 'src/ui/canvas';
 import JSONC from "tiny-jsonc"
+import { SyncableDocument, type SyncableFileIO, type SyncableClock } from './syncableDocument';
+
+class VaultFileIO implements SyncableFileIO {
+  constructor(private file: TFile, private plugin: PeerDraftPlugin) {}
+
+  async read(): Promise<string> {
+    return await this.plugin.app.vault.read(this.file)
+  }
+
+  async modify(content: string, opts?: { mtime?: number }): Promise<void> {
+    await this.plugin.app.vault.modify(this.file, content, opts)
+  }
+
+  getMTime(): number {
+    return this.file.stat.mtime
+  }
+}
+
+class RealClock implements SyncableClock {
+  now(): number {
+    return Date.now()
+  }
+}
 
 export class SharedDocument extends SharedEntity {
 
@@ -34,12 +56,27 @@ export class SharedDocument extends SharedEntity {
   private _extensions: PeerdraftRecord<Compartment>
   private _canvasExtenstions: PeerdraftRecord<() => any>
 
+  private _initializationGuardPassed = false
+  private _initializationGuardMutex = new Mutex()
+  private _vaultModifyListenerRegistered = false
+
+  get initializationGuardPassed(): boolean {
+    return this._initializationGuardPassed
+  }
+
   private statusBarEntry?: HTMLElement
 
   protected static _sharedEntites: Array<SharedDocument> = new Array<SharedDocument>()
 
-  private mutex = new Mutex
-  private lastUpdateTriggeredByDocChange: number
+  private _syncable!: SyncableDocument
+
+  override get indexedDBProvider(): IndexeddbPersistence | undefined {
+    return this._syncable?.indexedDBProvider
+  }
+
+  get syncable(): SyncableDocument {
+    return this._syncable
+  }
 
   isCanvas: boolean
 
@@ -62,9 +99,8 @@ export class SharedDocument extends SharedEntity {
   }
 
   static async fromPermanentShareDocument(pd: PermanentShareDocument, plugin: PeerDraftPlugin) {
+    if (this.findById(pd.shareId)) return
     if (this.findByPath(pd.path)) return
-    //let fileAlreadyThere = false
-    // check if path exists
     let file = plugin.app.vault.getAbstractFileByPath(normalizePath(pd.path))
     if (!file) {
       showNotice("File " + pd.path + " not found. Creating it now.")
@@ -74,26 +110,26 @@ export class SharedDocument extends SharedEntity {
         showNotice("Error creating file " + pd.path + ".")
         return
       }
-      // fileAlreadyThere = true
     }
 
     const doc = new SharedDocument({
       path: pd.path
     }, plugin)
-    doc._isPermanent = true
-    doc._shareId = pd.shareId
+    doc.setIsPermanentInternal(true)
+    doc.setShareIdInternal(pd.shareId)
     doc.isCanvas = "canvas" === (file as TFile).extension
-    if (doc.isCanvas) {
-      doc.setupFileSyncForCanvas()
-    } else {
-      doc.setupFileSyncForContent()
-    }
+    doc._syncable._setIsNewDocument(false)
+
+    doc._setupInitializationGuard()
+    doc._setupStatusIndicatorSubscriptions()
     await doc.startIndexedDBSync()
-    //if (fileAlreadyThere) {
+    if (doc.indexedDBProvider) {
+      if (!doc.indexedDBProvider.synced) await doc.indexedDBProvider.whenSynced
+    }
     doc.syncWithServer()
-    //}
     plugin.activeStreamClient.add([doc.shareId])
-    addIsSharedClass(doc.path, plugin)
+    doc._syncable._setNewDocConfirmed(true)
+
     return doc
   }
 
@@ -120,8 +156,6 @@ export class SharedDocument extends SharedEntity {
       id,
       yDoc
     }, plugin)
-
-    // wait for first update to make sure it works and to get the filename
 
     await new Promise<void>((resolve) => {
       doc.startWebRTCSync()
@@ -156,15 +190,17 @@ export class SharedDocument extends SharedEntity {
     const filePath = path.join(parent, initialFileName)
     const folder = await SharedFolder.getOrCreatePath(path.dirname(filePath), plugin)
     const file = await plugin.app.vault.create(filePath, doc.getValue())
-    addIsSharedClass(file.path, plugin)
     doc._file = file
     doc._path = file.path
+    doc._syncable.setFileIO(new VaultFileIO(file, plugin))
 
     if (isPermanent) {
-      doc._isPermanent = true
+      doc.setIsPermanentInternal(true)
       await add(doc, plugin)
       await doc.startIndexedDBSync()
       plugin.activeStreamClient.add([doc.shareId])
+    } else {
+      await doc._updateWebRTCStatusIndicator()
     }
 
     const leaf = await openFileInNewTab(file, plugin.app.workspace)
@@ -199,13 +235,19 @@ export class SharedDocument extends SharedEntity {
       doc.setupFileSyncForContent
     }
     doc._path = normalizedPath
-    const file = await plugin.app.vault.create(normalizedPath, doc.getValue())
+    const existingFile = plugin.app.vault.getAbstractFileByPath(normalizedPath)
+    const file = existingFile instanceof TFile
+      ? existingFile
+      : await plugin.app.vault.create(normalizedPath, doc.getValue())
     doc._file = file
+    doc._syncable.setFileIO(new VaultFileIO(file, plugin))
 
     doc.syncWithServer()
     await doc.setPermanent()
+    doc._setupInitializationGuard()
+    doc._setupStatusIndicatorSubscriptions()
+    doc._updateStatusIndicator()
     await doc.startIndexedDBSync()
-    addIsSharedClass(doc.path, plugin)
   }
 
 
@@ -253,10 +295,14 @@ export class SharedDocument extends SharedEntity {
     if (opts.permanent) {
       await doc.initServerYDoc(opts.folder)
       await doc.setPermanent()
-      // doc.startWebSocketSync()
       doc.startIndexedDBSync()
+      doc._syncable._setIsNewDocument(true)
+      doc._setupInitializationGuard()
+      doc._setupStatusIndicatorSubscriptions()
+      doc.syncWithServer()
+      await doc._updateStatusIndicator()
     } else {
-      doc._shareId = await plugin.serverSync.createNewSession()
+      doc.setShareIdInternal(await plugin.serverSync.createNewSession())
     }
 
     for (const id of leafIds) {
@@ -264,9 +310,10 @@ export class SharedDocument extends SharedEntity {
     }
 
     showNotice(`Inititialized share for ${file.path}`)
-    addIsSharedClass(file.path, plugin)
+    if (!opts.permanent) {
+      await doc._updateWebRTCStatusIndicator()
+    }
 
-    // Add author property if configured
     if (opts.folder) {
       const folder = SharedFolder.findById(opts.folder)
       if (folder) {
@@ -307,10 +354,8 @@ export class SharedDocument extends SharedEntity {
         this._file = file
         if (file.extension === "canvas") {
           this.isCanvas = true
-          this.setupFileSyncForCanvas()
         } else {
           this.isCanvas = false
-          this.setupFileSyncForContent()
         }
       } else {
         showNotice("ERROR creating sharedDoc")
@@ -319,20 +364,18 @@ export class SharedDocument extends SharedEntity {
     if (opts.id) {
       this._shareId = opts.id
     }
-    const pendingUpdates: Array<Uint8Array> = []
 
-    const sendUpdates = debounce(() => {
-      this.mutex.runExclusive(() => {
-        plugin.serverSync.sendUpdate(this, Y.mergeUpdates(pendingUpdates))
-        pendingUpdates.length = 0
-      })
-    }, 1000, true)
-
-    this.yDoc.on("update", (update: Uint8Array, origin: any, yDoc: Y.Doc, tr: Y.Transaction) => {
-      if (tr.local && this.isPermanent) {
-        pendingUpdates.push(update)
-        sendUpdates()
-      }
+    const fileIO = this._file ? new VaultFileIO(this._file, plugin) : undefined
+    const clock = new RealClock()
+    this._syncable = new SyncableDocument({
+      yDoc: this.yDoc,
+      shareId: this._shareId,
+      isPermanent: this._isPermanent ?? false,
+      serverSync: plugin.serverSync,
+      fileIO,
+      clock,
+      editorAttachedCount: () => this._extensions.size,
+      logger: { log: (...args: unknown[]) => plugin.log(args.map((a) => String(a)).join(' ')) }
     })
 
     SharedDocument._sharedEntites.push(this)
@@ -356,22 +399,27 @@ export class SharedDocument extends SharedEntity {
 
     this._canvasExtenstions = new PeerdraftRecord<any>()
 
-    // addIsSharedClass(this.path, this.plugin)
   }
 
 
   setupFileSyncForCanvas() {
+    if (this._vaultModifyListenerRegistered) {
+      return
+    }
+
+    const canvasMutex = new Mutex()
+    let lastCanvasUpdateMtime = 0
 
     const updateFile = debounce(() => {
-      this.mutex.runExclusive(async () => {
+      canvasMutex.runExclusive(async () => {
         const yCanvas = yDocToCanvasJSON(this.yDoc)
         const fileContent = await this.plugin.app.vault.read(this._file)
         const fileCanvas = JSONC.parse(fileContent || '{}')
         const diffs = diffCanvases(fileCanvas, yCanvas)
         if (diffs.length != 0) {
-          this.lastUpdateTriggeredByDocChange = new Date().valueOf()
+          lastCanvasUpdateMtime = new Date().valueOf()
           await this.plugin.app.vault.modify(this._file, JSON.stringify(yCanvas), {
-            mtime: this.lastUpdateTriggeredByDocChange
+            mtime: lastCanvasUpdateMtime
           })
         }
       })
@@ -384,85 +432,125 @@ export class SharedDocument extends SharedEntity {
     })
 
     this.plugin.registerEvent(this.plugin.app.vault.on("modify", async (file) => {
-      if (this.file === file && this.file.stat.mtime != this.lastUpdateTriggeredByDocChange && this._canvasExtenstions.size === 0) {
-        // check if document and content actually are out of sync
-        this.mutex.runExclusive(async () => {
-
+      if (this.file === file && this.file.stat.mtime != lastCanvasUpdateMtime && this._canvasExtenstions.size === 0) {
+        canvasMutex.runExclusive(async () => {
           const fileContent = await this.plugin.app.vault.read(this._file)
-
           applyDataChangesToDoc(JSONC.parse(fileContent || '{}'), this.yDoc)
-
         })
       }
     }))
+
+    this._vaultModifyListenerRegistered = true
   }
 
 
   setupFileSyncForContent() {
+    if (this._vaultModifyListenerRegistered) {
+      return
+    }
 
-    const updateFile = debounce(() => {
-      this.mutex.runExclusive(async () => {
-        const yDocContent = this.getValue()
+    this.plugin.registerEvent(this.plugin.app.vault.on("modify", async (file) => {
+      if (this.file === file) {
         const fileContent = await this.plugin.app.vault.read(this._file)
-        if (yDocContent != fileContent) {
-          this.lastUpdateTriggeredByDocChange = new Date().valueOf()
-          await this.plugin.app.vault.modify(this._file, yDocContent, {
-            mtime: this.lastUpdateTriggeredByDocChange
-          })
-        }
-      })
-    }, 1000, true)
+        await this._syncable.reconcileWithFileContent(fileContent)
+      }
+    }))
+    this._vaultModifyListenerRegistered = true
+  }
 
-    this.getContentFragment().observe(async () => {
-      if (this._file && this._extensions.size === 0) {
-        updateFile()
+  private _checkInitializationGuard(): boolean {
+    return this._syncable.serverSynced || (this._syncable.indexedDBLoaded && !this._syncable.indexedDBWasEmpty)
+  }
+
+  private _setupInitializationGuard() {
+    const handleGuardConditionMet = async () => {
+      const release = await this._initializationGuardMutex.acquire()
+      try {
+        if (this._initializationGuardPassed) return
+        this._initializationGuardPassed = true
+
+        if (this.isCanvas) {
+          this.setupFileSyncForCanvas()
+        } else {
+          this.setupFileSyncForContent()
+        }
+
+        const leafIds = getLeafIdsByPath(this.path, this.plugin.pws.markdown)
+        if (leafIds.length > 0) {
+          for (const id of leafIds) {
+            this.addExtensionToLeaf(id)
+          }
+        } else {
+          const fileContent = await this.plugin.app.vault.read(this._file)
+          await this._syncable.reconcileWithFileContent(fileContent)
+        }
+
+        if (this.isPermanent) {
+          this._updateStatusIndicator()
+        }
+      } finally {
+        release()
+      }
+    }
+
+    const indexedDBHandler = (data: { wasEmpty: boolean }) => {
+      if (this._checkInitializationGuard()) {
+        handleGuardConditionMet()
+      }
+    }
+    this._syncable.on('indexedDBLoaded', indexedDBHandler)
+
+    const serverSyncedHandler = () => {
+      if (this._checkInitializationGuard()) {
+        handleGuardConditionMet()
+      }
+    }
+    this._syncable.on('serverSynced', serverSyncedHandler)
+
+    const syncStateChangedHandler = () => {
+      if (this._checkInitializationGuard() && !this._initializationGuardPassed) {
+        handleGuardConditionMet()
+      }
+      if (this.isPermanent && this._initializationGuardPassed) {
+        this._updateStatusIndicator()
+      }
+    }
+    this._syncable.on('syncStateChanged', syncStateChangedHandler)
+  }
+
+  private _setupStatusIndicatorSubscriptions() {
+    this.plugin.serverSync.on('status', () => {
+      if (this.isPermanent) {
+        this._updateStatusIndicator()
       }
     })
 
-    this.plugin.registerEvent(this.plugin.app.vault.on("modify", async (file) => {
-      // only react to changes of this file, and only if it didn't happen within the editor.
-      // The editor extension takes care of updates in that case.
-      if (this.file === file && this._extensions.size === 0 && this.file.stat.mtime != this.lastUpdateTriggeredByDocChange) {
-        // check if document and content actually are out of sync
-        this.mutex.runExclusive(async () => {
-          const yDocContent = this.getValue()
-          const fileContent = await this.plugin.app.vault.read(this._file)
-          if (yDocContent != fileContent) {
-            const diffs = diff(yDocContent, fileContent)
-            diffCleanupEfficiency(diffs)
-            const content = this.getContentFragment()
-            let pos = 0
-            this.yDoc.transact(() => {
-              for (const diff of diffs) {
-                const text = diff[1] as string
-                const length = text.length
-                switch (diff[0]) {
-                  // keep
-                  case 0:
-                    {
-                      pos += length
-                    }
-                    break;
-                  // remove
-                  case -1:
-                    {
-                      content.delete(pos, length)
-                    }
-                    break;
-                  // add
-                  case 1:
-                    {
-                      content.insert(pos, text)
-                      pos += length
-                    }
-                    break;
-                }
-              }
-            })
-          }
-        })
+    this._syncable.on('syncStateChanged', () => {
+      if (this.isPermanent) {
+        this._updateStatusIndicator()
       }
-    }))
+    })
+  }
+
+  private async _updateStatusIndicator() {
+    const status = this.getSyncStatus()
+    await setStatusClass(this.path, this.plugin, status)
+  }
+
+  private async _updateWebRTCStatusIndicator() {
+    const status = this.getWebRTCStatus()
+    await setStatusClass(this.path, this.plugin, status)
+  }
+
+  private getWebRTCStatus(): 'disconnected' | 'connected' | 'not-initialized' {
+    if (!this._webRTCProvider) {
+      return 'not-initialized'
+    }
+
+    const states = this._webRTCProvider.awareness.getStates()
+    const peerCount = states.size - 1 // Exclude self
+    
+    return peerCount > 0 ? 'connected' : 'disconnected'
   }
 
   get file() {
@@ -470,8 +558,38 @@ export class SharedDocument extends SharedEntity {
   }
 
   calculateHash() {
-    const text = this.getContentFragment().toString()
-    return calculateHash(text)
+    return this._syncable.calculateHash()
+  }
+
+  private setShareIdInternal(id: string) {
+    this._shareId = id
+    this._syncable?.setShareId(id)
+  }
+
+  private setIsPermanentInternal(value: boolean) {
+    this._isPermanent = value
+    this._syncable?.setPermanent(value)
+  }
+
+  async initServerYDoc(folderKey?: string) {
+    return new Promise<string>(resolve => {
+      const tempId = generateRandomString()
+      const handler = (confirmedTempId: string, id: string, checksum: string) => {
+        if (confirmedTempId === tempId) {
+          this.plugin.serverSync.off('new-doc-confirmed', handler)
+          this._syncable._setNewDocConfirmed(true)
+          this._shareId = id
+          this._syncable.setShareId(id)
+          resolve(checksum)
+        }
+      }
+      this.plugin.serverSync.on('new-doc-confirmed', handler)
+      this.plugin.serverSync.sendNewDocument(this, tempId, folderKey)
+    })
+  }
+
+  syncWithServer() {
+    return this._syncable.syncWithServer()
   }
 
   startWebRTCSync() {
@@ -479,19 +597,15 @@ export class SharedDocument extends SharedEntity {
       provider.awareness.on("update", async (msg: { added: Array<number>, removed: Array<number> }) => {
         const removed = msg.removed ?? [];
         if (removed && removed.length > 0) {
-          const removedStrings = removed.map((id) => {
-            return id.toFixed(0);
-          });
-
+          const removedStrings = removed.map((n) => n.toString())
           const owner = this.getOwnerFragment().toString()
           if (owner != provider.awareness.clientID.toString()) {
             if (removedStrings.includes(owner) && !this.isPermanent) {
               showNotice("Shared session for " + this.path + " stopped by owner")
-              await this.unshare()
+              this.unshare()
             }
           }
         }
-
 
         const added = msg.added ?? [];
         if (added && added.length > 0) {
@@ -503,33 +617,13 @@ export class SharedDocument extends SharedEntity {
             }
           }
         }
-      })
 
-
-      /*
-      if (!this._webRTCTimeout) {
-
-        const handleTimeout = () => {
-          if (this._extensions.size > 0 || getLeafIdsByPath(this.path, this.plugin.pws).length > 0) {
-            this._webRTCTimeout = window.setTimeout(handleTimeout, 60000)
-          } else {
-            this.stopWebRTCSync()
-          }
+        // Update status indicator for non-permanent documents
+        if (!this.isPermanent) {
+          await this._updateWebRTCStatusIndicator()
         }
-
-        this._webRTCTimeout = window.setTimeout(handleTimeout, 60000)
-
-        provider.doc.on('update', async (update: Uint8Array, origin: any, doc: Y.Doc, tr: Y.Transaction) => {
-          if (this._webRTCTimeout != null) {
-            window.clearTimeout(this._webRTCTimeout)
-          }
-          this._webRTCTimeout = window.setTimeout(handleTimeout, 60000)
-        })
-      }
-      */
-
+      })
     })
-
   }
 
   async setNewFileLocation(file: TFile) {
@@ -542,12 +636,12 @@ export class SharedDocument extends SharedEntity {
     }
     await moveDoc(oldPath, file.path, this.plugin)
     removeIsSharedClass(oldPath, this.plugin)
-    addIsSharedClass(this.path, this.plugin)
+    this._updateStatusIndicator()
   }
 
   async setPermanent() {
     if (!this._isPermanent) {
-      this._isPermanent = true
+      this.setIsPermanentInternal(true)
       await add(this, this.plugin)
       this.plugin.activeStreamClient.add([this.shareId])
     }
@@ -555,6 +649,43 @@ export class SharedDocument extends SharedEntity {
 
   get isPermanent() {
     return this._isPermanent
+  }
+
+  getSyncStatus(): 'offline' | 'syncing' | 'insync' | 'warning' | 'not-initialized' {
+    const wsconnected = this.plugin.serverSync.wsconnected
+    const serverSyncing = this._syncable.serverSyncing
+    const serverSynced = this._syncable.serverSynced
+    const indexedDBWasEmpty = this._syncable.indexedDBWasEmpty
+    const isNewDocument = this._syncable.isNewDocument
+
+    if (!wsconnected && !serverSynced && (!this._syncable.indexedDBLoaded || indexedDBWasEmpty)) {
+      return 'warning'
+    }
+
+    if (isNewDocument && this.isPermanent) {
+      return 'syncing'
+    }
+
+    if (!wsconnected) {
+      if (!this._initializationGuardPassed) {
+        return 'not-initialized'
+      }
+      return 'offline'
+    }
+
+    if (!this._initializationGuardPassed) {
+      return 'syncing'
+    }
+
+    if (serverSyncing) {
+      return 'syncing'
+    }
+
+    if (serverSynced) {
+      return 'insync'
+    }
+
+    return 'offline'
   }
 
   getValue() {
@@ -574,28 +705,20 @@ export class SharedDocument extends SharedEntity {
     return this.yDoc.getText("owner")
   }
 
-  async startIndexedDBSync() {
-    if (this._indexedDBProvider) return this._indexedDBProvider
+  async startIndexedDBSync(): Promise<IndexeddbPersistence | undefined> {
+    if (this._syncable.indexedDBProvider) return this._syncable.indexedDBProvider
     const id = (getDocByPath(this.path, this.plugin))?.persistenceId
     if (!id) return
-    const provider = new IndexeddbPersistence(SharedEntity.DB_PERSISTENCE_PREFIX + id, this.yDoc)
-    this._indexedDBProvider = provider
-    if (!provider.synced) await provider.whenSynced
-
-    return this._indexedDBProvider
+    const provider = await this._syncable.startIndexedDBSync(id)
+    return provider
   }
 
   addExtensionToLeaf(leafId: string) {
-    // only makes sense if we have a webrct provider to sync with
     const webRTCProvider = this.startWebRTCSync()
     if (!webRTCProvider) return
-    // already there
     if (this._extensions.get(leafId)) return
-    // need a pleaf
     const pLeaf = this.plugin.pws.markdown.get(leafId)
     if (!pLeaf) return
-
-    // path needs to match
 
     if (pLeaf.path != this._path) return
     if (pLeaf.isPreview) {
@@ -624,13 +747,8 @@ export class SharedDocument extends SharedEntity {
 
     this._extensions.set(leafId, compartment)
 
-    // remove if switch to preview
     pLeaf.once("changeIsPreview", () => {
       this.removeExtensionFromLeaf(leafId)
-      // add again if switched back
-      pLeaf.once("changeIsPreview", () => {
-        this.addExtensionToLeaf(leafId)
-      })
     })
 
     return Compartment
@@ -656,15 +774,11 @@ export class SharedDocument extends SharedEntity {
   }
 
   addCanvasExtensionToLeaf(leafId: string) {
-    // only makes sense if we have a webrct provider to sync with
     const webRTCProvider = this.startWebRTCSync()
     if (!webRTCProvider) return
-    // already there
     if (this._canvasExtenstions.get(leafId)) return
-    // need a pcanvas
     const pCanvas = this.plugin.pws.canvas.get(leafId)
     if (!pCanvas) return
-    // path needs to match
 
     if (pCanvas.path != this._path) return
     const leaf = this.plugin.app.workspace.getLeafById(leafId)
@@ -691,14 +805,10 @@ export class SharedDocument extends SharedEntity {
   }
 
   addExtensionToCanvasFileNode(node: Node) {
-    // only makes sense if we have a webrct provider to sync with
     const webRTCProvider = this.startWebRTCSync()
     if (!webRTCProvider) return
-    // already there
     if (this._extensions.get(node.id)) return
-    // path needs to match
     if (node.file.path != this._path) return
-    // there needs to be an editor
     const editor = node.child?.editor
     if (!editor) return
     editor.setValue(this.getValue())
@@ -765,11 +875,12 @@ export class SharedDocument extends SharedEntity {
     if (dbEntry) {
       removeDoc(this.path, this.plugin)
     }
-    if (this._indexedDBProvider) {
-      await this._indexedDBProvider.clearData()
+    if (this._syncable.indexedDBProvider) {
+      await this._syncable.indexedDBProvider.clearData()
+      await this._syncable.indexedDBProvider.destroy()
     }
     this.destroy()
-    removeIsSharedClass(this.path, this.plugin)
+    await removeStatusClass(this.path, this.plugin)
   }
 
   getShareURL() {
@@ -787,22 +898,18 @@ export class SharedDocument extends SharedEntity {
 
         if (fm[name] !== undefined) {
           if (Array.isArray(fm[name])) {
-            // Property exists as array - check for duplicates and append
             const existingArray = fm[name] as string[]
             const normalizedArray = existingArray.map(v => v.trim().toLowerCase())
             if (!normalizedArray.includes(trimmedValue.toLowerCase())) {
               existingArray.push(trimmedValue)
             }
           } else {
-            // Property exists as string - convert to array
             fm[name] = [fm[name], trimmedValue]
           }
         } else {
-          // Property doesn't exist - create array
           fm[name] = [trimmedValue]
         }
       } else {
-        // Default string behavior - overwrite
         fm[name] = value
       }
     })
@@ -831,8 +938,12 @@ export class SharedDocument extends SharedEntity {
       this.removeExtensionFromLeaf(key)
     }
     this._extensions.destroy()
+    this._syncable.destroy()
     super.destroy()
     this.removeStatusStatusBarEntry()
+
+    this._initializationGuardPassed = false
+    this._vaultModifyListenerRegistered = false
     SharedDocument._sharedEntites.splice(SharedDocument._sharedEntites.indexOf(this), 1)
   }
 }

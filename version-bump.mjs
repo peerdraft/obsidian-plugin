@@ -13,6 +13,11 @@ const runCommand = (command) => {
   execSync(command, { stdio: "inherit" });
 };
 
+// Helper to get current git branch
+const getCurrentBranch = () => {
+  return execSync('git branch --show-current', { encoding: 'utf8' }).trim();
+};
+
 // Helper to update JSON files
 const updateJsonFile = (filePath, updateFn) => {
   const json = JSON.parse(readFileSync(filePath, "utf8"));
@@ -21,20 +26,32 @@ const updateJsonFile = (filePath, updateFn) => {
   console.log(`Updated: ${filePath}`);
 };
 
-// Calculate the next version based on bump type
-const getNextVersion = (currentVersion, bumpType) => {
+// Calculate the next version based on bump type and optional pre-release
+const getNextVersion = (currentVersion, bumpType, preReleaseType = null, preReleaseNumber = null) => {
   let [major, minor, patch] = currentVersion.split(".").map(Number);
 
   switch (bumpType.toLowerCase()) {
     case 'major':
-      return `${major + 1}.0.0`;
+      major += 1;
+      minor = 0;
+      patch = 0;
+      break;
     case 'minor':
-      return `${major}.${minor + 1}.0`;
+      minor += 1;
+      patch = 0;
+      break;
     case 'patch':
-      return `${major}.${minor}.${patch + 1}`;
+      patch += 1;
+      break;
     default:
       throw new Error(`Invalid bump type: ${bumpType}. Must be 'major', 'minor', or 'patch'`);
   }
+
+  const baseVersion = `${major}.${minor}.${patch}`;
+  if (preReleaseType && preReleaseNumber !== null) {
+    return `${baseVersion}-${preReleaseType}.${preReleaseNumber}`;
+  }
+  return baseVersion;
 };
 
 // Paths to files
@@ -58,9 +75,76 @@ const promptBumpType = async () => {
   }
 };
 
+// Prompt user for release type (stable vs pre-release)
+const promptReleaseType = async () => {
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+
+  try {
+    const answer = await rl.question('Is this a stable release or pre-release? (stable/pre): ');
+    const releaseType = answer.trim().toLowerCase();
+    if (releaseType === 'pre' || releaseType === 'prerelease') {
+      return 'pre';
+    }
+    return 'stable';
+  } finally {
+    rl.close();
+  }
+};
+
+// Prompt user for pre-release type
+const promptPreReleaseType = async () => {
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+
+  try {
+    const answer = await rl.question('Enter pre-release type (alpha/beta/rc): ');
+    return answer.trim().toLowerCase();
+  } finally {
+    rl.close();
+  }
+};
+
+// Prompt user for pre-release number
+const promptPreReleaseNumber = async () => {
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+
+  try {
+    const answer = await rl.question('Enter pre-release number (e.g., 1, 2, 3): ');
+    return parseInt(answer.trim(), 10);
+  } finally {
+    rl.close();
+  }
+};
+
 // Main function
 const main = async () => {
   try {
+    // Check current branch
+    const currentBranch = getCurrentBranch();
+    console.log(`Current branch: ${currentBranch}`);
+
+    // Get release type from user
+    const releaseType = await promptReleaseType();
+    console.log(`Release type: ${releaseType}`);
+
+    // Validate branch based on release type
+    if (releaseType === 'stable' && currentBranch !== 'main') {
+      console.error('Error: Stable releases must be created from the main branch. Current branch:', currentBranch);
+      process.exit(1);
+    }
+    if (releaseType === 'pre' && currentBranch !== 'next') {
+      console.error('Error: Pre-releases must be created from the next branch. Current branch:', currentBranch);
+      process.exit(1);
+    }
+
     // Get bump type from user
     const bumpType = await promptBumpType();
     if (!['major', 'minor', 'patch'].includes(bumpType)) {
@@ -68,12 +152,28 @@ const main = async () => {
       process.exit(1);
     }
 
+    // For pre-releases, get pre-release type and number
+    let preReleaseType = null;
+    let preReleaseNumber = null;
+    if (releaseType === 'pre') {
+      preReleaseType = await promptPreReleaseType();
+      if (!['alpha', 'beta', 'rc'].includes(preReleaseType)) {
+        console.error('Error: Invalid pre-release type. Must be one of: alpha, beta, rc');
+        process.exit(1);
+      }
+      preReleaseNumber = await promptPreReleaseNumber();
+      if (isNaN(preReleaseNumber) || preReleaseNumber < 1) {
+        console.error('Error: Invalid pre-release number. Must be a positive integer');
+        process.exit(1);
+      }
+    }
+
     // Step 1: Read the current version from package.json
     const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8"));
     const currentVersion = packageJson.version;
-    const nextVersion = getNextVersion(currentVersion, bumpType);
+    const nextVersion = getNextVersion(currentVersion, bumpType, preReleaseType, preReleaseNumber);
 
-    console.log(`Bumping version from ${currentVersion} to ${nextVersion} (${bumpType} bump)`);
+    console.log(`Bumping version from ${currentVersion} to ${nextVersion} (${bumpType} bump${releaseType === 'pre' ? `, ${preReleaseType}.${preReleaseNumber}` : ''})`);
 
     // Step 2: Update package.json
     updateJsonFile(packageJsonPath, (json) => {
@@ -103,13 +203,16 @@ const main = async () => {
     runCommand(`git add .`);
     runCommand(`git commit -m "chore: bump ${bumpType} version to ${nextVersion}"`);
     runCommand(`git tag -a ${nextVersion} -m "Version ${nextVersion}"`);
-    runCommand("git push");
-    runCommand("git push --tags");
+    if (releaseType === 'stable') {
+      runCommand("git push");
+      runCommand("git push --tags");
+    }
     // Step 11: Create a new release in GitHub
     const releaseFiles = ["dist/main.js", "dist/manifest.json", "dist/styles.css"];
     const releaseFilesArgs = releaseFiles.map((file) => `${file}`).join(" ");
+    const preReleaseFlag = releaseType === 'pre' ? '--pre-release' : '';
     runCommand(
-      `gh release create ${nextVersion} ${releaseFilesArgs} -t "${nextVersion}" --generate-notes`
+      `gh release create ${nextVersion} ${releaseFilesArgs} -t "${nextVersion}" --generate-notes ${preReleaseFlag}`
     );
 
     console.log(`Version bumped to ${nextVersion} and release created.`);

@@ -1,17 +1,19 @@
+import { Mutex } from 'async-mutex';
 import { TAbstractFile, TFile, TFolder, normalizePath } from "obsidian";
 import * as path from 'path';
 import PeerDraftPlugin from "src/main";
 import { type PermanentShareFolder } from "src/permanentShareStore";
 import { add, getFolderByPath, moveFolder, removeFolder } from "src/permanentShareStoreFS";
+import { promptForText } from "src/ui/enterText";
 import { openLoginModal } from "src/ui/login";
-import { addIsSharedClass, removeIsSharedClass } from "src/workspace/explorerView";
+import { removeIsSharedClass, removeStatusClass, setStatusClass } from "src/workspace/explorerView";
 import { IndexeddbPersistence } from "y-indexeddb";
 import * as Y from 'yjs';
-import { calculateHash, generateRandomString, serialize } from "../tools";
+import { generateRandomString } from "../tools";
 import { showNotice } from "../ui";
 import { SharedDocument } from "./sharedDocument";
 import { SharedEntity } from "./sharedEntity";
-import { promptForText } from "src/ui/enterText";
+import { SyncableFolder } from "./syncableFolder";
 
 const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: SharedFolder, plugin: PeerDraftPlugin) => {
 
@@ -20,7 +22,6 @@ const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: Share
   const changedKeys = ev.changes.keys
 
   changedKeys.forEach(async (data, key) => {
-    plugin.log("Action: " + data.action + "for " + key + " --> " + tx.doc.getMap("documents").get(key) as string)
 
     if (data.action === "add") {
       const relativePath = tx.doc.getMap("documents").get(key) as string
@@ -28,15 +29,10 @@ const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: Share
       const file = plugin.app.vault.getAbstractFileByPath(absolutePath)
       if (file) {
 
-        // safety check if fs already in sync
-
         const existingDoc = SharedDocument.findById(key)
         if (existingDoc) {
           if (existingDoc.file.path === file.path) {
-            // Do nothing.
-            plugin.log("Received update, but FS is already in correct state")
           } else {
-            // should not occur :-(
             showNotice("There is something wrong with your synced file " + file.path + ". Consider re-creating the synced folder from server.")
           }
         } else {
@@ -59,7 +55,6 @@ const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: Share
         showNotice("Document at " + newPath + " doesn't exist in your vault. Consider re-creating the synced folder from server.")
         return
       }
-      plugin.log("Update " + document.path + "   " + key)
       const folder = SharedFolder.getSharedFolderForSubPath(document.path)
       if (!folder) return
       let newAbsolutePath = path.join(folder.root.path, newPath)
@@ -67,10 +62,7 @@ const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: Share
 
       const alreadyExists = SharedDocument.findByPath(newAbsolutePath)
       if (alreadyExists) {
-        // check if in sync already
         if (alreadyExists.shareId === key) {
-          // Do nothing.
-          plugin.log("Received update, but FS is already in correct state.")
         } else {
           showNotice("File " + newPath + " already exists. Renaming local file.")
           const alteredPath = path.join(path.dirname(newPath), path.basename(newPath, path.extname(newPath)) + "_" + generateRandomString() + path.extname(newPath))
@@ -84,7 +76,6 @@ const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: Share
     } else if (data.action === "delete") {
       const document = SharedDocument.findById(key)
       if (!document) return
-      plugin.log("Delete " + document.path + "   " + key)
       const file = plugin.app.vault.getAbstractFileByPath(document.path)
       document.unshare()
       if (!file) return
@@ -98,12 +89,21 @@ export class SharedFolder extends SharedEntity {
   root: TFolder
   protected static _sharedEntites: Array<SharedFolder> = new Array<SharedFolder>()
 
+  private _initializationGuardPassed = false
+  private _initializationGuardMutex = new Mutex()
+
+  // Sync-engine state delegated to composed SyncableFolder instance.
+  private _syncable!: SyncableFolder
+
+  override get indexedDBProvider(): IndexeddbPersistence | undefined {
+    return this._syncable?.indexedDBProvider
+  }
+
   static async fromTFolder(root: TFolder, plugin: PeerDraftPlugin) {
     showNotice(`Inititializing share for ${root.path}.`)
     const sharedFolder = new this(root, plugin)
     const files = sharedFolder.getFilesInFolder(root)
 
-    // check if docs for some of them are already there
     for (const file of files) {
       if (SharedDocument.findByPath(file.path)) {
         showNotice("You can not share a directory that already has shared files in it (right now).")
@@ -116,6 +116,10 @@ export class SharedFolder extends SharedEntity {
       const auth = await openLoginModal(plugin)
       if (!auth) return
     }
+
+    sharedFolder._setupInitializationGuard()
+    sharedFolder._setupStatusIndicatorSubscriptions()
+    sharedFolder._updateStatusIndicator()
 
     const docs = await Promise.all(files.map((file) => {
       return SharedDocument.fromTFile(file, {
@@ -135,11 +139,11 @@ export class SharedFolder extends SharedEntity {
 
     await add(sharedFolder, plugin)
     await sharedFolder.startIndexedDBSync()
+    sharedFolder.syncWithServer()
     sharedFolder.startWebRTCSync()
 
     navigator.clipboard.writeText(plugin.settings.basePath + '/team/' + sharedFolder.shareId)
     showNotice(`Folder ${sharedFolder.path} with ${docs.length} documents shared. URL copied to your clipboard.`, 0)
-    // openFolderOptions(plugin.app, sharedFolder)
     return sharedFolder
   }
 
@@ -187,19 +191,25 @@ export class SharedFolder extends SharedEntity {
       return
     };
 
+    const sFolder = new SharedFolder(folder, plugin, preFetchedDoc)
+    sFolder.setShareIdInternal(id)
+    plugin.activeStreamClient.add([id])
+
+    await add(sFolder, plugin)
+    sFolder._setupInitializationGuard()
+    sFolder._setupStatusIndicatorSubscriptions()
+    sFolder._updateStatusIndicator()
+
     const paths: Array<string> = []
     const documentMap = preFetchedDoc.getMap("documents") as Y.Map<string>
 
     for (const entry of documentMap.entries()) {
       let docPath = entry[1]
       let absPath = path.join(folderPath!, docPath)
-      // repair inconsistent server version
       if (docPath && paths.includes(normalizePath(docPath))) {
-        // sanity check
         const existingDoc = SharedDocument.findById(entry[0])
         if (existingDoc) {
           if (existingDoc.path === absPath) {
-            plugin.log("already synced")
           } else {
             plugin.app.fileManager.renameFile(existingDoc.file, absPath)
           }
@@ -213,17 +223,12 @@ export class SharedFolder extends SharedEntity {
       paths.push(normalizePath(docPath))
     }
 
-    const sFolder = new SharedFolder(folder, plugin, preFetchedDoc)
-    sFolder._shareId = id
-    plugin.activeStreamClient.add([id])
-
-    await add(sFolder, plugin)
     await sFolder.startIndexedDBSync()
     if (sFolder.indexedDBProvider) {
       if (!sFolder.indexedDBProvider.synced) await sFolder.indexedDBProvider.whenSynced
-      sFolder.syncWithServer()
-      sFolder.startWebRTCSync()
     }
+    sFolder.syncWithServer()
+    sFolder.startWebRTCSync()
     return sFolder
   }
 
@@ -245,15 +250,15 @@ export class SharedFolder extends SharedEntity {
     }
 
     const folder = new SharedFolder(tFolder, plugin)
-    folder._shareId = psf.shareId
+    folder.setShareIdInternal(psf.shareId)
     plugin.activeStreamClient.add([psf.shareId])
-    const local = await folder.startIndexedDBSync()
-    if (local) {
-      if (local.synced || await local.whenSynced) {
-        folder.syncWithServer()
-        folder.startWebRTCSync()
-      }
-    }
+
+    folder._setupInitializationGuard()
+    folder._setupStatusIndicatorSubscriptions()
+    folder._updateStatusIndicator()
+    await folder.startIndexedDBSync()
+    folder.syncWithServer()
+
     return folder
   }
 
@@ -284,24 +289,37 @@ export class SharedFolder extends SharedEntity {
     this.root = root
     this._path = root.path
     this.yDoc = ydoc ?? new Y.Doc()
-    
-    // Initialize the Y.Doc with default values
+
     this.initializeYDoc()
-    
-    // Set up observers and event handlers
+
     this.getDocsFragment().observe((ev, tx) => {
       handleUpdate(ev, tx, this, plugin)
     })
-    
-    this.yDoc.on("update", (update: Uint8Array, origin: any, yDoc: Y.Doc, tr: Y.Transaction) => {
-      if (tr.local && this.shareId) {
-        plugin.serverSync.sendUpdate(this, update)
-      }
+
+    this._syncable = new SyncableFolder({
+      yDoc: this.yDoc,
+      shareId: this._shareId,
+      serverSync: plugin.serverSync,
+      logger: { log: (...args: unknown[]) => {} }
     })
-    
-    // Add to shared entities and update UI
+
     SharedFolder._sharedEntites.push(this)
-    addIsSharedClass(this.path, plugin)
+  }
+
+  private setShareIdInternal(id: string) {
+    this._shareId = id
+    this._syncable?.setShareId(id)
+  }
+
+  initServerYDoc(folderKey?: string) {
+    return super.initServerYDoc(folderKey).then((checksum) => {
+      this._syncable.setShareId(this._shareId)
+      return checksum
+    })
+  }
+
+  syncWithServer() {
+    return this._syncable.syncWithServer()
   }
 
   getDocsFragment() {
@@ -328,8 +346,7 @@ export class SharedFolder extends SharedEntity {
   }
 
   calculateHash(): string {
-    const serialized = serialize(Array.from(this.getDocsFragment()))
-    return calculateHash(serialized)
+    return this._syncable.calculateHash()
   }
 
   getOriginalFolderName() {
@@ -385,9 +402,7 @@ export class SharedFolder extends SharedEntity {
   }
 
   addDocument(doc: SharedDocument) {
-    // doesn't exist yet
     if (this.getDocsFragment().get(doc.shareId)) return
-    // check if doc is under root
     const relativePath = path.relative(this.root.path, doc.path)
     if (relativePath.startsWith('..')) return
     this.getDocsFragment().set(doc.shareId, relativePath)
@@ -423,7 +438,7 @@ export class SharedFolder extends SharedEntity {
     
     if (this.yDoc) {
       const yExtensions = this.yDoc.getArray<string>('fileExtensions')
-      yExtensions.delete(0, yExtensions.length) // Clear existing extensions
+      yExtensions.delete(0, yExtensions.length)
       yExtensions.push(normalized)
     }
   }
@@ -450,7 +465,6 @@ export class SharedFolder extends SharedEntity {
     super.initializeYDoc()
     if (!this.yDoc) return
     
-    // Initialize file extensions in Y.Doc if not present
     const yExtensions = this.yDoc.getArray<string>('fileExtensions')
     if (yExtensions.length === 0) {
       yExtensions.push(['md', 'MD', 'canvas'])
@@ -503,7 +517,6 @@ export class SharedFolder extends SharedEntity {
     return super.startWebRTCSync((provider) => {
 
       const handleTimeout = () => {
-        // this.stopWebRTCSync()
       }
 
       this._webRTCTimeout = window.setTimeout(handleTimeout, 60000)
@@ -516,12 +529,143 @@ export class SharedFolder extends SharedEntity {
     })
   }
 
-  async startIndexedDBSync() {
-    if (this._indexedDBProvider) return this._indexedDBProvider
+  async startIndexedDBSync(): Promise<IndexeddbPersistence | undefined> {
+    if (this._syncable.indexedDBProvider) return this._syncable.indexedDBProvider
     const id = getFolderByPath(this.path, this.plugin)?.persistenceId
     if (!id) return
-    this._indexedDBProvider = new IndexeddbPersistence(SharedEntity.DB_PERSISTENCE_PREFIX + id, this.yDoc)
-    return this._indexedDBProvider
+    const provider = await this._syncable.startIndexedDBSync(id)
+    return provider
+  }
+
+  private _checkInitializationGuard(): boolean {
+    return this._syncable.serverSynced || (this._syncable.indexedDBLoaded && !this._syncable.indexedDBWasEmpty)
+  }
+
+  private _setupInitializationGuard() {
+    const handleGuardConditionMet = async () => {
+      const release = await this._initializationGuardMutex.acquire()
+      try {
+        if (this._initializationGuardPassed) return
+        this._initializationGuardPassed = true
+
+        this.startWebRTCSync()
+        this._updateStatusIndicator()
+      } finally {
+        release()
+      }
+    }
+
+    const indexedDBHandler = (data: { wasEmpty: boolean }) => {
+      if (this._checkInitializationGuard()) {
+        handleGuardConditionMet()
+      }
+    }
+    this._syncable.on('indexedDBLoaded', indexedDBHandler)
+
+    const serverSyncedHandler = () => {
+      if (this._checkInitializationGuard()) {
+        handleGuardConditionMet()
+      }
+    }
+    this._syncable.on('serverSynced', serverSyncedHandler)
+
+    const syncStateChangedHandler = () => {
+      if (this._checkInitializationGuard() && !this._initializationGuardPassed) {
+        handleGuardConditionMet()
+      }
+      this._updateStatusIndicator()
+    }
+    this._syncable.on('syncStateChanged', syncStateChangedHandler)
+  }
+
+  getSyncStatus(): 'offline' | 'syncing' | 'insync' | 'warning' | 'not-initialized' {
+    const wsconnected = this.plugin.serverSync.wsconnected
+    const serverSyncing = this._syncable.serverSyncing
+    const serverSynced = this._syncable.serverSynced
+    const indexedDBWasEmpty = this._syncable.indexedDBWasEmpty
+
+    this._ensureChildSubscriptions()
+    const docsMap = this.getDocsFragment() as Y.Map<string>
+    let anyChildSyncing = false
+    let anyChildNotSynced = false
+    for (const [shareId, relativePath] of docsMap.entries()) {
+      const doc = SharedDocument.findById(shareId)
+      if (doc) {
+        const childStatus = doc.getSyncStatus()
+        if (childStatus === 'syncing') {
+          anyChildSyncing = true
+        }
+        if (childStatus !== 'insync') {
+          anyChildNotSynced = true
+        }
+      }
+    }
+
+    if (!wsconnected && !serverSynced && (!this._syncable.indexedDBLoaded || indexedDBWasEmpty)) {
+      return 'warning'
+    }
+
+    if (!wsconnected) {
+      if (!this._initializationGuardPassed) {
+        return 'not-initialized'
+      }
+      return 'offline'
+    }
+
+    if (!this._initializationGuardPassed) {
+      return 'syncing'
+    }
+
+    if (serverSyncing || anyChildSyncing) {
+      return 'syncing'
+    }
+    
+    if (serverSynced && anyChildNotSynced) {
+      return 'syncing'
+    }
+
+
+    if (serverSynced) {
+      return 'insync'
+    }
+
+    return 'offline'
+  }
+
+  private async _updateStatusIndicator() {
+    const status = this.getSyncStatus()
+    await setStatusClass(this.path, this.plugin, status)
+  }
+
+  private _subscribedChildDocs: Set<string> = new Set()
+
+  private _setupStatusIndicatorSubscriptions() {
+    this.plugin.serverSync.on('status', () => {
+      this._updateStatusIndicator()
+    })
+
+    this._syncable.on('syncStateChanged', () => {
+      this._updateStatusIndicator()
+    })
+    const docsMap = this.getDocsFragment() as Y.Map<string>
+    docsMap.observe((event) => {
+      this._updateStatusIndicator()
+    })
+  }
+
+  private _ensureChildSubscriptions() {
+    const docsMap = this.getDocsFragment() as Y.Map<string>
+    for (const [shareId, relativePath] of docsMap.entries()) {
+      if (!this._subscribedChildDocs.has(shareId)) {
+        const doc = SharedDocument.findById(shareId)
+        if (doc) {
+          this._subscribedChildDocs.add(shareId)
+          doc.syncable.on('syncStateChanged', () => {
+            this._updateStatusIndicator()
+          })
+        }
+      }
+    }
   }
 
   static async stopSession(id: string, plugin: PeerDraftPlugin) {
@@ -547,9 +691,8 @@ export class SharedFolder extends SharedEntity {
       removeFolder(this.path, this.plugin)
     }
 
-    if (this._indexedDBProvider) {
-      await this._indexedDBProvider.clearData()
-      await this._indexedDBProvider.destroy()
+    if (this._syncable.indexedDBProvider) {
+      await this._syncable.indexedDBProvider.destroy()
     }
 
 
@@ -559,9 +702,11 @@ export class SharedFolder extends SharedEntity {
 
     this.destroy()
     removeIsSharedClass(this.path, this.plugin)
+    await removeStatusClass(this.path, this.plugin)
   }
 
   destroy() {
+    this._syncable.destroy()
     super.destroy()
     SharedFolder._sharedEntites.splice(SharedFolder._sharedEntites.indexOf(this), 1)
   }
