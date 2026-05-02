@@ -140,8 +140,8 @@ const main = async () => {
       console.error('Error: Stable releases must be created from the main branch. Current branch:', currentBranch);
       process.exit(1);
     }
-    if (releaseType === 'pre' && currentBranch !== 'next') {
-      console.error('Error: Pre-releases must be created from the next branch. Current branch:', currentBranch);
+    if (releaseType === 'pre' && currentBranch !== 'pre') {
+      console.error('Error: Pre-releases must be created from the pre branch. Current branch:', currentBranch);
       process.exit(1);
     }
 
@@ -203,10 +203,8 @@ const main = async () => {
     runCommand(`git add .`);
     runCommand(`git commit -m "chore: bump ${bumpType} version to ${nextVersion}"`);
     runCommand(`git tag -a ${nextVersion} -m "Version ${nextVersion}"`);
-    if (releaseType === 'stable') {
-      runCommand("git push");
-      runCommand("git push --tags");
-    }
+    runCommand("git push");
+    runCommand("git push --tags");
     // Step 11: Create a new release in GitHub
     const releaseFiles = ["dist/main.js", "dist/manifest.json", "dist/styles.css"];
     const releaseFilesArgs = releaseFiles.map((file) => `${file}`).join(" ");
