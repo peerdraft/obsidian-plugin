@@ -45,9 +45,9 @@ export const setStatusClass = async (path: string, plugin: PeerdraftPlugin, stat
 
 function getStatusTooltip(status: string): string {
   switch (status) {
-    case 'offline': return 'Offline - Not connected to server. Changes will be merged when connected.'
-    case 'syncing': return 'Syncing - Synchronizing with server'
-    case 'insync': return 'In sync - Synchronized with server'
+    case 'offline': return 'Offline - Not connected to Peerdraft. Changes will be merged when connected.'
+    case 'syncing': return 'Syncing - Synchronizing with Peerdraft'
+    case 'insync': return 'In sync - Synchronized with Peerdraft'
     case 'warning': return 'Warning - Offline with no synced data (data may be lost!)'
     case 'disconnected': return 'Disconnected - No peers connected'
     case 'connected': return 'Connected - Peers connected'
