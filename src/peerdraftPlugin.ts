@@ -235,6 +235,15 @@ export default class PeerdraftPlugin extends Plugin {
       })
     }
 
+    plugin.registerObsidianProtocolHandler("peerdraft-open", async (params) => {
+      const url = params.url
+      if (!url) {
+        showNotice("Missing URL in obsidian://peerdraft-open link")
+        return
+      }
+      await fromShareURL(url, plugin)
+    })
+
     plugin.registerEvent(plugin.app.vault.on('rename', async (file, oldPath) => {
       if (file instanceof TFile) {
         const doc = SharedDocument.findByPath(oldPath)
