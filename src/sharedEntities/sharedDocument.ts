@@ -157,14 +157,21 @@ export class SharedDocument extends SharedEntity {
       yDoc
     }, plugin)
 
-    await new Promise<void>((resolve) => {
+    await new Promise<void>((resolve, reject) => {
+      const handler = (_update: Uint8Array, _origin: any, _doc: Y.Doc, _tr: Y.Transaction) => {
+        window.clearTimeout(timeout)
+        yDoc.off("update", handler)
+        resolve()
+      }
+      const timeout = window.setTimeout(() => {
+        yDoc.off("update", handler)
+        reject(new Error("sync timeout"))
+      }, 30000)
       doc.startWebRTCSync()
       if (isPermanent) {
         doc.syncWithServer()
       }
-      yDoc.once("update", () => {
-        resolve()
-      })
+      yDoc.on("update", handler)
     })
 
     if (yDoc.share.has('canvas')) {
@@ -197,8 +204,15 @@ export class SharedDocument extends SharedEntity {
     if (isPermanent) {
       doc.setIsPermanentInternal(true)
       await add(doc, plugin)
+      doc._setupInitializationGuard()
+      doc._setupStatusIndicatorSubscriptions()
       await doc.startIndexedDBSync()
+      if (doc.indexedDBProvider) {
+        if (!doc.indexedDBProvider.synced) await doc.indexedDBProvider.whenSynced
+      }
+      doc.syncWithServer()
       plugin.activeStreamClient.add([doc.shareId])
+      await doc._updateStatusIndicator()
     } else {
       await doc._updateWebRTCStatusIndicator()
     }
