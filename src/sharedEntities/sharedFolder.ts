@@ -165,6 +165,12 @@ export class SharedFolder extends SharedEntity {
       return
     }
 
+    const existingFolder = SharedFolder.findById(id)
+    if (existingFolder) {
+      showNotice("This share is already active: " + existingFolder.path)
+      return
+    }
+
     let folderPath = location
     const preFetchedDoc = await plugin.serverSync.requestDocument(id)
 
