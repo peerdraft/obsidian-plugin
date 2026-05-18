@@ -136,7 +136,7 @@ export default class PeerdraftPlugin extends Plugin {
         this.serverSync.on('showMessage', (title, content) => {
           const modal = new Modal(plugin.app)
           modal.setTitle(title)
-          modal.contentEl.innerHTML = content
+          modal.contentEl.textContent = content
           modal.open()
         })
 
