@@ -13,20 +13,46 @@ interface ShareUsageResponse {
   tierDisplayName: string;
 }
 
-const fetchShareUsage = async (plugin: PeerdraftPlugin): Promise<ShareUsageResponse | null> => {
-  const jwt = getJWT(plugin.settings.oid);
+interface AccountSettingsResponse {
+  plan: {
+    tier: string;
+    displayName: string;
+    expiresAt: string | null;
+    renewsAt: string | null;
+  };
+  shares: {
+    current: number;
+    limit: number | null;
+    warningMessage: string | null;
+  };
+  upgrade?: {
+    title: string;
+    content: string;
+    options: Array<{
+      id: string;
+      label: string;
+      url: string;
+      highlighted?: boolean;
+      comment?: string;
+    }>;
+  };
+}
+
+const fetchAccountSettings = async (plugin: PeerdraftPlugin): Promise<AccountSettingsResponse | null> => {
+  const jwt = getJWT(plugin.settings.oid) || plugin.serverSync.jwt;
   if (!jwt) return null;
 
   try {
     const response = await requestUrl({
-      url: plugin.settings.basePath + "/group/share-usage",
+      url: plugin.settings.basePath + "/account/settings",
       method: 'GET',
       headers: {
         "Authorization": "Bearer " + jwt
       }
     });
-    return response.json as ShareUsageResponse;
+    return response.json as AccountSettingsResponse;
   } catch (e) {
+    console.error("Error fetching account settings:", e);
     return null;
   }
 };
@@ -176,9 +202,10 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
 
   const settings = plugin.settings
 
-  el.createEl("h1", { text: "General" });
+  const generalSection = el.createDiv({ cls: "pd-settings-section" });
+  generalSection.createEl("h2", { text: "General", cls: "pd-section-header" });
 
-  new Setting(el)
+  new Setting(generalSection)
     .setName("Display Name")
     .setDesc("This name will be shown to your collaborators")
     .addText((text) => {
@@ -189,7 +216,7 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
       })
     })
 
-  const pathSetting = new Setting(el)
+  const pathSetting = new Setting(generalSection)
   pathSetting.setName("Root Folder")
   pathSetting.setDesc("When you import a share from someone else it will be created in this folder.")
   pathSetting.addText(text => {
@@ -212,59 +239,100 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
     })
   })
 
-  el.createEl("h1", { text: "Your Account" })
+  const accountSection = el.createDiv({ cls: "pd-settings-section" });
+  accountSection.createEl("h2", { text: "Your Account", cls: "pd-section-header" })
 
   if (plugin.serverSync.authenticated) {
-    el.createEl("div", { text: `You are logged in as ${plugin.settings.plan.email}.` })
-    el.createEl("p")
-    const div = el.createEl("div")
-    div.createSpan({ text: "You are on the " }).createEl('b', { text: plugin.settings.plan.type })
-    div.createSpan({ text: " plan." })
-    el.createEl("p")
+    accountSection.createEl("div", { text: `You are logged in as ${plugin.settings.plan.email}.` })
 
-    const usageDiv = el.createEl("div", { text: "Loading share usage..." })
-    fetchShareUsage(plugin).then(usage => {
-      if (usage) {
-        usageDiv.empty()
-        if (usage.limit === null) {
-          usageDiv.createSpan({ text: `You have ${usage.currentCount} active shares (unlimited).` })
-        } else {
-          usageDiv.createSpan({ text: `You have ` })
-          usageDiv.createEl('b', { text: `${usage.currentCount} / ${usage.limit}` })
-          usageDiv.createSpan({ text: ` active shares.` })
-          if (usage.remaining !== null && usage.remaining <= 2 && usage.remaining > 0) {
-            el.createEl("p")
-            el.createEl("div", {
-              text: `⚠️ You have ${usage.remaining} share${usage.remaining === 1 ? '' : 's'} remaining.`,
-              cls: "mod-warning"
-            })
-          } else if (usage.remaining === 0) {
-            el.createEl("p")
-            el.createEl("div", {
-              text: `⚠️ You have reached your share limit. Upgrade to create more shares.`,
-              cls: "mod-warning"
-            })
-          }
-        }
-      } else {
-        usageDiv.setText("Could not load share usage.")
+    const accountDiv = accountSection.createEl("div", { text: "Loading account information..." })
+    
+    fetchAccountSettings(plugin).then(settings => {
+      if (!settings) {
+        accountDiv.setText("Could not load account information.")
+        return;
       }
-    })
-    el.createEl("p")
 
-    if (plugin.settings.plan.type === "Free") {
-      new Setting(el)
-        .setName("Manage your subscription")
-        .addButton(button => {
-          button.setButtonText("Upgrade")
-          button.setCta()
-          button.onClick((e) => {
-            window.open(`https://peerdraft.app/checkout?email=${plugin.settings.plan.email}`)
+      accountDiv.empty()
+
+      // Plan Status subsection
+      const planSubsection = accountDiv.createDiv({ cls: "pd-account-subsection" })
+      const planDiv = planSubsection.createEl("div")
+      planDiv.createSpan({ text: "You are on the " }).createEl('b', { text: settings.plan.displayName })
+      planDiv.createSpan({ text: " plan." })
+      
+      // Show expiry/renewal info
+      if (settings.plan.expiresAt) {
+        const expiryDate = new Date(settings.plan.expiresAt);
+        const daysRemaining = Math.ceil((expiryDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+        planSubsection.createEl("div", { 
+          text: `Trial expires in ${daysRemaining} day${daysRemaining === 1 ? '' : 's'}`,
+          cls: "setting-item-description"
+        })
+      } else if (settings.plan.renewsAt) {
+        const renewalDate = new Date(settings.plan.renewsAt);
+        planSubsection.createEl("div", { 
+          text: `Renews on ${renewalDate.toLocaleDateString()}`,
+          cls: "setting-item-description"
+        })
+      }
+
+      // Share Usage subsection
+      const sharesSubsection = accountDiv.createDiv({ cls: "pd-account-subsection" })
+      const sharesDiv = sharesSubsection.createEl("div")
+      if (settings.shares.limit === null) {
+        sharesDiv.createSpan({ text: `You have ${settings.shares.current} active shares (unlimited).` })
+      } else {
+        sharesDiv.createSpan({ text: `You have ` })
+        sharesDiv.createEl('b', { text: `${settings.shares.current} / ${settings.shares.limit}` })
+        sharesDiv.createSpan({ text: ` active shares.` })
+      }
+
+      // Warning message
+      if (settings.shares.warningMessage) {
+        sharesSubsection.createEl("div", {
+          text: `⚠️ ${settings.shares.warningMessage}`,
+          cls: "mod-warning"
+        })
+      }
+
+      // Upgrade section
+      if (settings.upgrade && settings.upgrade.options.length > 0) {
+        accountDiv.createEl("h2", { text: settings.upgrade.title })
+        
+        // Render HTML content
+        const contentDiv = accountDiv.createDiv()
+        contentDiv.innerHTML = settings.upgrade.content
+        
+        // Render buttons
+        const upgradeSection = accountDiv.createDiv({ cls: "setting-item" })
+        const upgradeControls = upgradeSection.createDiv({ cls: "setting-item-control" })
+        
+        settings.upgrade.options.forEach(option => {
+          const button = upgradeControls.createEl("button", { 
+            text: option.label,
+            cls: option.highlighted ? "mod-cta" : undefined
+          })
+          if (upgradeControls.children.length > 1) {
+            button.style.marginLeft = "8px"
+          }
+          button.addEventListener("click", () => {
+            window.open(option.url)
           })
         })
-    }
+        
+        // Show comment if available
+        const optionWithComment = settings.upgrade.options.find(o => o.comment);
+        if (optionWithComment) {
+          accountDiv.createEl("div", { 
+            text: `💡 ${optionWithComment.comment}`,
+            cls: "setting-item-description"
+          })
+        }
+      }
+    })
 
-    new Setting(el)
+    new Setting(accountSection)
       .setName("Log out")
       .addButton(button => {
         button.setButtonText("Log out")
@@ -274,12 +342,10 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
         })
       })
   } else {
-    el.createEl("div", { text: `You are not logged in.` })
-    el.createEl("p")
-    el.createEl("div", { text: `To initiate new shared documents or folders you need to log in to your Peerdraft account. If you only work on shared documents and folders created by others, you don't need an account.` })
-    el.createEl("p")
+    accountSection.createEl("div", { text: `You are not logged in.` })
+    accountSection.createEl("div", { text: `To initiate new shared documents or folders you need to log in to your Peerdraft account. If you only work on shared documents and folders created by others, you don't need an account.` })
 
-    new Setting(el)
+    new Setting(accountSection)
       .setName("Log in or create account")
       .addButton(button => {
         button.setButtonText("Log in or create account")
@@ -290,13 +356,28 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
       })
   }
 
-  el.createEl("h1", { text: "Help" })
-  const div = el.createDiv()
+  const helpSection = el.createDiv({ cls: "pd-settings-section" });
+  helpSection.createEl("h2", { text: "Help", cls: "pd-section-header" })
+  const div = helpSection.createDiv()
   div.createSpan({ text: "If you need any help, " })
   div.createEl("a", {
     text: "get in touch",
     attr: {
       href: "mailto:dominik@peerdraft.app"
+    }
+  })
+  div.createSpan({ text: " or join our " })
+  div.createEl("a", {
+    text: "Discord community",
+    attr: {
+      href: "https://discord.gg/bKtVfTAkXt"
+    }
+  })
+  div.createSpan({ text: ". Also check out our " })
+  div.createEl("a", {
+    text: "Documentation",
+    attr: {
+      href: "https://www.peerdraft.app/documentation"
     }
   })
   div.createSpan({ text: '.' })

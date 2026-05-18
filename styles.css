@@ -67,3 +67,53 @@
   gap: 8px;
   margin-top: 16px;
 }
+
+/* Settings page visual structure */
+.pd-settings-section {
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  padding: 16px;
+  margin-bottom: 20px;
+}
+
+.pd-section-header {
+  margin-top: 0 !important;
+  margin-bottom: 12px !important;
+  font-size: 1.1em !important;
+  font-weight: 600 !important;
+  color: var(--text-normal) !important;
+  display: block !important;
+}
+
+.pd-account-subsection {
+  margin-bottom: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.pd-account-subsection:last-of-type {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.pd-account-subsection > *:first-child {
+  margin-top: 0;
+}
+
+.pd-account-subsection > *:last-child {
+  margin-bottom: 0;
+}
+
+.pd-settings-section h2 {
+  margin-top: 16px;
+  margin-bottom: 8px;
+  font-size: 1em;
+  font-weight: 600;
+}
+
+.pd-settings-section ul {
+  margin-left: 0;
+  padding-left: 20px;
+}
