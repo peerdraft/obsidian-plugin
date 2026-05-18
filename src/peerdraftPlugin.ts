@@ -1,5 +1,5 @@
 import { MarkdownView, Modal, Platform, Plugin, TFile, TFolder, normalizePath } from "obsidian"
-import * as path from "path"
+import * as path from "path-browserify"
 import { ActiveStreamClient } from "./activeStreamClient"
 import { prepareCommunication } from "./cookie"
 import { getJWT } from "./login"

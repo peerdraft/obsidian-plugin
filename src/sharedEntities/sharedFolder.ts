@@ -1,6 +1,6 @@
 import { Mutex } from 'async-mutex';
 import { TAbstractFile, TFile, TFolder, normalizePath } from "obsidian";
-import * as path from 'path';
+import * as path from 'path-browserify';
 import PeerDraftPlugin from "src/main";
 import { type PermanentShareFolder } from "src/permanentShareStore";
 import { add, getFolderByPath, moveFolder, removeFolder } from "src/permanentShareStoreFS";

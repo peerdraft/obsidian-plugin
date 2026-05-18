@@ -11,7 +11,7 @@ import { PeerdraftRecord } from '../utils/peerdraftRecord';
 import { type PermanentShareDocument } from '../permanentShareStore';
 import { getLeafIdsByPath } from '../workspace/peerdraftWorkspace';
 import { SharedEntity } from './sharedEntity';
-import * as path from 'path';
+import * as path from 'path-browserify';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import { addIsSharedClass, removeIsSharedClass, setStatusClass, removeStatusClass } from 'src/workspace/explorerView';
 import { SharedFolder } from './sharedFolder';
