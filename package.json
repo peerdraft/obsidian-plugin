@@ -22,7 +22,6 @@
     "@typescript-eslint/eslint-plugin": "5.29.0",
     "@typescript-eslint/parser": "5.29.0",
     "async-mutex": "^0.5.0",
-    "builtin-modules": "3.3.0",
     "dexie": "^3.2.6",
     "diff-match-patch-es": "^0.1.0",
     "electron": "^28.1.3",
