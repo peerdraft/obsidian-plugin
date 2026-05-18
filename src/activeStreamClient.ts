@@ -126,6 +126,7 @@ export class ActiveStreamClient extends ObservableV2<Events> {
   wsLastMessageReceived: number
   shouldConnect: boolean
   _resyncInterval: number
+  _checkInterval: number
 
   docIds: Set<string>
 
@@ -164,6 +165,18 @@ export class ActiveStreamClient extends ObservableV2<Events> {
       }, opts.resyncInterval))
     }
 
+    // Check for stale connections - close if no messages received for 30 seconds
+    this._checkInterval = window.setInterval(() => {
+      if (
+        this.wsconnected &&
+        messageReconnectTimeout <
+        time.getUnixTime() - this.wsLastMessageReceived
+      ) {
+        // No message received in a long time - force reconnection
+        this.ws?.close()
+      }
+    }, messageReconnectTimeout / 10)
+
     if (opts.connect) {
       this.connect()
     }
@@ -185,6 +198,7 @@ export class ActiveStreamClient extends ObservableV2<Events> {
     if (this._resyncInterval !== 0) {
       clearInterval(this._resyncInterval)
     }
+    clearInterval(this._checkInterval)
     this.disconnect()
     super.destroy()
   }
