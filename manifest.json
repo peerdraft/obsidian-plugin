@@ -1,7 +1,7 @@
 {
   "id": "peerdraft",
   "name": "Peerdraft",
-  "version": "2.22.0",
+  "version": "2.22.1-alpha.1",
   "minAppVersion": "1.7.2",
   "description": "Real-time, instant collaboration on documents and folders. Work on your notes with other people and on other devices via real-time Obsidian-to-Obsidian sync or a hosted web editor, connect to tools via RESTful API, and connect to AI agents via MCP integration.",
   "author": "Peerdraft",
