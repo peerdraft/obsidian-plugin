@@ -32,8 +32,8 @@ jobs:
         with:
           subject-path: |
             dist/main.js
-            dist/manifest.json
-            dist/styles.css
+            manifest.json
+            styles.css
       
       - name: Create Release
         env:
@@ -48,8 +48,8 @@ jobs:
           
           gh release create ${{ github.ref_name }} \
             dist/main.js \
-            dist/manifest.json \
-            dist/styles.css \
+            manifest.json \
+            styles.css \
             -t "${{ github.ref_name }}" \
             --generate-notes \
             $PRERELEASE_FLAG
