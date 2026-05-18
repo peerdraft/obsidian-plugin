@@ -3,7 +3,7 @@
   "name": "Peerdraft",
   "version": "2.22.0",
   "minAppVersion": "1.4.16",
-  "description": "Real-time, instant collaboration on Obsidian documents or folders. Whether for quick note-taking or building a team knowledge base, Peerdraft syncs with your collaborators' Obsidian vaults and also offers a Web Editor.",
+  "description": "Real-time, instant collaboration on documents and folders. Work on your notes with other people and on other devices via real-time Obsidian-to-Obsidian sync or a hosted web editor, connect to tools via RESTful API, and connect to AI agents via MCP integration.",
   "author": "Peerdraft",
   "authorUrl": "https://www.peerdraft.app",
   "isDesktopOnly": false
