@@ -719,6 +719,10 @@ export class SharedDocument extends SharedEntity {
     return this.yDoc.getText("owner")
   }
 
+  getOriginalFilename() {
+    return this.yDoc.getText("originalFilename").toString()
+  }
+
   async startIndexedDBSync(): Promise<IndexeddbPersistence | undefined> {
     if (this._syncable.indexedDBProvider) return this._syncable.indexedDBProvider
     const id = (getDocByPath(this.path, this.plugin))?.persistenceId
