@@ -1,39 +1,52 @@
-# Collaboration for Obsidian – Sync, Share, and Edit anywhere
+# Peerdraft
 
-Collaborate instantly on Obsidian documents or folders. Choose end-to-end encrypted ad-hoc sessions or long-term sharing with support for asynchronous and offline editing. Whether for quick note-taking or building a team knowledge base, Peerdraft syncs with your collaborators' Obsidian vaults and also offers a Web Editor.
+> Open your Obsidian notes to people, tools, and AI agents
 
-The free version lets you start unlimited ad-hoc collaboration sessions and join as many sessions from others as you want.
+Peerdraft is the collaboration layer between Obsidian and everything else. Connect your notes to other people and devices via real-time Obsidian-to-Obsidian sync or web editor, to tools via RESTful API, and to AI agents via MCP integration. Supports both real-time collaboration and asynchronous workflows. Changes sync automatically whether you're working together or independently.
 
-For long-term sharing with support for asynchronous and offline editing you need a paid account that starts at 30 USD / year and comes with unlimited free collaborators.
-
-You can test all features for free for 14 days.
-
-You do not need an account to join shares created by others.
-
-[Details](https://www.peerdraft.app/#pricing).
+**Note**: Only the creator of a shared document or folder (Peerdraft Space) needs an account. Collaborators can access and work on shared content without signing up.
 
 Join our [Discord Server](https://discord.gg/bKtVfTAkXt)
 
+## How to Use
+
+- **Obsidian Plugin**: [Install](obsidian://show-plugin?id=peerdraft) from Community Plugins, share documents and folders via right-click menu
+- **Web Editor**: Browser-based access for collaborators
+- **RESTful API**: Programmatic access via [API](https://www.peerdraft.app/api/v1/docs)
+- **MCP Server**: AI agent integration via [MCP](https://www.peerdraft.app/documentation/how-to-guides/getting-started-with-the-peerdraft-mcp)
+
 ## Features
 
-### Works instantly
+- [Web Editor](https://www.peerdraft.app/#web-editor): Browser-based collaboration for non-Obsidian users
+- [Persistent Sharing](https://www.peerdraft.app/documentation/explanations/what-is-the-difference-between-persistent-and-fleeting): Long-term collaboration with offline support and background sync
+- [Fleeting Sessions](https://www.peerdraft.app/documentation/explanations/what-is-the-difference-between-persistent-and-fleeting): End-to-end encrypted WebRTC sessions for temporary collaboration
+- [Folder Sharing](https://www.peerdraft.app/#features): Share entire folders (including subfolders), not just individual documents
+- [Canvas Collaboration](https://www.peerdraft.app/#features): Real-time collaboration on Obsidian Canvas (beta)
+- [Background Sync](https://www.peerdraft.app/#features): Automatically detects changes from AI tools or external editors
+- [RESTful API](https://www.peerdraft.app/api/v1/docs): Programmatic access to shared documents for tool integration
+- [MCP Integration](https://www.peerdraft.app/documentation/how-to-guides/getting-started-with-the-peerdraft-mcp): Connect AI agents to your shared Obsidian folders via Model Context Protocol
 
-Start sharing from within Obsidian and you get a secret, unguessable link. Your collaborators don't need a Peerdraft account — they can join instantly from their Obsidian vaults or browsers using the link.
+## Technical Architecture
 
-### Real-Time Collaboration
+- Built on Yjs CRDTs for conflict-free real-time synchronization
+- End-to-end encryption via WebRTC for fleeting sessions (zero-knowledge, servers never see content)
+- HTTPS encryption for persistent shares (server-side encryption in transit and at rest)
+- Local-first architecture with universal access (Obsidian, web, API, MCP)
+- Background sync automatically merges changes from any source
 
-Collaborate in real-time, seeing your teammates' positions and changes instantly. Notifications alert you when someone starts working on a shared document.
+## Pricing
 
-### Share folders
+- **Free**: 10 persistent shares, unlimited fleeting sessions
+- **Trial**: 10,000 persistent shares (14-day Pro trial for Free tier users)
+- **Pro**: 10,000 persistent shares, all collaborators free forever
+- **Business**: Unlimited persistent shares
 
-Keep entire folders in sync with your collaborators’ vaults. New documents created by anyone in the shared folder are synced instantly.
+[Details](https://www.peerdraft.app/#pricing)
 
-### Fleeting Sessions for Ad-Hoc Collaboration
+## Documentation
 
-For fleeting sessions, no content passes through Peerdraft servers. Your documents and updates are exchanged end-to-end encrypted, directly between you and your peers. Fleeting Sessions end as soon as the creator leaves or closes the document. Learn about the [difference between fleeting sessions and persistent shares](https://www.peerdraft.app/documentation/explanations/what-is-the-difference-between-persistent-and-fleeting).
-
-### Collaborators can use the Plugin or Web Editor
-
-With the Peerdraft plugin, your collaborators can sync shared files and folders with their own vaults. No Peerdraft account is needed to import a share initiated by someone else.
-
-Not every collaborator may use Obsidian or have it available. With the secret link created when sharing, they can access the Peerdraft Web Editor directly. The Web Editor supports both peer-to-peer fleeting sessions and working on persistent shares.
+- [API Reference](https://www.peerdraft.app/api/v1/docs): Complete REST API documentation
+- [MCP Setup Guide](https://www.peerdraft.app/documentation/how-to-guides/getting-started-with-the-peerdraft-mcp): Connect AI agents to your Spaces
+- [Getting Started](https://www.peerdraft.app/documentation/how-to-guides/getting-started-with-obsidian): Install and configure the Obsidian plugin
+- [Privacy Policy](https://www.peerdraft.app/privacy): GDPR and CCPA compliance
+- [Terms of Service](https://www.peerdraft.app/terms): Legal agreement

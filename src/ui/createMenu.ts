@@ -1,10 +1,11 @@
-import { MarkdownView, Menu, TAbstractFile, TFile, TFolder } from "obsidian";
+import { MarkdownView, Menu, TAbstractFile, TFile, TFolder, normalizePath } from "obsidian";
 import PeerdraftPlugin from "src/peerdraftPlugin";
 import { SharedFolder } from "src/sharedEntities/sharedFolder";
 import { openFolderOptions } from "./folderOptions";
 import { SharedDocument } from "src/sharedEntities/sharedDocument";
 import { promptForSessionType } from "./chooseSessionType";
 import { openFileInNewTab, showNotice } from "src/ui";
+import { isBinaryFile } from "src/utils/fileTypeDetection";
 
 export const createMenuAsSubMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlugin) => {
   menu.addItem(item => {
@@ -105,6 +106,19 @@ export const createMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlu
           })
         })
       }
+    } else if (sharedFolder && isBinaryFile(file.name)) {
+      // Binary file in a shared folder
+      menu.addItem(item => {
+        item.setTitle(prefix + 'Delete and remove from Shared Folder')
+        item.setIcon('trash')
+        item.onClick(async () => {
+          // Remove from binaryFilesMap in Y.Doc
+          const relativePath = normalizePath(file.path.slice(sharedFolder.root.path.length + 1))
+          sharedFolder.yDoc.getMap('binaryFiles').delete(relativePath)
+          // Delete local file
+          plugin.app.vault.delete(file)
+        })
+      })
     } else if (!sharedFolder && ['md', 'MD', 'canvas'].includes(file.extension)) {
 
       menu.addItem((item) => {

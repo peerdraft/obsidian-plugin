@@ -11,6 +11,7 @@ import { IndexeddbPersistence } from "y-indexeddb";
 import * as Y from 'yjs';
 import { generateRandomString } from "../tools";
 import { showNotice } from "../ui";
+import { BinaryFileSync } from "./binaryFileSync";
 import { SharedDocument } from "./sharedDocument";
 import { SharedEntity } from "./sharedEntity";
 import { SyncableFolder } from "./syncableFolder";
@@ -94,6 +95,9 @@ export class SharedFolder extends SharedEntity {
 
   // Sync-engine state delegated to composed SyncableFolder instance.
   private _syncable!: SyncableFolder
+
+  // Binary file sync manager
+  private _binaryFileSync?: BinaryFileSync
 
   override get indexedDBProvider(): IndexeddbPersistence | undefined {
     return this._syncable?.indexedDBProvider
@@ -235,6 +239,10 @@ export class SharedFolder extends SharedEntity {
     }
     sFolder.syncWithServer()
     sFolder.startWebRTCSync()
+    
+    // Initialize binary file sync
+    await sFolder._binaryFileSync?.initialize()
+    
     return sFolder
   }
 
@@ -265,6 +273,9 @@ export class SharedFolder extends SharedEntity {
     await folder.startIndexedDBSync()
     folder.syncWithServer()
 
+    // Initialize binary file sync
+    await folder._binaryFileSync?.initialize()
+
     return folder
   }
 
@@ -285,7 +296,7 @@ export class SharedFolder extends SharedEntity {
     const normalizedPath = normalizePath(dir)
     const folders = this.getAll()
     for (const folder of folders) {
-      if (folder.root.path === normalizedPath) return
+      if (folder.root.path === normalizedPath) return folder
       if (folder.isPathSubPath(normalizedPath)) return folder
     }
   }
@@ -308,6 +319,14 @@ export class SharedFolder extends SharedEntity {
       serverSync: plugin.serverSync,
       logger: { log: (...args: unknown[]) => {} }
     })
+
+    // Initialize binary file sync
+    this._binaryFileSync = new BinaryFileSync(
+      this.yDoc,
+      this.root,
+      this.plugin,
+      () => this.shareId
+    )
 
     SharedFolder._sharedEntites.push(this)
   }
@@ -713,6 +732,7 @@ export class SharedFolder extends SharedEntity {
 
   destroy() {
     this._syncable.destroy()
+    this._binaryFileSync?.destroy()
     super.destroy()
     SharedFolder._sharedEntites.splice(SharedFolder._sharedEntites.indexOf(this), 1)
   }
