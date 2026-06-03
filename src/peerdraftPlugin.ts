@@ -21,30 +21,30 @@ import type { PeerdraftCanvas } from "./workspace/peerdraftCanvas"
 
 export default class PeerdraftPlugin extends Plugin {
 
-	settings: Settings
-	pws: {
-		markdown: PeerdraftRecord<PeerdraftLeaf>,
-		canvas: PeerdraftRecord<PeerdraftCanvas>,
-	}
-	serverAPI: ServerAPI
-	activeStreamClient: ActiveStreamClient
-	serverSync: PeerdraftWebsocketProvider
+  settings: Settings
+  pws: {
+    markdown: PeerdraftRecord<PeerdraftLeaf>,
+    canvas: PeerdraftRecord<PeerdraftCanvas>,
+  }
+  serverAPI: ServerAPI
+  activeStreamClient: ActiveStreamClient
+  serverSync: PeerdraftWebsocketProvider
 
-	async onload() {
-		const plugin = this
+  async onload() {
+    const plugin = this
 
-		plugin.settings = await migrateSettings(plugin)
+    plugin.settings = await migrateSettings(plugin)
 
-		await prepareCommunication(plugin)
+    await prepareCommunication(plugin)
 
-		plugin.pws = {
-			markdown: new PeerdraftRecord<PeerdraftLeaf>(),
-			canvas: new PeerdraftRecord<PeerdraftCanvas>(),
-		}
-		plugin.serverAPI = new ServerAPI({
-			oid: plugin.settings.oid,
-			permanentSessionUrl: plugin.settings.sessionAPI
-		})
+    plugin.pws = {
+      markdown: new PeerdraftRecord<PeerdraftLeaf>(),
+      canvas: new PeerdraftRecord<PeerdraftCanvas>(),
+    }
+    plugin.serverAPI = new ServerAPI({
+      oid: plugin.settings.oid,
+      permanentSessionUrl: plugin.settings.sessionAPI
+    })
 
     plugin.activeStreamClient = new ActiveStreamClient(plugin.settings.actives, {
       maxBackoffTime: 300000,
@@ -126,7 +126,7 @@ export default class PeerdraftPlugin extends Plugin {
     plugin.app.workspace.onLayoutReady(
       async () => {
         this.serverSync = new PeerdraftWebsocketProvider(this.settings.sync, { jwt: getJWT(plugin.settings.oid) ?? undefined, version: plugin.manifest.version, connect: false })
-        
+
         this.serverSync.on("authenticated", (data) => {
           showNotice("Logged in to Peerdraft")
           plugin.settings.plan.type = data.plan.type
@@ -247,53 +247,48 @@ export default class PeerdraftPlugin extends Plugin {
     plugin.registerEvent(plugin.app.vault.on('rename', async (file, oldPath) => {
       if (file instanceof TFile) {
         const doc = SharedDocument.findByPath(oldPath)
-        if (doc) {
-          await doc.setNewFileLocation(file)
-        }
 
         const oldPathInFolder = SharedFolder.getSharedFolderForSubPath(oldPath)
         const newPathInFolder = SharedFolder.getSharedFolderForSubPath(file.path)
 
-        if (oldPathInFolder && newPathInFolder) {
-          if (oldPathInFolder === newPathInFolder) {
-            oldPathInFolder.updatePath(oldPath, file.path)
-          } else {
-            if (newPathInFolder.fileExtensions.has(file.extension)) {
-              const newDoc = await SharedDocument.fromTFile(file, { permanent: true, folder: newPathInFolder.shareId }, plugin)
-              if (newDoc) {
-                newPathInFolder.addDocument(newDoc)
-                const prop = newPathInFolder.getAutoFillProperty()
-                if (prop) newDoc.updateProperty(prop, newDoc.getShareURL())
-                const authorProp = newPathInFolder.getAutoFillAuthorProperty()
-                const authorPropType = newPathInFolder.getAutoFillAuthorPropertyType()
-                if (authorProp) newDoc.updateProperty(authorProp, plugin.settings.name, undefined, authorPropType)
+        if (doc && oldPathInFolder) {
+
+          if (newPathInFolder) {
+            if (oldPathInFolder === newPathInFolder) {
+              oldPathInFolder.updatePath(oldPath, file.path)
+              return
+            } else {
+              if (newPathInFolder.fileExtensions.has(file.extension)) {
+                const newDoc = await SharedDocument.fromTFile(file, { permanent: true, folder: newPathInFolder.shareId }, plugin)
+                if (newDoc) {
+                  newPathInFolder.addDocument(newDoc)
+                  const prop = newPathInFolder.getAutoFillProperty()
+                  if (prop) newDoc.updateProperty(prop, newDoc.getShareURL())
+                  const authorProp = newPathInFolder.getAutoFillAuthorProperty()
+                  const authorPropType = newPathInFolder.getAutoFillAuthorPropertyType()
+                  if (authorProp) newDoc.updateProperty(authorProp, plugin.settings.name, undefined, authorPropType)
+                }
               }
             }
           }
-        } else if (oldPathInFolder && !newPathInFolder) {
-          if (doc) {
-            showNotice("It is not possible to remove a document from a shared folder right now. Created a copy.")
-            await SharedFolder.getOrCreatePath(path.dirname(oldPath), plugin)
-            const file = await plugin.app.vault.create(oldPath, '')
-            if (!file) {
-              showNotice("Error creating file " + oldPath + ".")
-              return
-            }
-            doc.setNewFileLocation(file)
-            doc.syncWithServer()
-          }
-        } else if (!oldPathInFolder && newPathInFolder) {
+          oldPathInFolder.removeDocument(doc);
+          doc.unshare();
+        }
+        else if (newPathInFolder) {
           if (newPathInFolder.fileExtensions.has(file.extension)) {
-            const doc = await SharedDocument.fromTFile(file, { permanent: true, folder: newPathInFolder.shareId }, plugin)
-            if (doc) {
-              newPathInFolder.addDocument(doc)
+            const newDoc = doc ?? await SharedDocument.fromTFile(file, { permanent: true, folder: newPathInFolder.shareId }, plugin)
+            if (newDoc) {
+              newPathInFolder.addDocument(newDoc)
               const prop = newPathInFolder.getAutoFillProperty()
-              if (prop) doc.updateProperty(prop, doc.getShareURL())
+              if (prop) newDoc.updateProperty(prop, newDoc.getShareURL())
               const authorProp = newPathInFolder.getAutoFillAuthorProperty()
               const authorPropType = newPathInFolder.getAutoFillAuthorPropertyType()
-              if (authorProp) doc.updateProperty(authorProp, plugin.settings.name, undefined, authorPropType)
+              if (authorProp) newDoc.updateProperty(authorProp, plugin.settings.name, undefined, authorPropType)
             }
           }
+        }
+        else if (doc) {
+          await doc.setNewFileLocation(file)
         }
       } else if (file instanceof TFolder) {
         const folder = SharedFolder.findByPath(oldPath)
@@ -345,33 +340,33 @@ export default class PeerdraftPlugin extends Plugin {
       }
     )
 
-		const settingsTab = createSettingsTab(plugin)
+    const settingsTab = createSettingsTab(plugin)
 
-		if (!plugin.settings.name) {
-			const name = await promptForName(plugin.app)
-			if (name && name.text) {
-				this.settings.name = name.text
-				saveSettings(this.settings, plugin)
-			}
-		}
-		plugin.addSettingTab(settingsTab)
-	}
+    if (!plugin.settings.name) {
+      const name = await promptForName(plugin.app)
+      if (name && name.text) {
+        this.settings.name = name.text
+        saveSettings(this.settings, plugin)
+      }
+    }
+    plugin.addSettingTab(settingsTab)
+  }
 
-	onunload() {
-		SharedDocument.getAll().forEach((doc) => {
-			doc.destroy()
-		})
-		SharedFolder.getAll().forEach(folder => {
-			folder.destroy()
-		})
-		this.activeStreamClient.destroy()
-	}
+  onunload() {
+    SharedDocument.getAll().forEach((doc) => {
+      doc.destroy()
+    })
+    SharedFolder.getAll().forEach(folder => {
+      folder.destroy()
+    })
+    this.activeStreamClient.destroy()
+  }
 
-	log(message: string) {
-		if (this.settings.debug) {
-			console.log(message)
-		}
-	}
+  log(message: string) {
+    if (this.settings.debug) {
+      console.log(message)
+    }
+  }
 
 }
 
