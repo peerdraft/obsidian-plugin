@@ -143,12 +143,12 @@ export default class PeerdraftPlugin extends Plugin {
         this.serverSync.connect()
         this.serverSync.connected()
 
-        for (const [path, data] of plugin.settings.serverShares.folders.entries()) {
-          await SharedFolder.fromPermanentShareFolder({ path, persistenceId: data.persistenceId, shareId: data.shareId }, plugin)
-        }
-
         for (const [path, data] of plugin.settings.serverShares.files.entries()) {
           await SharedDocument.fromPermanentShareDocument({ path, persistenceId: data.persistenceId, shareId: data.shareId }, plugin)
+        }
+
+        for (const [path, data] of plugin.settings.serverShares.folders.entries()) {
+          await SharedFolder.fromPermanentShareFolder({ path, persistenceId: data.persistenceId, shareId: data.shareId }, plugin)
         }
         updatePeerdraftWorkspace(plugin.app.workspace, plugin.pws)
         plugin.registerEvent(plugin.app.workspace.on("layout-change", () => {
