@@ -34,9 +34,27 @@ const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: Share
         if (existingDoc) {
           if (existingDoc.file.path === file.path) {
           } else {
-            showNotice("There is something wrong with your synced file " + file.path + ". Consider re-creating the synced folder from server.")
+            // Duplicate shareId detected - create new share for this file
+            if (file instanceof TFile) {
+              const newDoc = await SharedDocument.fromTFile(file, { 
+                permanent: true, 
+                folder: folder.shareId 
+              }, plugin)
+              if (newDoc) {
+                // Update folder Y.Doc with new shareId
+                const documentMap = tx.doc.getMap("documents") as Y.Map<string>
+                documentMap.delete(key)
+                documentMap.set(newDoc.shareId, relativePath)
+              }
+            }
           }
         } else {
+          const inServerShares = plugin.settings.serverShares.files.has(normalizePath(absolutePath))
+          if (inServerShares) {
+            return
+          }
+
+          // Real conflict - file exists but is not a known permanent share
           showNotice("File " + file.path + " already exists. Renaming local file.")
 
           const alteredPath = path.join(path.dirname(relativePath), path.basename(relativePath, path.extname(relativePath)) + "_" + generateRandomString() + path.extname(relativePath))
@@ -216,10 +234,30 @@ export class SharedFolder extends SharedEntity {
     for (const entry of documentMap.entries()) {
       let docPath = entry[1]
       let absPath = path.join(folderPath!, docPath)
+      const normalizedAbsPath = normalizePath(absPath)
+      
+      // Check if this shareId is already used by a different file (duplicate corruption)
+      const existingDoc = SharedDocument.findById(entry[0])
+      if (existingDoc && existingDoc.path !== normalizedAbsPath) {
+        // Duplicate shareId detected - create new share for this file
+        const file = plugin.app.vault.getAbstractFileByPath(absPath)
+        if (file instanceof TFile) {
+          const newDoc = await SharedDocument.fromTFile(file, { 
+            permanent: true, 
+            folder: sFolder.shareId 
+          }, plugin)
+          if (newDoc) {
+            // Update folder Y.Doc with new shareId
+            documentMap.delete(entry[0])
+            documentMap.set(newDoc.shareId, docPath)
+          }
+        }
+        continue
+      }
+      
       if (docPath && paths.includes(normalizePath(docPath))) {
-        const existingDoc = SharedDocument.findById(entry[0])
         if (existingDoc) {
-          if (existingDoc.path === absPath) {
+          if (existingDoc.path === normalizedAbsPath) {
           } else {
             plugin.app.fileManager.renameFile(existingDoc.file, absPath)
           }

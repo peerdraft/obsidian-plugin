@@ -82,7 +82,7 @@
 					const sharedDoc = SharedDocument.findById(entry.publicAccessKey);
 					if (sharedDoc)
 						return {
-							name: "TBD",
+							name: sharedDoc.getOriginalFilename(),
 							id: entry.publicAccessKey,
 							url: sharedDoc.getShareURL(),
 							localPath: sharedDoc.path,
