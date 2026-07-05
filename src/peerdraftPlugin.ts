@@ -63,7 +63,7 @@ export default class PeerdraftPlugin extends Plugin {
           doc.removeExtensionFromLeaf(key)
           const leafs = getLeafsByPath(oldPath, plugin.pws.markdown)
           if (leafs.length === 0 && !doc.isPermanent) {
-            doc.unshare()
+            void doc.unshare()
           }
         }
         const newDoc = SharedDocument.findByPath(leaf.path)
@@ -94,7 +94,7 @@ export default class PeerdraftPlugin extends Plugin {
           doc.removeCanvasExtensionFromLeaf(key)
           const leafs = getCanvasLeafsByPath(oldPath, plugin.pws.canvas)
           if (leafs.length === 0 && !doc.isPermanent) {
-            doc.unshare()
+            void doc.unshare()
           }
         }
         SharedDocument.findByPath(leaf.path)?.addCanvasExtensionToLeaf(key)
@@ -120,7 +120,7 @@ export default class PeerdraftPlugin extends Plugin {
     );
 
     plugin.addRibbonIcon("users", "Show my Peerdraft Shares", () => {
-      activateView(plugin.app);
+      void activateView(plugin.app);
     });
 
     plugin.app.workspace.onLayoutReady(
@@ -130,7 +130,7 @@ export default class PeerdraftPlugin extends Plugin {
         this.serverSync.on("authenticated", (data) => {
           showNotice("Logged in to Peerdraft")
           plugin.settings.plan.type = data.plan.type
-          saveSettings(plugin.settings, plugin)
+          void saveSettings(plugin.settings, plugin)
         })
 
         this.serverSync.on('showMessage', (title, content) => {
@@ -141,7 +141,7 @@ export default class PeerdraftPlugin extends Plugin {
         })
 
         this.serverSync.connect()
-        this.serverSync.connected()
+        void this.serverSync.connected()
 
         for (const [path, data] of plugin.settings.serverShares.files.entries()) {
           await SharedDocument.fromPermanentShareDocument({ path, persistenceId: data.persistenceId, shareId: data.shareId }, plugin)
@@ -177,9 +177,9 @@ export default class PeerdraftPlugin extends Plugin {
         const doc = SharedDocument.findByPath(file.path)
         if (doc) return false
         if (checking) return true
-        promptForSessionType(plugin.app).then(result => {
+        void promptForSessionType(plugin.app).then(result => {
           if (!result) return
-          SharedDocument.fromView(view, plugin, { permanent: result.permanent }).then(doc => {
+          void SharedDocument.fromView(view, plugin, { permanent: result.permanent }).then(doc => {
             if (!doc) {
               return showNotice("ERROR creating sharedDoc")
             }
@@ -197,7 +197,7 @@ export default class PeerdraftPlugin extends Plugin {
         const doc = SharedDocument.findByPath(file.path)
         if (!doc || doc.isPermanent) return false
         if (checking) return true
-        doc.unshare().then(() => { })
+        void doc.unshare()
       }
     });
 
@@ -216,7 +216,7 @@ export default class PeerdraftPlugin extends Plugin {
       id: "viewShares",
       name: "Manage active persistent shares created by me",
       callback() {
-        activateView(plugin.app);
+        void activateView(plugin.app);
       }
     })
 
@@ -272,7 +272,7 @@ export default class PeerdraftPlugin extends Plugin {
             }
           }
           oldPathInFolder.removeDocument(doc);
-          doc.unshare();
+          void doc.unshare();
         }
         else if (newPathInFolder) {
           if (newPathInFolder.fileExtensions.has(file.extension)) {
@@ -301,7 +301,7 @@ export default class PeerdraftPlugin extends Plugin {
     plugin.registerEvent(plugin.app.vault.on('delete', async (file) => {
       if (file instanceof TFolder) {
         const folder = SharedFolder.findByPath(file.path)
-        folder?.unshare()
+        void folder?.unshare()
         return
       } else if (file instanceof TFile) {
         const folder = SharedFolder.getSharedFolderForSubPath(file.path)
@@ -346,7 +346,7 @@ export default class PeerdraftPlugin extends Plugin {
       const name = await promptForName(plugin.app)
       if (name && name.text) {
         this.settings.name = name.text
-        saveSettings(this.settings, plugin)
+        void saveSettings(this.settings, plugin)
       }
     }
     plugin.addSettingTab(settingsTab)
@@ -354,7 +354,7 @@ export default class PeerdraftPlugin extends Plugin {
 
   onunload() {
     SharedDocument.getAll().forEach((doc) => {
-      doc.destroy()
+      void doc.destroy()
     })
     SharedFolder.getAll().forEach(folder => {
       folder.destroy()

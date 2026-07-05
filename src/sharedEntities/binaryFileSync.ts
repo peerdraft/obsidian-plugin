@@ -192,14 +192,14 @@ export class BinaryFileSync {
             const metadata = this.binaryFilesMap.get(relativePath)
             if (metadata) {
               // File already in Y.Map - check hash before uploading
-              this.vault.readBinary(file).then((content) => {
+              void this.vault.readBinary(file).then((content) => {
                 const hash = calculateFileHash(content)
                 if (hash !== metadata.hash) {
                   console.log(`[BinaryFileSync] Created file hash differs from Y.Map - scheduling upload: ${file.path}`)
                   this.scheduleUpload(file)
                 } else {
                   console.log(`[BinaryFileSync] Created file matches Y.Map - skipping upload: ${file.path}`)
-                  this.updateStatus(relativePath)
+                  void this.updateStatus(relativePath)
                 }
               })
             } else {
@@ -226,7 +226,7 @@ export class BinaryFileSync {
             const metadata = this.binaryFilesMap.get(relativePath)
             if (metadata) {
               // File exists in Y.Map - check hash before uploading
-              this.vault.readBinary(file).then((content) => {
+              void this.vault.readBinary(file).then((content) => {
                 const hash = calculateFileHash(content)
                 if (hash !== metadata.hash) {
                   console.log(`[BinaryFileSync] Modified file hash differs from Y.Map - scheduling upload: ${file.path}`)
@@ -289,7 +289,7 @@ export class BinaryFileSync {
                 this.binaryFilesMap.delete(oldRelativePath)
               })
             }
-            this.removeStatus(oldRelativePath)
+            void this.removeStatus(oldRelativePath)
           }
         }
       })
@@ -318,25 +318,25 @@ export class BinaryFileSync {
               this.vault.readBinary(file).then((content) => {
                 const hash = calculateFileHash(content)
                 if (hash !== metadata.hash) {
-                  this.downloadFile(key, metadata)
+                  void this.downloadFile(key, metadata)
                 } else {
                   // Hashes match - update status to show in sync
-                  this.updateStatus(key)
+                  void this.updateStatus(key)
                 }
               }).catch((error) => {
                 console.error('[BinaryFileSync] Error reading file for hash comparison:', error)
               })
             } else {
               // File doesn't exist locally - download it
-              this.downloadFile(key, metadata)
+              void this.downloadFile(key, metadata)
             }
           }
         } else if (change.action === 'delete') {
           const absolutePath = this.getAbsolutePath(key)
-          this.removeStatus(key)
+          void this.removeStatus(key)
           const file = this.vault.getAbstractFileByPath(absolutePath)
           if (file) {
-            this.vault.delete(file)
+            void this.vault.delete(file)
           }
         }
       })
@@ -452,7 +452,7 @@ export class BinaryFileSync {
     relativePath: string,
     metadata: BinaryFileMetadata
   ): Promise<void> {
-    this.setSyncing(relativePath, true)
+    void this.setSyncing(relativePath, true)
     console.log(`[BinaryFileSync] downloadFile starting for: ${relativePath}, url=${metadata.downloadUrl}`)
     try {
       const absolutePath = this.getAbsolutePath(relativePath)
@@ -485,7 +485,7 @@ export class BinaryFileSync {
 
       const arrayBuffer = response.arrayBuffer
       console.log(`[BinaryFileSync] Downloaded ${arrayBuffer.byteLength} bytes`)
-      this.setSyncing(relativePath, false)
+      void this.setSyncing(relativePath, false)
 
       // Check if file exists locally
       const existingFile = this.vault.getAbstractFileByPath(absolutePath)
@@ -530,7 +530,7 @@ export class BinaryFileSync {
       new Notice(`Downloaded ${relativePath}`)
     } catch (error) {
       this.isUpdatingFromRemote = false
-      this.setSyncing(relativePath, false)
+      void this.setSyncing(relativePath, false)
       console.error('[BinaryFileSync] Binary file download error:', error)
       new Notice(`Failed to download ${relativePath}: ${(error as Error).message}`)
     }

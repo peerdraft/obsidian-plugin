@@ -1,4 +1,4 @@
-import { Modal, Plugin, PluginSettingTab, Setting, debounce, normalizePath, requestUrl } from "obsidian";
+import { Modal, Plugin, PluginSettingTab, Setting, debounce, normalizePath, requestUrl, sanitizeHTMLToDom } from "obsidian";
 import { showTextModal } from "./ui";
 import PeerdraftPlugin from "./peerdraftPlugin";
 import { promptForFolderSelection } from "./ui/selectFolder";
@@ -212,7 +212,7 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
       text.setValue(settings.name)
       text.onChange(async (value) => {
         settings.name = value
-        saveSettings(settings, plugin);
+        void saveSettings(settings, plugin);
       })
     })
 
@@ -223,7 +223,7 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
     text.setValue(settings.root)
     text.onChange(async value => {
       settings.root = value
-      saveSettings(settings, plugin)
+      void saveSettings(settings, plugin)
     })
 
     pathSetting.addExtraButton(button => {
@@ -233,7 +233,7 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
         if (folder) {
           text.setValue(folder.path)
           settings.root = folder.path
-          saveSettings(settings, plugin)
+          void saveSettings(settings, plugin)
         }
       })
     })
@@ -247,7 +247,7 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
 
     const accountDiv = accountSection.createEl("div", { text: "Loading account information..." })
     
-    fetchAccountSettings(plugin).then(settings => {
+    void fetchAccountSettings(plugin).then(settings => {
       if (!settings) {
         accountDiv.setText("Could not load account information.")
         return;
@@ -302,7 +302,7 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
         
         // Render HTML content
         const contentDiv = accountDiv.createDiv()
-        contentDiv.innerHTML = settings.upgrade.content
+        contentDiv.appendChild(sanitizeHTMLToDom(settings.upgrade.content))
         
         // Render buttons
         const upgradeSection = accountDiv.createDiv({ cls: "setting-item" })
@@ -338,7 +338,7 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
         button.setButtonText("Log out")
         button.onClick(async (e) => {
           await logout(plugin)
-          renderSettings(el, plugin)
+          void renderSettings(el, plugin)
         })
       })
   } else {
@@ -351,7 +351,7 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
         button.setButtonText("Log in or create account")
         button.onClick(async (e) => {
           await openLoginModal(plugin)
-          renderSettings(el, plugin)
+          void renderSettings(el, plugin)
         })
       })
   }

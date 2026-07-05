@@ -29,7 +29,7 @@ export default function <T>(url: string, token?: string) {
 		return true
 	}
 
-	get()
+	void get()
 
 	return { data, loading, error, get }
 }

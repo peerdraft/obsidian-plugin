@@ -31,7 +31,7 @@ export class PermanentShareStoreIndexedDB {
     })
     this.db.on("close", () => {
       if(this.keepOpen) {
-        this.db.open()
+        void this.db.open()
       }
     })
     this.documentTable = this.db._allTables["sharedDocs"] as Table<PermanentShareDocument, string>

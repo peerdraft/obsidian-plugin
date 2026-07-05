@@ -455,7 +455,7 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
     if (this.flushTimer) clearTimeout(this.flushTimer)
     this.flushTimer = setTimeout(() => {
       this.flushTimer = null
-      this.flushPendingUpdates()
+      void this.flushPendingUpdates()
     }, this.flushIntervalMs)
   }
 
@@ -514,7 +514,7 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
     if (this.fileFlushTimer) clearTimeout(this.fileFlushTimer)
     this.fileFlushTimer = setTimeout(() => {
       this.fileFlushTimer = null
-      this.flushToFile()
+      void this.flushToFile()
     }, this.fileFlushIntervalMs)
   }
 
@@ -538,7 +538,7 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
     this._cleanupDeferredIndexedDBCreation()
 
     if (this._indexedDBProvider) {
-      this._indexedDBProvider.destroy()
+      void this._indexedDBProvider.destroy()
       this._indexedDBProvider = undefined
     }
     this._indexedDBLoaded = false

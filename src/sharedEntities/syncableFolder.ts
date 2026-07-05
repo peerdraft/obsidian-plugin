@@ -355,7 +355,7 @@ export class SyncableFolder extends ObservableV2<{
 
     // Destroy IndexedDB provider to release DB connections and observers
     if (this._indexedDBProvider) {
-      this._indexedDBProvider.destroy()
+      void this._indexedDBProvider.destroy()
       this._indexedDBProvider = undefined
     }
 

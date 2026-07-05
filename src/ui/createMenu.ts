@@ -28,7 +28,7 @@ export const createMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlu
           item.setTitle('Share Folder')
           item.setIcon('share-2')
           item.onClick(() => {
-            SharedFolder.fromTFolder(file, plugin)
+            void SharedFolder.fromTFolder(file, plugin)
           })
         })
       }
@@ -37,7 +37,7 @@ export const createMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlu
         item.setTitle('Copy URL')
         item.setIcon('clipboard-copy')
         item.onClick(() => {
-          navigator.clipboard.writeText(plugin.settings.basePath + '/team/' + sharedFolder.shareId)
+          void navigator.clipboard.writeText(plugin.settings.basePath + '/team/' + sharedFolder.shareId)
         })
       })
       menu.addItem(item => {
@@ -65,7 +65,7 @@ export const createMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlu
         item.setTitle('Show folder options')
         item.setIcon('settings')
         item.onClick(async () => {
-          openFolderOptions(plugin.app, sharedFolder)
+          void openFolderOptions(plugin.app, sharedFolder)
         })
       })
     }
@@ -77,7 +77,7 @@ export const createMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlu
         item.setTitle(prefix + 'Copy URL')
         item.setIcon('clipboard-copy')
         item.onClick(() => {
-          navigator.clipboard.writeText(plugin.settings.basePath + '/cm/' + sharedDocument.shareId)
+          void navigator.clipboard.writeText(plugin.settings.basePath + '/cm/' + sharedDocument.shareId)
         })
       })
       if (sharedFolder) {
@@ -86,8 +86,8 @@ export const createMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlu
           item.setIcon('trash')
           item.onClick(async () => {
             sharedFolder.removeDocument(sharedDocument)
-            sharedDocument.unshare()
-            plugin.app.vault.delete(sharedDocument.file)
+            void sharedDocument.unshare()
+            void plugin.app.vault.delete(sharedDocument.file)
           })
         })
       } else {
@@ -116,7 +116,7 @@ export const createMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlu
           const relativePath = normalizePath(file.path.slice(sharedFolder.root.path.length + 1))
           sharedFolder.yDoc.getMap('binaryFiles').delete(relativePath)
           // Delete local file
-          plugin.app.vault.delete(file)
+          void plugin.app.vault.delete(file)
         })
       })
     } else if (!sharedFolder && ['md', 'MD', 'canvas'].includes(file.extension)) {
@@ -128,7 +128,7 @@ export const createMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlu
           const result = await promptForSessionType(plugin.app)
           if (!result) return
           const leaf = await openFileInNewTab(file, plugin.app.workspace)
-          SharedDocument.fromView(leaf.view as MarkdownView, plugin, { permanent: result.permanent })
+          void SharedDocument.fromView(leaf.view as MarkdownView, plugin, { permanent: result.permanent })
         })
       })
     }

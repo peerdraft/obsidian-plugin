@@ -110,7 +110,7 @@ class SharedFolderOptionsModal extends Modal {
     link.addButton(btn => {
       btn.setButtonText("Copy Peerdraft URL to clipboard")
       btn.onClick(()=> {
-        navigator.clipboard.writeText(this.folder.getShareURL())
+        void navigator.clipboard.writeText(this.folder.getShareURL())
         showNotice("Link copied to clipboard.")
       })
     })
@@ -401,7 +401,7 @@ class SharedFolderOptionsModal extends Modal {
                 const doc = SharedDocument.findByPath(file.path);
                 if (doc) {
                   this.folder.removeDocument(doc);
-                  doc.unshare();
+                  void doc.unshare();
                 }
               }
             }
