@@ -32,8 +32,8 @@ const handleMessage = async (data: string) => {
     }
   } else if (message.type === "resync") {
     for (const id of message.docs) {
-      SharedDocument.findById(id)?.syncWithServer()
-      SharedFolder.findById(id)?.syncWithServer()
+      void SharedDocument.findById(id)?.syncWithServer()
+      void SharedFolder.findById(id)?.syncWithServer()
     }
   } else if (message.type === "delete") {
     for (const id of message.docs) {
@@ -47,7 +47,7 @@ const handleMessage = async (data: string) => {
           const inFolder = SharedFolder.getSharedFolderForSubPath(document.path)
           if (!inFolder) {
             showNotice(document.path + " is not shared anymore.", undefined)
-            document.unshare()
+            void document.unshare()
           }
         }
       }
@@ -64,7 +64,9 @@ const setupWS = (client: ActiveStreamClient) => {
 
     websocket.onmessage = (event) => {
       client.wsLastMessageReceived = time.getUnixTime()
-      handleMessage(event.data)
+      void handleMessage(event.data).catch((error) => {
+        console.error('[ActiveStreamClient] Failed to handle message', error)
+      })
     }
 
     websocket.onerror = (event) => {

@@ -271,7 +271,7 @@ describe('SyncableFolder State Tracking', () => {
       syncable.on('serverSyncing', serverSyncingHandler)
       syncable.on('syncStateChanged', syncStateChangedHandler)
 
-      syncable.syncWithServer()
+      void syncable.syncWithServer()
 
       expect(syncable.serverSyncing).toBe(true)
       expect(serverSyncingHandler).toHaveBeenCalledTimes(1)
@@ -370,7 +370,7 @@ describe('SyncableFolder State Tracking', () => {
 
   describe('Initialization Guard Condition', () => {
     test('guard condition passes when serverSynced is true', () => {
-      syncable.syncWithServer()
+      void syncable.syncWithServer()
       syncedHandlers.forEach(handler => handler('test-share-id', 'test-hash'))
 
       expect(syncable.serverSynced).toBe(true)
@@ -417,7 +417,7 @@ describe('SyncableFolder State Tracking', () => {
       checkIndexedDBAlreadyExists.mockResolvedValue(true)
 
       await syncable.startIndexedDBSync('test-persistence-id')
-      syncable.syncWithServer()
+      void syncable.syncWithServer()
       syncedHandlers.forEach(handler => handler('test-share-id', 'test-hash'))
 
       expect(syncable.indexedDBLoaded).toBe(true)
@@ -447,7 +447,7 @@ describe('SyncableFolder State Tracking', () => {
         const serverSyncedHandler = jest.fn()
         syncable.on('serverSynced', serverSyncedHandler)
 
-        syncable.syncWithServer()
+        void syncable.syncWithServer()
         syncedHandlers.forEach(handler => handler('test-share-id', 'test-hash'))
 
         // Handler should have been called since listener was registered before sync
@@ -536,7 +536,7 @@ describe('SyncableFolder State Tracking', () => {
 
     test('should reset server sync state on setShareId change', () => {
       // Simulate successful sync
-      syncable.syncWithServer()
+      void syncable.syncWithServer()
       syncedHandlers.forEach(handler => handler('test-share-id', 'test-hash'))
 
       expect(syncable.serverSynced).toBe(true)

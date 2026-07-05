@@ -52,6 +52,6 @@ export const activateView = async (app: App) => {
     }
   }
   if (leaf) {
-    workspace.revealLeaf(leaf);
+    void workspace.revealLeaf(leaf);
   }
 }

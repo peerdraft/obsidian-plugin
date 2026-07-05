@@ -362,7 +362,7 @@ export class BinaryFileSync {
       const timeoutId = window.setTimeout(async () => {
         console.log(`[BinaryFileSync] Debounce fired for ${relativePath} - starting upload`)
         await this.setSyncing(relativePath, true)
-        this.uploadFile(file)
+        void this.uploadFile(file)
         this.uploadTimeouts.delete(relativePath)
       }, BINARY_FILE_SYNC_DEBOUNCE_MS)
 

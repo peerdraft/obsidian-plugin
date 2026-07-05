@@ -85,14 +85,14 @@ export class SharedDocument extends SharedEntity {
     if (this.findByPath(view.file.path)) return
     const doc = await this.fromTFile(view.file, opts, plugin)
     if (doc) {
-      doc.startWebRTCSync()
+      void doc.startWebRTCSync()
       if (doc.isPermanent && doc._webRTCProvider) {
         doc.getOwnerFragment().insert(0, doc._webRTCProvider.awareness.clientID.toFixed(0))
       } else {
         doc.addStatusBarEntry()
         pinLeaf(view.leaf)
       }
-      navigator.clipboard.writeText(plugin.settings.basePath + "/cm/" + doc.shareId)
+      void navigator.clipboard.writeText(plugin.settings.basePath + "/cm/" + doc.shareId)
       showNotice("Collaboration started for " + doc.path + ". Link copied to Clipboard.")
     }
     return doc
@@ -126,7 +126,7 @@ export class SharedDocument extends SharedEntity {
     if (doc.indexedDBProvider) {
       if (!doc.indexedDBProvider.synced) await doc.indexedDBProvider.whenSynced
     }
-    doc.syncWithServer()
+    void doc.syncWithServer()
     plugin.activeStreamClient.add([doc.shareId])
     doc._syncable._setNewDocConfirmed(true)
 
@@ -169,7 +169,7 @@ export class SharedDocument extends SharedEntity {
       }, 30000)
       doc.startWebRTCSync()
       if (isPermanent) {
-        doc.syncWithServer()
+        void doc.syncWithServer()
       }
       yDoc.on("update", handler)
     })
@@ -210,7 +210,7 @@ export class SharedDocument extends SharedEntity {
       if (doc.indexedDBProvider) {
         if (!doc.indexedDBProvider.synced) await doc.indexedDBProvider.whenSynced
       }
-      doc.syncWithServer()
+      void doc.syncWithServer()
       plugin.activeStreamClient.add([doc.shareId])
       await doc._updateStatusIndicator()
     } else {
@@ -256,11 +256,11 @@ export class SharedDocument extends SharedEntity {
     doc._file = file
     doc._syncable.setFileIO(new VaultFileIO(file, plugin))
 
-    doc.syncWithServer()
+    void doc.syncWithServer()
     await doc.setPermanent()
     doc._setupInitializationGuard()
     doc._setupStatusIndicatorSubscriptions()
-    doc._updateStatusIndicator()
+    void doc._updateStatusIndicator()
     await doc.startIndexedDBSync()
   }
 
@@ -309,11 +309,11 @@ export class SharedDocument extends SharedEntity {
     if (opts.permanent) {
       await doc.initServerYDoc(opts.folder)
       await doc.setPermanent()
-      doc.startIndexedDBSync()
+      void doc.startIndexedDBSync()
       doc._syncable._setIsNewDocument(true)
       doc._setupInitializationGuard()
       doc._setupStatusIndicatorSubscriptions()
-      doc.syncWithServer()
+      void doc.syncWithServer()
       await doc._updateStatusIndicator()
     } else {
       doc.setShareIdInternal(await plugin.serverSync.createNewSession())
@@ -425,7 +425,7 @@ export class SharedDocument extends SharedEntity {
     let lastCanvasUpdateMtime = 0
 
     const updateFile = debounce(() => {
-      canvasMutex.runExclusive(async () => {
+      void canvasMutex.runExclusive(async () => {
         const yCanvas = yDocToCanvasJSON(this.yDoc)
         const fileContent = await this.plugin.app.vault.read(this._file)
         const fileCanvas = JSONC.parse(fileContent || '{}')
@@ -447,7 +447,7 @@ export class SharedDocument extends SharedEntity {
 
     this.plugin.registerEvent(this.plugin.app.vault.on("modify", async (file) => {
       if (this.file === file && this.file.stat.mtime != lastCanvasUpdateMtime && this._canvasExtenstions.size === 0) {
-        canvasMutex.runExclusive(async () => {
+        void canvasMutex.runExclusive(async () => {
           const fileContent = await this.plugin.app.vault.read(this._file)
           applyDataChangesToDoc(JSONC.parse(fileContent || '{}'), this.yDoc)
         })
@@ -500,7 +500,7 @@ export class SharedDocument extends SharedEntity {
         }
 
         if (this.isPermanent) {
-          this._updateStatusIndicator()
+          void this._updateStatusIndicator()
         }
       } finally {
         release()
@@ -509,24 +509,24 @@ export class SharedDocument extends SharedEntity {
 
     const indexedDBHandler = (data: { wasEmpty: boolean }) => {
       if (this._checkInitializationGuard()) {
-        handleGuardConditionMet()
+        void handleGuardConditionMet()
       }
     }
     this._syncable.on('indexedDBLoaded', indexedDBHandler)
 
     const serverSyncedHandler = () => {
       if (this._checkInitializationGuard()) {
-        handleGuardConditionMet()
+        void handleGuardConditionMet()
       }
     }
     this._syncable.on('serverSynced', serverSyncedHandler)
 
     const syncStateChangedHandler = () => {
       if (this._checkInitializationGuard() && !this._initializationGuardPassed) {
-        handleGuardConditionMet()
+        void handleGuardConditionMet()
       }
       if (this.isPermanent && this._initializationGuardPassed) {
-        this._updateStatusIndicator()
+        void this._updateStatusIndicator()
       }
     }
     this._syncable.on('syncStateChanged', syncStateChangedHandler)
@@ -535,13 +535,13 @@ export class SharedDocument extends SharedEntity {
   private _setupStatusIndicatorSubscriptions() {
     this.plugin.serverSync.on('status', () => {
       if (this.isPermanent) {
-        this._updateStatusIndicator()
+        void this._updateStatusIndicator()
       }
     })
 
     this._syncable.on('syncStateChanged', () => {
       if (this.isPermanent) {
-        this._updateStatusIndicator()
+        void this._updateStatusIndicator()
       }
     })
   }
@@ -616,7 +616,7 @@ export class SharedDocument extends SharedEntity {
           if (owner != provider.awareness.clientID.toString()) {
             if (removedStrings.includes(owner) && !this.isPermanent) {
               showNotice("Shared session for " + this.path + " stopped by owner")
-              this.unshare()
+              void this.unshare()
             }
           }
         }
@@ -649,8 +649,8 @@ export class SharedDocument extends SharedEntity {
       this.addStatusBarEntry()
     }
     await moveDoc(oldPath, file.path, this.plugin)
-    removeIsSharedClass(oldPath, this.plugin)
-    this._updateStatusIndicator()
+    void removeIsSharedClass(oldPath, this.plugin)
+    void this._updateStatusIndicator()
   }
 
   async setPermanent() {
@@ -861,7 +861,7 @@ export class SharedDocument extends SharedEntity {
     menu.addItem((item) => {
       item.setTitle("Copy link")
       item.onClick(() => {
-        navigator.clipboard.writeText(this.plugin.settings.basePath + "/cm/" + this.shareId)
+        void navigator.clipboard.writeText(this.plugin.settings.basePath + "/cm/" + this.shareId)
         showNotice("Link copied to clipboard.")
       })
     })
@@ -891,13 +891,13 @@ export class SharedDocument extends SharedEntity {
   async unshare() {
     const dbEntry = getDocByPath(this.path, this.plugin)
     if (dbEntry) {
-      removeDoc(this.path, this.plugin)
+      void removeDoc(this.path, this.plugin)
     }
     if (this._syncable.indexedDBProvider) {
       await this._syncable.indexedDBProvider.clearData()
       await this._syncable.indexedDBProvider.destroy()
     }
-    this.destroy()
+    void this.destroy()
     await removeStatusClass(this.path, this.plugin)
   }
 
@@ -906,7 +906,7 @@ export class SharedDocument extends SharedEntity {
   }
 
   updateProperty(name: string, value: string, oldProperty?: string, type?: "string" | "array") {
-    this.plugin.app.fileManager.processFrontMatter(this.file, (fm) => {
+    void this.plugin.app.fileManager.processFrontMatter(this.file, (fm) => {
       if (oldProperty) {
         delete fm[oldProperty]
       }

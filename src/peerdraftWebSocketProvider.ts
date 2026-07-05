@@ -155,14 +155,14 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
       provider.emit('connected', [])
 
       if (provider.jwt) {
-        provider.authenticate(provider.jwt, provider.version)
+        void provider.authenticate(provider.jwt, provider.version)
       }
 
       const folderPromises = SyncableFolder.getAll().map(async (folder) => {
         if (folder.indexedDBProvider) {
           if (!folder.indexedDBProvider.synced) await folder.indexedDBProvider.whenSynced
         }
-        folder.syncWithServer()
+        void folder.syncWithServer()
       })
       await Promise.all(folderPromises)
 
@@ -171,7 +171,7 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
           if (syncable.indexedDBProvider) {
             if (!syncable.indexedDBProvider.synced) await syncable.indexedDBProvider.whenSynced
           }
-          syncable.syncWithServer()
+          void syncable.syncWithServer()
         }
       })
       await Promise.all(docPromises)
