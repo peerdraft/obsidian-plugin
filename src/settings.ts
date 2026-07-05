@@ -105,6 +105,7 @@ const DEFAULT_SETTINGS: Omit<Settings, "oid"> = {
 }
 
 const FORCE_SETTINGS: Partial<Settings> = {
+  /*
     basePath: "http://localhost:5173",
     subscriptionAPI: "http://localhost:5173/subscription",
     connectAPI: "http://localhost:5173/subscription/connect",
@@ -112,7 +113,7 @@ const FORCE_SETTINGS: Partial<Settings> = {
     sync: "ws://localhost:5173/sync",
     signaling: "ws://localhost:5173/signal",
     actives: "ws://localhost:5173/actives"
-    /*
+*/
   basePath: "https://www.peerdraft.app",
   subscriptionAPI: "https://www.peerdraft.app/subscription",
   connectAPI: "https://www.peerdraft.app/subscription/connect",
@@ -120,7 +121,6 @@ const FORCE_SETTINGS: Partial<Settings> = {
   sync: "wss://www.peerdraft.app/sync",
   signaling: "wss://www.peerdraft.app/signal",
   actives: "wss://www.peerdraft.app/actives",
-  */
 }
 
 export const migrateSettings = async (plugin: PeerdraftPlugin) => {
