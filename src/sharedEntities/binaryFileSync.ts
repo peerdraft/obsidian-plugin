@@ -181,11 +181,31 @@ export class BinaryFileSync {
     this.plugin.registerEvent(
       this.vault.on('create', (file) => {
         console.log(`[BinaryFileSync] vault 'create' event: ${file.path}, is TFile: ${file instanceof TFile}`)
+        if (this.isUpdatingFromRemote) {
+          console.log(`[BinaryFileSync] Skipping create event - updating from remote`)
+          return
+        }
         if (file instanceof TFile && this.isInFolder(file)) {
           console.log(`[BinaryFileSync] File in folder, isBinaryFile(${file.name}): ${isBinaryFile(file.name)}`)
           if (isBinaryFile(file.name)) {
-            console.log(`[BinaryFileSync] Scheduling upload for created file: ${file.path}`)
-            this.scheduleUpload(file)
+            const relativePath = this.getRelativePath(file)
+            const metadata = this.binaryFilesMap.get(relativePath)
+            if (metadata) {
+              // File already in Y.Map - check hash before uploading
+              this.vault.readBinary(file).then((content) => {
+                const hash = calculateFileHash(content)
+                if (hash !== metadata.hash) {
+                  console.log(`[BinaryFileSync] Created file hash differs from Y.Map - scheduling upload: ${file.path}`)
+                  this.scheduleUpload(file)
+                } else {
+                  console.log(`[BinaryFileSync] Created file matches Y.Map - skipping upload: ${file.path}`)
+                  this.updateStatus(relativePath)
+                }
+              })
+            } else {
+              console.log(`[BinaryFileSync] New file not in Y.Map - scheduling upload: ${file.path}`)
+              this.scheduleUpload(file)
+            }
           }
         }
       })
@@ -195,11 +215,30 @@ export class BinaryFileSync {
     this.plugin.registerEvent(
       this.vault.on('modify', (file) => {
         console.log(`[BinaryFileSync] vault 'modify' event: ${file.path}, is TFile: ${file instanceof TFile}`)
+        if (this.isUpdatingFromRemote) {
+          console.log(`[BinaryFileSync] Skipping modify event - updating from remote`)
+          return
+        }
         if (file instanceof TFile && this.isInFolder(file)) {
           console.log(`[BinaryFileSync] File in folder, isBinaryFile(${file.name}): ${isBinaryFile(file.name)}`)
           if (isBinaryFile(file.name)) {
-            console.log(`[BinaryFileSync] Scheduling upload for modified file: ${file.path}`)
-            this.scheduleUpload(file)
+            const relativePath = this.getRelativePath(file)
+            const metadata = this.binaryFilesMap.get(relativePath)
+            if (metadata) {
+              // File exists in Y.Map - check hash before uploading
+              this.vault.readBinary(file).then((content) => {
+                const hash = calculateFileHash(content)
+                if (hash !== metadata.hash) {
+                  console.log(`[BinaryFileSync] Modified file hash differs from Y.Map - scheduling upload: ${file.path}`)
+                  this.scheduleUpload(file)
+                } else {
+                  console.log(`[BinaryFileSync] Modified file matches Y.Map - skipping upload: ${file.path}`)
+                }
+              })
+            } else {
+              console.log(`[BinaryFileSync] Modified file not in Y.Map - scheduling upload: ${file.path}`)
+              this.scheduleUpload(file)
+            }
           }
         }
       })
@@ -280,6 +319,9 @@ export class BinaryFileSync {
                 const hash = calculateFileHash(content)
                 if (hash !== metadata.hash) {
                   this.downloadFile(key, metadata)
+                } else {
+                  // Hashes match - update status to show in sync
+                  this.updateStatus(key)
                 }
               }).catch((error) => {
                 console.error('[BinaryFileSync] Error reading file for hash comparison:', error)
