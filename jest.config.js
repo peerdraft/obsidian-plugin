@@ -22,7 +22,7 @@ module.exports = {
   coverageReporters: ['text', 'lcov'],
   verbose: true,
   transformIgnorePatterns: [
-    'node_modules/(?!(dexie|y-codemirror.next|y-indexeddb|y-webrtc|y-websocket|yjs)/)',
+    'node_modules/(?!(dexie|y-codemirror.next|y-indexeddb|y-webrtc|y-websocket|yjs|file-type|token-types|ieee754|strtok3)/)',
   ],
   extensionsToTreatAsEsm: ['.ts'],
 };

@@ -2,7 +2,6 @@ import { TAbstractFile, TFile, TFolder, Vault, Notice, normalizePath, requestUrl
 import * as path from 'path-browserify'
 import * as Y from 'yjs'
 import { calculateFileHash } from '../utils/hashCalculation'
-import { isBinaryFile } from '../utils/fileTypeDetection'
 import { fileTypeFromBuffer } from 'file-type'
 import PeerDraftPlugin from '../main'
 import { BINARY_PRESIGN_UPLOAD, MESSAGE_MULTIPLEX_SYNC } from '../peerdraftWebSocketProvider'
@@ -125,37 +124,8 @@ export class BinaryFileSync {
     // Setup observer for remote changes (but NOT vault listeners - peerdraftPlugin handles those)
     this.setupYDocObserver()
 
-    // Scan for existing binary files
-    const files = await this.getBinaryFilesInFolder(this.folder)
-    console.log(`[BinaryFileSync] Found ${files.length} binary files in folder: ${files.map(f => f.name).join(', ')}`)
-    
-    for (const file of files) {
-      const relativePath = this.getRelativePath(file)
-      const metadata = this.binaryFilesMap.get(relativePath)
-      console.log(`[BinaryFileSync] Checking ${relativePath} - metadata exists: ${!!metadata}`)
-      
-      if (!metadata) {
-        // Local file not in Y.Map - upload it
-        console.log(`[BinaryFileSync] Local file ${relativePath} not in Y.Map - scheduling upload`)
-        await this.scheduleUpload(file)
-      } else {
-        // Compare hashes
-        const content = await this.vault.readBinary(file)
-        const hash = calculateFileHash(content)
-        console.log(`[BinaryFileSync] Comparing hashes for ${relativePath}: local=${hash}, remote=${metadata.hash}, match=${hash === metadata.hash}`)
-        
-        if (hash !== metadata.hash) {
-          // Hashes differ - Y.Doc wins (last-write-wins)
-          console.log(`[BinaryFileSync] Hashes differ for ${relativePath} - downloading from remote`)
-          await this.downloadFile(relativePath, metadata)
-        } else {
-          console.log(`[BinaryFileSync] Hashes match for ${relativePath} - no action needed`)
-          await this.updateStatus(relativePath)
-        }
-      }
-    }
-
-    // Check for files in Y.Map that don't exist locally
+    // Only sync files already tracked in Y.Map (from previous sessions or remote peers)
+    // New local files are handled by peerdraftPlugin's create event handler
     for (const [relativePath, metadata] of this.binaryFilesMap.entries()) {
       const absolutePath = this.getAbsolutePath(relativePath)
       const file = this.vault.getAbstractFileByPath(absolutePath)
@@ -164,9 +134,17 @@ export class BinaryFileSync {
         // File exists in Y.Map but not locally - download it
         console.log(`[BinaryFileSync] Y.Map entry ${relativePath} missing locally - downloading`)
         await this.downloadFile(relativePath, metadata)
-      } else {
-        // File exists locally and in Y.Map - ensure status is correct
-        await this.updateStatus(relativePath)
+      } else if (file instanceof TFile) {
+        // File exists locally and in Y.Map - compare hashes
+        const content = await this.vault.readBinary(file)
+        const hash = calculateFileHash(content)
+        if (hash !== metadata.hash) {
+          console.log(`[BinaryFileSync] Hashes differ for ${relativePath} - downloading from remote`)
+          await this.downloadFile(relativePath, metadata)
+        } else {
+          console.log(`[BinaryFileSync] Hashes match for ${relativePath} - no action needed`)
+          await this.updateStatus(relativePath)
+        }
       }
     }
 
@@ -236,139 +214,12 @@ export class BinaryFileSync {
             this.binaryFilesMap.delete(oldRelativePath)
           })
         }
-        // Use file.path (new path) because Obsidian re-keys fileItems to the new path after rename
-        void removeStatusClass(file.path, this.plugin)
-        this.syncingFiles.delete(oldRelativePath)
+        void this.removeStatus(oldRelativePath)
       }
     } else if (!wasInFolder && isInFolder) {
       // Moved into folder - schedule upload
       this.scheduleUpload(file)
     }
-  }
-
-  /**
-   * REMOVED: BinaryFileSync no longer listens to vault events
-   * peerdraftPlugin handles all vault events and calls public methods
-   */
-  private setupListeners_REMOVED(): void {
-    // Handle file creation
-    this.plugin.registerEvent(
-      this.vault.on('create', (file) => {
-        console.log(`[BinaryFileSync] vault 'create' event: ${file.path}, is TFile: ${file instanceof TFile}`)
-        if (this.isUpdatingFromRemote) {
-          console.log(`[BinaryFileSync] Skipping create event - updating from remote`)
-          return
-        }
-        if (file instanceof TFile && this.isInFolder(file)) {
-          console.log(`[BinaryFileSync] File in folder, isBinaryFile(${file.name}): ${isBinaryFile(file.name)}`)
-          if (isBinaryFile(file.name)) {
-            const relativePath = this.getRelativePath(file)
-            const metadata = this.binaryFilesMap.get(relativePath)
-            if (metadata) {
-              // File already in Y.Map - check hash before uploading
-              void this.vault.readBinary(file).then((content) => {
-                const hash = calculateFileHash(content)
-                if (hash !== metadata.hash) {
-                  console.log(`[BinaryFileSync] Created file hash differs from Y.Map - scheduling upload: ${file.path}`)
-                  this.scheduleUpload(file)
-                } else {
-                  console.log(`[BinaryFileSync] Created file matches Y.Map - skipping upload: ${file.path}`)
-                  void this.updateStatus(relativePath)
-                }
-              })
-            } else {
-              console.log(`[BinaryFileSync] New file not in Y.Map - scheduling upload: ${file.path}`)
-              this.scheduleUpload(file)
-            }
-          }
-        }
-      })
-    )
-
-    // Handle file modification
-    this.plugin.registerEvent(
-      this.vault.on('modify', (file) => {
-        console.log(`[BinaryFileSync] vault 'modify' event: ${file.path}, is TFile: ${file instanceof TFile}`)
-        if (this.isUpdatingFromRemote) {
-          console.log(`[BinaryFileSync] Skipping modify event - updating from remote`)
-          return
-        }
-        if (file instanceof TFile && this.isInFolder(file)) {
-          console.log(`[BinaryFileSync] File in folder, isBinaryFile(${file.name}): ${isBinaryFile(file.name)}`)
-          if (isBinaryFile(file.name)) {
-            const relativePath = this.getRelativePath(file)
-            const metadata = this.binaryFilesMap.get(relativePath)
-            if (metadata) {
-              // File exists in Y.Map - check hash before uploading
-              void this.vault.readBinary(file).then((content) => {
-                const hash = calculateFileHash(content)
-                if (hash !== metadata.hash) {
-                  console.log(`[BinaryFileSync] Modified file hash differs from Y.Map - scheduling upload: ${file.path}`)
-                  this.scheduleUpload(file)
-                } else {
-                  console.log(`[BinaryFileSync] Modified file matches Y.Map - skipping upload: ${file.path}`)
-                }
-              })
-            } else {
-              console.log(`[BinaryFileSync] Modified file not in Y.Map - scheduling upload: ${file.path}`)
-              this.scheduleUpload(file)
-            }
-          }
-        }
-      })
-    )
-
-    // Handle file rename
-    this.plugin.registerEvent(
-      this.vault.on('rename', (file, oldPath) => {
-        console.log(`[BinaryFileSync] vault 'rename' event: ${oldPath} -> ${file.path}`)
-        if (!(file instanceof TFile) || !isBinaryFile(file.name)) {
-          return
-        }
-
-        const normalizedOldPath = normalizePath(oldPath)
-        const normalizedFolderPath = normalizePath(this.folder.path)
-        const wasInFolder = normalizedOldPath === normalizedFolderPath || normalizedOldPath.startsWith(normalizedFolderPath + '/')
-        const isInFolder = this.isInFolder(file)
-        console.log(`[BinaryFileSync] wasInFolder: ${wasInFolder}, isInFolder: ${isInFolder}`)
-
-        if (wasInFolder && isInFolder) {
-          // Rename within shared folder - update Y.Map path
-          if (normalizedOldPath !== normalizedFolderPath) {
-            const oldRelativePath = normalizedOldPath.slice(normalizedFolderPath.length + 1)
-            const newRelativePath = this.getRelativePath(file)
-            const metadata = this.binaryFilesMap.get(oldRelativePath)
-            console.log(`[BinaryFileSync] Rename within folder: ${oldRelativePath} -> ${newRelativePath}, metadata exists: ${!!metadata}`)
-            if (metadata) {
-              this.yDoc.transact(() => {
-                this.binaryFilesMap.delete(oldRelativePath)
-                this.binaryFilesMap.set(newRelativePath, {
-                  ...metadata,
-                  path: newRelativePath
-                })
-              })
-            }
-          }
-        } else if (!wasInFolder && isInFolder) {
-          // Moved INTO shared folder - treat as new file upload
-          console.log(`[BinaryFileSync] File moved INTO shared folder, scheduling upload: ${file.path}`)
-          this.scheduleUpload(file)
-        } else if (wasInFolder && !isInFolder) {
-          // Moved OUT OF shared folder - remove from Y.Map
-          if (normalizedOldPath !== normalizedFolderPath) {
-            const oldRelativePath = normalizedOldPath.slice(normalizedFolderPath.length + 1)
-            console.log(`[BinaryFileSync] File moved OUT of shared folder, removing: ${oldRelativePath}`)
-            if (this.binaryFilesMap.has(oldRelativePath)) {
-              this.yDoc.transact(() => {
-                this.binaryFilesMap.delete(oldRelativePath)
-              })
-            }
-            void this.removeStatus(oldRelativePath)
-          }
-        }
-      })
-    )
-
   }
 
   /**
@@ -427,7 +278,7 @@ export class BinaryFileSync {
       
       // Show syncing status immediately - don't wait for debounce
       void this.setSyncing(relativePath, true)
-
+      
       // Clear existing timeout
       const existingTimeout = this.uploadTimeouts.get(relativePath)
       if (existingTimeout) {
@@ -700,29 +551,6 @@ export class BinaryFileSync {
         return originalReject(...args)
       }
     })
-  }
-
-  /**
-   * Get all binary files in a folder recursively
-   * Only includes files whose extension is in the folder's fileExtensions setting
-   */
-  private async getBinaryFilesInFolder(folder: TFolder): Promise<TFile[]> {
-    const files: TFile[] = []
-    const extensions = this.getFileExtensions()
-    console.log(`[BinaryFileSync] Scanning folder: ${folder.path}, allowed extensions: ${Array.from(extensions).join(', ')}, children: ${folder.children.length}`)
-    
-    for (const child of folder.children) {
-      if (child instanceof TFile && extensions.has(child.extension.toLowerCase())) {
-        console.log(`[BinaryFileSync] Found allowed file: ${child.path}`)
-        files.push(child)
-      } else if (child instanceof TFolder) {
-        console.log(`[BinaryFileSync] Recursing into subfolder: ${child.path}`)
-        files.push(...await this.getBinaryFilesInFolder(child))
-      }
-    }
-    
-    console.log(`[BinaryFileSync] Folder scan complete for ${folder.path}: found ${files.length} binary files`)
-    return files
   }
 
   /**

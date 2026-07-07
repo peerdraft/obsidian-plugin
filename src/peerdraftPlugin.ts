@@ -252,68 +252,53 @@ export default class PeerdraftPlugin extends Plugin {
         const oldPathInFolder = SharedFolder.getSharedFolderForSubPath(oldPath)
         const newPathInFolder = SharedFolder.getSharedFolderForSubPath(file.path)
 
-        if (doc && oldPathInFolder) {
+        if (doc && oldPathInFolder && newPathInFolder) {
+          if (oldPathInFolder === newPathInFolder) {
+            oldPathInFolder.updatePath(oldPath, file.path)
+            return
+          }
+          if (newPathInFolder.fileExtensions.has(file.extension)) {
+            const isTrackedAsBinary = oldPathInFolder.isBinaryFileTracked(oldPath)
 
-          if (newPathInFolder) {
-            if (oldPathInFolder === newPathInFolder) {
-              oldPathInFolder.updatePath(oldPath, file.path)
-              return
+            if (isTrackedAsBinary) {
+              oldPathInFolder.handleBinaryFileRename(file, oldPath)
+              void newPathInFolder.handleBinaryFile(file)
             } else {
-              if (newPathInFolder.fileExtensions.has(file.extension)) {
-                // Optimization: Check if we already know the file type
-                const isTrackedAsBinary = oldPathInFolder.isBinaryFileTracked(oldPath)
-                
-                if (isTrackedAsBinary) {
-                  // Already tracked as binary - remove from old folder, add to new folder
-                  oldPathInFolder.handleBinaryFileRename(file, oldPath)
-                  void newPathInFolder.handleBinaryFile(file)
-                } else {
-                  // Either tracked as text (SharedDocument) or new file - detect MIME type
-                  const content = await plugin.app.vault.readBinary(file)
-                  const isBinary = await isBinaryContent(content, file.name)
-                  
-                  if (isBinary) {
-                    // Route to BinaryFileSync
-                    newPathInFolder.handleBinaryFileRename(file, oldPath)
-                  } else {
-                    // Route to SharedDocument (text file)
-                    const newDoc = await SharedDocument.fromTFile(file, { permanent: true, folder: newPathInFolder.shareId }, plugin)
-                    if (newDoc) {
-                      newPathInFolder.addDocument(newDoc)
-                      const prop = newPathInFolder.getAutoFillProperty()
-                      if (prop) newDoc.updateProperty(prop, newDoc.getShareURL())
-                      const authorProp = newPathInFolder.getAutoFillAuthorProperty()
-                      const authorPropType = newPathInFolder.getAutoFillAuthorPropertyType()
-                      if (authorProp) newDoc.updateProperty(authorProp, plugin.settings.name, undefined, authorPropType)
-                    }
-                  }
+              const content = await plugin.app.vault.readBinary(file)
+              const isBinary = await isBinaryContent(content, file.name)
+
+              if (isBinary) {
+                newPathInFolder.handleBinaryFileRename(file, oldPath)
+              } else {
+                const newDoc = await SharedDocument.fromTFile(file, { permanent: true, folder: newPathInFolder.shareId }, plugin)
+                if (newDoc) {
+                  newPathInFolder.addDocument(newDoc)
+                  const prop = newPathInFolder.getAutoFillProperty()
+                  if (prop) newDoc.updateProperty(prop, newDoc.getShareURL())
+                  const authorProp = newPathInFolder.getAutoFillAuthorProperty()
+                  const authorPropType = newPathInFolder.getAutoFillAuthorPropertyType()
+                  if (authorProp) newDoc.updateProperty(authorProp, plugin.settings.name, undefined, authorPropType)
                 }
               }
             }
           }
           oldPathInFolder.removeDocument(doc);
-          // Update path to new location before unsharing so removeStatusClass targets the correct DOM element
           doc.updateFileRef(file)
           void doc.unshare();
         }
         else if (newPathInFolder) {
           if (newPathInFolder.fileExtensions.has(file.extension)) {
-            // Optimization: Check if we already know the file type
             const isTrackedAsBinary = oldPathInFolder?.isBinaryFileTracked(oldPath) ?? false
-            
+
             if (isTrackedAsBinary) {
-              // Already tracked as binary - no need to read content
               newPathInFolder.handleBinaryFileRename(file, oldPath)
             } else {
-              // Either tracked as text (SharedDocument) or new file - detect MIME type
               const content = await plugin.app.vault.readBinary(file)
               const isBinary = await isBinaryContent(content, file.name)
-              
+
               if (isBinary) {
-                // Route to BinaryFileSync
                 newPathInFolder.handleBinaryFileRename(file, oldPath)
               } else {
-                // Route to SharedDocument (text file)
                 const newDoc = doc ?? await SharedDocument.fromTFile(file, { permanent: true, folder: newPathInFolder.shareId }, plugin)
                 if (newDoc) {
                   newPathInFolder.addDocument(newDoc)
@@ -328,16 +313,12 @@ export default class PeerdraftPlugin extends Plugin {
           }
         }
         else if (oldPathInFolder) {
-          // File moved out of shared folder - check if it was a binary file
           const isTrackedAsBinary = oldPathInFolder.isBinaryFileTracked(oldPath)
           if (isTrackedAsBinary) {
-            // Remove from binary sync
             oldPathInFolder.handleBinaryFileRename(file, oldPath)
           }
         }
         else if (doc) {
-          // Text file moved out of shared folder - update path first, then unshare
-          // so removeStatusClass targets the new path (Obsidian re-keys fileItems after rename)
           await doc.setNewFileLocation(file)
           void doc.unshare()
         }
@@ -352,23 +333,16 @@ export default class PeerdraftPlugin extends Plugin {
     // Handle file modification
     plugin.registerEvent(plugin.app.vault.on('modify', async (file) => {
       if (!(file instanceof TFile)) return
-      
+
       const folder = SharedFolder.getSharedFolderForSubPath(file.path)
       if (!folder) return
-      
-      // Check if extension is allowed
       if (!folder.fileExtensions.has(file.extension)) return
-      
-      // Detect if binary or text
+
       const content = await plugin.app.vault.readBinary(file)
       const isBinary = await isBinaryContent(content, file.name)
-      
+
       if (isBinary) {
-        // Route to BinaryFileSync
         await folder.handleBinaryFile(file)
-      } else {
-        // SharedDocument handles its own modify events via editor listeners
-        // No action needed here for text files
       }
     }))
 
@@ -398,16 +372,13 @@ export default class PeerdraftPlugin extends Plugin {
           if (SharedDocument.findByPath(file.path)) return
           if (plugin.settings.serverShares.files.has(normalizePath(file.path))) return
           if (!folder.fileExtensions.has(file.extension)) return
-          
-          // Detect if binary or text
+
           const content = await plugin.app.vault.readBinary(file)
           const isBinary = await isBinaryContent(content, file.name)
-          
+
           if (isBinary) {
-            // Route to BinaryFileSync
             await folder.handleBinaryFile(file)
           } else {
-            // Route to SharedDocument (text file)
             const doc = await SharedDocument.fromTFile(file, {
               permanent: true,
               folder: folder.shareId

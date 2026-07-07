@@ -1,5 +1,4 @@
 import { fileTypeFromBuffer } from 'file-type'
-import { isBinaryByExtension } from './extensionCheck'
 
 /**
  * Text MIME type prefixes - files with these MIME types are synced as text via Y.Text
@@ -31,8 +30,11 @@ export async function isBinaryContent(content: ArrayBuffer | Uint8Array, filenam
       return !TEXT_MIME_PREFIXES.some(prefix => fileType.mime.startsWith(prefix))
     }
     
-    // Fallback: extension-based check
-    return isBinaryByExtension(filename)
+    // Fallback: simple extension check for common text files
+    const textExtensions = ['md', 'txt', 'json', 'xml', 'html', 'htm', 'css', 'js', 'ts', 'jsx', 'tsx', 'csv', 'yaml', 'yml', 'canvas']
+    const extension = filename.split('.').pop()?.toLowerCase()
+    const isTextExtension = extension ? textExtensions.includes(extension) : false
+    return !isTextExtension
   } catch (error) {
     console.error('[fileTypeDetection] Error detecting file type:', error)
     // On error, assume binary to be safe
@@ -47,5 +49,8 @@ export async function isBinaryContent(content: ArrayBuffer | Uint8Array, filenam
  * @returns true if file is likely binary based on extension
  */
 export function isBinaryFile(filename: string): boolean {
-  return isBinaryByExtension(filename)
+  // Simple heuristic: common text file extensions
+  const textExtensions = ['md', 'txt', 'json', 'xml', 'html', 'htm', 'css', 'js', 'ts', 'jsx', 'tsx', 'csv', 'yaml', 'yml', 'canvas']
+  const extension = filename.split('.').pop()?.toLowerCase()
+  return extension ? !textExtensions.includes(extension) : true
 }
