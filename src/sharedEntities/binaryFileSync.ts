@@ -2,7 +2,8 @@ import { TAbstractFile, TFile, TFolder, Vault, Notice, normalizePath, requestUrl
 import * as path from 'path-browserify'
 import * as Y from 'yjs'
 import { calculateFileHash } from '../utils/hashCalculation'
-import { isBinaryFile, getMimeType } from '../utils/fileTypeDetection'
+import { isBinaryFile } from '../utils/fileTypeDetection'
+import { fileTypeFromBuffer } from 'file-type'
 import PeerDraftPlugin from '../main'
 import { BINARY_PRESIGN_UPLOAD, MESSAGE_MULTIPLEX_SYNC } from '../peerdraftWebSocketProvider'
 import * as encoding from 'lib0/encoding'
@@ -121,8 +122,7 @@ export class BinaryFileSync {
     console.log(`[BinaryFileSync] initialize() starting for folder: ${this.folder.path}`)
     console.log(`[BinaryFileSync] Current binaryFilesMap entries: ${Array.from(this.binaryFilesMap.keys()).join(', ') || '(none)'}`)
 
-    // Set up listeners now that we're ready to process events
-    this.setupListeners()
+    // Setup observer for remote changes (but NOT vault listeners - peerdraftPlugin handles those)
     this.setupYDocObserver()
 
     // Scan for existing binary files
@@ -174,9 +174,83 @@ export class BinaryFileSync {
   }
 
   /**
-   * Setup vault file change listeners
+   * PUBLIC API: Handle a binary file that was created or modified
+   * Called by peerdraftPlugin after determining file is binary
    */
-  private setupListeners(): void {
+  public async handleBinaryFile(file: TFile): Promise<void> {
+    if (!this.isInFolder(file)) return
+    
+    const relativePath = this.getRelativePath(file)
+    const metadata = this.binaryFilesMap.get(relativePath)
+    
+    if (metadata) {
+      // File already tracked - check if hash changed
+      const content = await this.vault.readBinary(file)
+      const hash = calculateFileHash(content)
+      if (hash !== metadata.hash) {
+        console.log(`[BinaryFileSync] File hash changed, scheduling upload: ${file.path}`)
+        this.scheduleUpload(file)
+      } else {
+        console.log(`[BinaryFileSync] File hash unchanged: ${file.path}`)
+        await this.updateStatus(relativePath)
+      }
+    } else {
+      // New binary file - schedule upload
+      console.log(`[BinaryFileSync] New binary file, scheduling upload: ${file.path}`)
+      this.scheduleUpload(file)
+    }
+  }
+
+  /**
+   * PUBLIC API: Handle a binary file rename/move
+   * Called by peerdraftPlugin after determining file is binary
+   */
+  public handleBinaryFileRename(file: TFile, oldPath: string): void {
+    const normalizedOldPath = normalizePath(oldPath)
+    const normalizedFolderPath = normalizePath(this.folder.path)
+    const wasInFolder = normalizedOldPath === normalizedFolderPath || normalizedOldPath.startsWith(normalizedFolderPath + '/')
+    const isInFolder = this.isInFolder(file)
+    
+    if (wasInFolder && isInFolder) {
+      // Rename within folder - update Y.Map path
+      if (normalizedOldPath !== normalizedFolderPath) {
+        const oldRelativePath = normalizedOldPath.slice(normalizedFolderPath.length + 1)
+        const newRelativePath = this.getRelativePath(file)
+        const metadata = this.binaryFilesMap.get(oldRelativePath)
+        if (metadata) {
+          this.yDoc.transact(() => {
+            this.binaryFilesMap.delete(oldRelativePath)
+            this.binaryFilesMap.set(newRelativePath, {
+              ...metadata,
+              path: newRelativePath
+            })
+          })
+        }
+      }
+    } else if (wasInFolder && !isInFolder) {
+      // Moved out of folder - remove from Y.Map
+      if (normalizedOldPath !== normalizedFolderPath) {
+        const oldRelativePath = normalizedOldPath.slice(normalizedFolderPath.length + 1)
+        if (this.binaryFilesMap.has(oldRelativePath)) {
+          this.yDoc.transact(() => {
+            this.binaryFilesMap.delete(oldRelativePath)
+          })
+        }
+        // Use file.path (new path) because Obsidian re-keys fileItems to the new path after rename
+        void removeStatusClass(file.path, this.plugin)
+        this.syncingFiles.delete(oldRelativePath)
+      }
+    } else if (!wasInFolder && isInFolder) {
+      // Moved into folder - schedule upload
+      this.scheduleUpload(file)
+    }
+  }
+
+  /**
+   * REMOVED: BinaryFileSync no longer listens to vault events
+   * peerdraftPlugin handles all vault events and calls public methods
+   */
+  private setupListeners_REMOVED(): void {
     // Handle file creation
     this.plugin.registerEvent(
       this.vault.on('create', (file) => {
@@ -351,6 +425,9 @@ export class BinaryFileSync {
       const relativePath = this.getRelativePath(file)
       console.log(`[BinaryFileSync] scheduleUpload: ${relativePath}, debounce: ${BINARY_FILE_SYNC_DEBOUNCE_MS}ms`)
       
+      // Show syncing status immediately - don't wait for debounce
+      void this.setSyncing(relativePath, true)
+
       // Clear existing timeout
       const existingTimeout = this.uploadTimeouts.get(relativePath)
       if (existingTimeout) {
@@ -361,7 +438,6 @@ export class BinaryFileSync {
       // Set new timeout
       const timeoutId = window.setTimeout(async () => {
         console.log(`[BinaryFileSync] Debounce fired for ${relativePath} - starting upload`)
-        await this.setSyncing(relativePath, true)
         void this.uploadFile(file)
         this.uploadTimeouts.delete(relativePath)
       }, BINARY_FILE_SYNC_DEBOUNCE_MS)
@@ -398,13 +474,18 @@ export class BinaryFileSync {
       const folderId = this.getFolderId()
       console.log(`[BinaryFileSync] Requesting presigned URL: folderId=${folderId}, path=${relativePath}, size=${file.stat.size}`)
 
+      // Detect MIME type from file content using magic bytes
+      const fileTypeResult = await fileTypeFromBuffer(content)
+      const contentType = fileTypeResult?.mime || 'application/octet-stream'
+      console.log(`[BinaryFileSync] Detected MIME type: ${contentType}`)
+
       // Request presigned upload URL from server
       const { uploadUrl, storageKey, downloadUrl } = await this.requestPresignedUpload({
         folderId,
         relativePath,
         hash,
         size: file.stat.size,
-        contentType: getMimeType(file.name)
+        contentType
       })
       console.log(`[BinaryFileSync] Got presigned URL, storageKey=${storageKey}, uploadUrl length=${uploadUrl?.length || 0}`)
 
@@ -431,7 +512,7 @@ export class BinaryFileSync {
           size: file.stat.size,
           storageKey,
           downloadUrl,
-          contentType: getMimeType(file.name),
+          contentType, // Already detected from magic bytes above
           uploadedAt: Date.now()
         })
       })
@@ -623,14 +704,16 @@ export class BinaryFileSync {
 
   /**
    * Get all binary files in a folder recursively
+   * Only includes files whose extension is in the folder's fileExtensions setting
    */
   private async getBinaryFilesInFolder(folder: TFolder): Promise<TFile[]> {
     const files: TFile[] = []
-    console.log(`[BinaryFileSync] Scanning folder: ${folder.path}, children: ${folder.children.length}`)
+    const extensions = this.getFileExtensions()
+    console.log(`[BinaryFileSync] Scanning folder: ${folder.path}, allowed extensions: ${Array.from(extensions).join(', ')}, children: ${folder.children.length}`)
     
     for (const child of folder.children) {
-      if (child instanceof TFile && isBinaryFile(child.name)) {
-        console.log(`[BinaryFileSync] Found binary file: ${child.path}`)
+      if (child instanceof TFile && extensions.has(child.extension.toLowerCase())) {
+        console.log(`[BinaryFileSync] Found allowed file: ${child.path}`)
         files.push(child)
       } else if (child instanceof TFolder) {
         console.log(`[BinaryFileSync] Recursing into subfolder: ${child.path}`)

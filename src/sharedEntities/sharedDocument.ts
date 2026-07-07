@@ -650,7 +650,18 @@ export class SharedDocument extends SharedEntity {
     }
     await moveDoc(oldPath, file.path, this.plugin)
     void removeIsSharedClass(oldPath, this.plugin)
+    // Remove status from new path because Obsidian re-keys fileItems to the new path after rename
+    void removeStatusClass(this._path, this.plugin)
     void this._updateStatusIndicator()
+  }
+
+  /**
+   * Update internal file reference and path without moving doc or setting status.
+   * Used before unshare() so removeStatusClass targets the correct DOM element.
+   */
+  updateFileRef(file: TFile) {
+    this._file = file
+    this._path = normalizePath(file.path)
   }
 
   async setPermanent() {

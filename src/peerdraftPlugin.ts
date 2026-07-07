@@ -10,6 +10,7 @@ import { SharedDocument } from "./sharedEntities/sharedDocument"
 import { fromShareURL } from "./sharedEntities/sharedEntityFactory"
 import { SharedFolder } from "./sharedEntities/sharedFolder"
 import { showNotice } from "./ui"
+import { isBinaryContent } from "./utils/fileTypeDetection"
 import { promptForSessionType } from "./ui/chooseSessionType"
 import { createMenu, createMenuAsSubMenu } from "./ui/createMenu"
 import { promptForName, promptForURL } from "./ui/enterText"
@@ -259,7 +260,61 @@ export default class PeerdraftPlugin extends Plugin {
               return
             } else {
               if (newPathInFolder.fileExtensions.has(file.extension)) {
-                const newDoc = await SharedDocument.fromTFile(file, { permanent: true, folder: newPathInFolder.shareId }, plugin)
+                // Optimization: Check if we already know the file type
+                const isTrackedAsBinary = oldPathInFolder.isBinaryFileTracked(oldPath)
+                
+                if (isTrackedAsBinary) {
+                  // Already tracked as binary - remove from old folder, add to new folder
+                  oldPathInFolder.handleBinaryFileRename(file, oldPath)
+                  void newPathInFolder.handleBinaryFile(file)
+                } else {
+                  // Either tracked as text (SharedDocument) or new file - detect MIME type
+                  const content = await plugin.app.vault.readBinary(file)
+                  const isBinary = await isBinaryContent(content, file.name)
+                  
+                  if (isBinary) {
+                    // Route to BinaryFileSync
+                    newPathInFolder.handleBinaryFileRename(file, oldPath)
+                  } else {
+                    // Route to SharedDocument (text file)
+                    const newDoc = await SharedDocument.fromTFile(file, { permanent: true, folder: newPathInFolder.shareId }, plugin)
+                    if (newDoc) {
+                      newPathInFolder.addDocument(newDoc)
+                      const prop = newPathInFolder.getAutoFillProperty()
+                      if (prop) newDoc.updateProperty(prop, newDoc.getShareURL())
+                      const authorProp = newPathInFolder.getAutoFillAuthorProperty()
+                      const authorPropType = newPathInFolder.getAutoFillAuthorPropertyType()
+                      if (authorProp) newDoc.updateProperty(authorProp, plugin.settings.name, undefined, authorPropType)
+                    }
+                  }
+                }
+              }
+            }
+          }
+          oldPathInFolder.removeDocument(doc);
+          // Update path to new location before unsharing so removeStatusClass targets the correct DOM element
+          doc.updateFileRef(file)
+          void doc.unshare();
+        }
+        else if (newPathInFolder) {
+          if (newPathInFolder.fileExtensions.has(file.extension)) {
+            // Optimization: Check if we already know the file type
+            const isTrackedAsBinary = oldPathInFolder?.isBinaryFileTracked(oldPath) ?? false
+            
+            if (isTrackedAsBinary) {
+              // Already tracked as binary - no need to read content
+              newPathInFolder.handleBinaryFileRename(file, oldPath)
+            } else {
+              // Either tracked as text (SharedDocument) or new file - detect MIME type
+              const content = await plugin.app.vault.readBinary(file)
+              const isBinary = await isBinaryContent(content, file.name)
+              
+              if (isBinary) {
+                // Route to BinaryFileSync
+                newPathInFolder.handleBinaryFileRename(file, oldPath)
+              } else {
+                // Route to SharedDocument (text file)
+                const newDoc = doc ?? await SharedDocument.fromTFile(file, { permanent: true, folder: newPathInFolder.shareId }, plugin)
                 if (newDoc) {
                   newPathInFolder.addDocument(newDoc)
                   const prop = newPathInFolder.getAutoFillProperty()
@@ -271,30 +326,49 @@ export default class PeerdraftPlugin extends Plugin {
               }
             }
           }
-          oldPathInFolder.removeDocument(doc);
-          void doc.unshare();
         }
-        else if (newPathInFolder) {
-          if (newPathInFolder.fileExtensions.has(file.extension)) {
-            const newDoc = doc ?? await SharedDocument.fromTFile(file, { permanent: true, folder: newPathInFolder.shareId }, plugin)
-            if (newDoc) {
-              newPathInFolder.addDocument(newDoc)
-              const prop = newPathInFolder.getAutoFillProperty()
-              if (prop) newDoc.updateProperty(prop, newDoc.getShareURL())
-              const authorProp = newPathInFolder.getAutoFillAuthorProperty()
-              const authorPropType = newPathInFolder.getAutoFillAuthorPropertyType()
-              if (authorProp) newDoc.updateProperty(authorProp, plugin.settings.name, undefined, authorPropType)
-            }
+        else if (oldPathInFolder) {
+          // File moved out of shared folder - check if it was a binary file
+          const isTrackedAsBinary = oldPathInFolder.isBinaryFileTracked(oldPath)
+          if (isTrackedAsBinary) {
+            // Remove from binary sync
+            oldPathInFolder.handleBinaryFileRename(file, oldPath)
           }
         }
         else if (doc) {
+          // Text file moved out of shared folder - update path first, then unshare
+          // so removeStatusClass targets the new path (Obsidian re-keys fileItems after rename)
           await doc.setNewFileLocation(file)
+          void doc.unshare()
         }
       } else if (file instanceof TFolder) {
         const folder = SharedFolder.findByPath(oldPath)
         if (folder) {
           await folder.setNewFolderLocation(file)
         }
+      }
+    }))
+
+    // Handle file modification
+    plugin.registerEvent(plugin.app.vault.on('modify', async (file) => {
+      if (!(file instanceof TFile)) return
+      
+      const folder = SharedFolder.getSharedFolderForSubPath(file.path)
+      if (!folder) return
+      
+      // Check if extension is allowed
+      if (!folder.fileExtensions.has(file.extension)) return
+      
+      // Detect if binary or text
+      const content = await plugin.app.vault.readBinary(file)
+      const isBinary = await isBinaryContent(content, file.name)
+      
+      if (isBinary) {
+        // Route to BinaryFileSync
+        await folder.handleBinaryFile(file)
+      } else {
+        // SharedDocument handles its own modify events via editor listeners
+        // No action needed here for text files
       }
     }))
 
@@ -324,17 +398,28 @@ export default class PeerdraftPlugin extends Plugin {
           if (SharedDocument.findByPath(file.path)) return
           if (plugin.settings.serverShares.files.has(normalizePath(file.path))) return
           if (!folder.fileExtensions.has(file.extension)) return
-          const doc = await SharedDocument.fromTFile(file, {
-            permanent: true,
-            folder: folder.shareId
-          }, plugin)
-          if (doc) {
-            folder.addDocument(doc)
-            const prop = folder.getAutoFillProperty()
-            if (prop) doc.updateProperty(prop, doc.getShareURL())
-            const authorProp = folder.getAutoFillAuthorProperty()
-            const authorPropType = folder.getAutoFillAuthorPropertyType()
-            if (authorProp) doc.updateProperty(authorProp, plugin.settings.name, undefined, authorPropType)
+          
+          // Detect if binary or text
+          const content = await plugin.app.vault.readBinary(file)
+          const isBinary = await isBinaryContent(content, file.name)
+          
+          if (isBinary) {
+            // Route to BinaryFileSync
+            await folder.handleBinaryFile(file)
+          } else {
+            // Route to SharedDocument (text file)
+            const doc = await SharedDocument.fromTFile(file, {
+              permanent: true,
+              folder: folder.shareId
+            }, plugin)
+            if (doc) {
+              folder.addDocument(doc)
+              const prop = folder.getAutoFillProperty()
+              if (prop) doc.updateProperty(prop, doc.getShareURL())
+              const authorProp = folder.getAutoFillAuthorProperty()
+              const authorPropType = folder.getAutoFillAuthorPropertyType()
+              if (authorProp) doc.updateProperty(authorProp, plugin.settings.name, undefined, authorPropType)
+            }
           }
         })))
       }
