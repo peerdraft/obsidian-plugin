@@ -313,9 +313,14 @@ export default class PeerdraftPlugin extends Plugin {
           }
         }
         else if (oldPathInFolder) {
+          // File moved out of shared folder
           const isTrackedAsBinary = oldPathInFolder.isBinaryFileTracked(oldPath)
           if (isTrackedAsBinary) {
             oldPathInFolder.handleBinaryFileRename(file, oldPath)
+          }
+          if (doc) {
+            doc.updateFileRef(file)
+            void doc.unshare()
           }
         }
         else if (doc) {

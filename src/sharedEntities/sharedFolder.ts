@@ -146,7 +146,7 @@ export class SharedFolder extends SharedEntity {
       return false
     }
     const relativePath = normalizedFilePath.slice(normalizedFolderPath.length + 1)
-    return this._binaryFileSync['binaryFilesMap'].has(relativePath)
+    return this._binaryFileSync.isFileTracked(relativePath)
   }
 
   static async fromTFolder(root: TFolder, plugin: PeerDraftPlugin) {

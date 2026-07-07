@@ -3,6 +3,7 @@ import * as path from 'path-browserify'
 import * as Y from 'yjs'
 import { calculateFileHash } from '../utils/hashCalculation'
 import { fileTypeFromBuffer } from 'file-type'
+import { getMimeTypeFromExtension } from '../utils/fileTypeDetection'
 import PeerDraftPlugin from '../main'
 import { BINARY_PRESIGN_UPLOAD, MESSAGE_MULTIPLEX_SYNC } from '../peerdraftWebSocketProvider'
 import * as encoding from 'lib0/encoding'
@@ -152,6 +153,13 @@ export class BinaryFileSync {
   }
 
   /**
+   * PUBLIC API: Check if a file is tracked (in binaryFilesMap or currently syncing)
+   */
+  public isFileTracked(relativePath: string): boolean {
+    return this.binaryFilesMap.has(relativePath) || this.syncingFiles.has(relativePath)
+  }
+
+  /**
    * PUBLIC API: Handle a binary file that was created or modified
    * Called by peerdraftPlugin after determining file is binary
    */
@@ -206,7 +214,7 @@ export class BinaryFileSync {
         }
       }
     } else if (wasInFolder && !isInFolder) {
-      // Moved out of folder - remove from Y.Map
+      // Moved out of folder - remove from Y.Map and cancel pending uploads
       if (normalizedOldPath !== normalizedFolderPath) {
         const oldRelativePath = normalizedOldPath.slice(normalizedFolderPath.length + 1)
         if (this.binaryFilesMap.has(oldRelativePath)) {
@@ -214,7 +222,15 @@ export class BinaryFileSync {
             this.binaryFilesMap.delete(oldRelativePath)
           })
         }
-        void this.removeStatus(oldRelativePath)
+        // Cancel pending upload if any
+        const existingTimeout = this.uploadTimeouts.get(oldRelativePath)
+        if (existingTimeout) {
+          window.clearTimeout(existingTimeout)
+          this.uploadTimeouts.delete(oldRelativePath)
+        }
+        // Use file.path (new path) because Obsidian re-keys fileItems to the new path after rename
+        void removeStatusClass(file.path, this.plugin)
+        this.syncingFiles.delete(oldRelativePath)
       }
     } else if (!wasInFolder && isInFolder) {
       // Moved into folder - schedule upload
@@ -327,8 +343,8 @@ export class BinaryFileSync {
 
       // Detect MIME type from file content using magic bytes
       const fileTypeResult = await fileTypeFromBuffer(content)
-      const contentType = fileTypeResult?.mime || 'application/octet-stream'
-      console.log(`[BinaryFileSync] Detected MIME type: ${contentType}`)
+      const contentType = fileTypeResult?.mime || getMimeTypeFromExtension(file.name)
+      console.log(`[BinaryFileSync] Detected MIME type: ${contentType}${fileTypeResult ? '' : ' (extension fallback)'}`)
 
       // Request presigned upload URL from server
       const { uploadUrl, storageKey, downloadUrl } = await this.requestPresignedUpload({
