@@ -121,6 +121,34 @@ export class SharedFolder extends SharedEntity {
     return this._syncable?.indexedDBProvider
   }
 
+  /**
+   * Route a binary file event to BinaryFileSync
+   */
+  public async handleBinaryFile(file: TFile): Promise<void> {
+    await this._binaryFileSync?.handleBinaryFile(file)
+  }
+
+  /**
+   * Route a binary file rename event to BinaryFileSync
+   */
+  public handleBinaryFileRename(file: TFile, oldPath: string): void {
+    this._binaryFileSync?.handleBinaryFileRename(file, oldPath)
+  }
+
+  /**
+   * Check if a file is tracked as binary (by old or new path)
+   */
+  public isBinaryFileTracked(filePath: string): boolean {
+    if (!this._binaryFileSync) return false
+    const normalizedFolderPath = normalizePath(this.root.path)
+    const normalizedFilePath = normalizePath(filePath)
+    if (normalizedFilePath === normalizedFolderPath || !normalizedFilePath.startsWith(normalizedFolderPath + '/')) {
+      return false
+    }
+    const relativePath = normalizedFilePath.slice(normalizedFolderPath.length + 1)
+    return this._binaryFileSync['binaryFilesMap'].has(relativePath)
+  }
+
   static async fromTFolder(root: TFolder, plugin: PeerDraftPlugin) {
     showNotice(`Inititializing share for ${root.path}.`)
     const sharedFolder = new this(root, plugin)
