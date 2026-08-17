@@ -60,6 +60,9 @@ const context = await esbuild.context({
 	sourcemap: prod ? false : "inline",
 	treeShaking: true,
 	outfile: "dist/main.js",
+	define: {
+		PEERDRAFT_DEV_SERVER_URL: JSON.stringify(process.env.PEERDRAFT_DEV_SERVER_URL ?? ""),
+	},
 });
 
 if (prod) {

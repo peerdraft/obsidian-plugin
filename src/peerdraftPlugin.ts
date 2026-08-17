@@ -9,6 +9,8 @@ import { type Settings, createSettingsTab, migrateSettings, saveSettings } from 
 import { SharedDocument } from "./sharedEntities/sharedDocument"
 import { fromShareURL } from "./sharedEntities/sharedEntityFactory"
 import { SharedFolder } from "./sharedEntities/sharedFolder"
+import { handleRenameWithinSameFolder, relocateIfExisting } from "./sharedEntities/renameWithinFolder"
+import { runStartupSync } from "./startupSync"
 import { showNotice } from "./ui"
 import { promptForSessionType } from "./ui/chooseSessionType"
 import { createMenu, createMenuAsSubMenu } from "./ui/createMenu"
@@ -140,16 +142,20 @@ export default class PeerdraftPlugin extends Plugin {
           modal.open()
         })
 
-        this.serverSync.connect()
-        this.serverSync.connected()
-
-        for (const [path, data] of plugin.settings.serverShares.files.entries()) {
-          await SharedDocument.fromPermanentShareDocument({ path, persistenceId: data.persistenceId, shareId: data.shareId }, plugin)
-        }
-
-        for (const [path, data] of plugin.settings.serverShares.folders.entries()) {
-          await SharedFolder.fromPermanentShareFolder({ path, persistenceId: data.persistenceId, shareId: data.shareId }, plugin)
-        }
+        await runStartupSync({
+          connect: () => this.serverSync.connect(),
+          connected: () => this.serverSync.connected(),
+          restoreFiles: async () => {
+            for (const [path, data] of plugin.settings.serverShares.files.entries()) {
+              await SharedDocument.fromPermanentShareDocument({ path, persistenceId: data.persistenceId, shareId: data.shareId }, plugin)
+            }
+          },
+          restoreFolders: async () => {
+            for (const [path, data] of plugin.settings.serverShares.folders.entries()) {
+              await SharedFolder.fromPermanentShareFolder({ path, persistenceId: data.persistenceId, shareId: data.shareId }, plugin)
+            }
+          }
+        })
         updatePeerdraftWorkspace(plugin.app.workspace, plugin.pws)
         plugin.registerEvent(plugin.app.workspace.on("layout-change", () => {
           updatePeerdraftWorkspace(plugin.app.workspace, plugin.pws)
@@ -255,7 +261,7 @@ export default class PeerdraftPlugin extends Plugin {
 
           if (newPathInFolder) {
             if (oldPathInFolder === newPathInFolder) {
-              oldPathInFolder.updatePath(oldPath, file.path)
+              await handleRenameWithinSameFolder(oldPathInFolder, doc, oldPath, file)
               return
             } else {
               if (newPathInFolder.fileExtensions.has(file.extension)) {
@@ -276,6 +282,8 @@ export default class PeerdraftPlugin extends Plugin {
         }
         else if (newPathInFolder) {
           if (newPathInFolder.fileExtensions.has(file.extension)) {
+            // doc may already exist under its old path (e.g. folder rename cascade) — relocate, don't duplicate.
+            await relocateIfExisting(doc, file)
             const newDoc = doc ?? await SharedDocument.fromTFile(file, { permanent: true, folder: newPathInFolder.shareId }, plugin)
             if (newDoc) {
               newPathInFolder.addDocument(newDoc)

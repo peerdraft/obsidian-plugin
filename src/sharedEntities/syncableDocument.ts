@@ -481,9 +481,19 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
     if (fileIO.getMTime() === this._lastUpdateTriggeredByDocChange) {
       return Promise.resolve()
     }
-    return this.fileMutex.runExclusive(() => {
+    return this.fileMutex.runExclusive(async () => {
       const yDocContent = this.yDoc.getText('content').toString()
       if (yDocContent === fileContent) return
+
+      // Empty file, non-empty Y.Doc: repopulate the file, don't wipe the Y.Doc.
+      if (fileContent === '' && yDocContent !== '') {
+        const mtime = this.clock.now()
+        await fileIO.modify(yDocContent, { mtime })
+        this._lastUpdateTriggeredByDocChange = mtime
+        this.emit('reconciled', [this.calculateHash()])
+        return
+      }
+
       const diffs = diff(yDocContent, fileContent)
       diffCleanupEfficiency(diffs)
       const content = this.yDoc.getText('content')

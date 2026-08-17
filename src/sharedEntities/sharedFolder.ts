@@ -15,7 +15,7 @@ import { SharedDocument } from "./sharedDocument";
 import { SharedEntity } from "./sharedEntity";
 import { SyncableFolder } from "./syncableFolder";
 
-const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: SharedFolder, plugin: PeerDraftPlugin) => {
+const handleUpdate = <T>(ev: Y.YMapEvent<T>, tx: Y.Transaction, folder: SharedFolder, plugin: PeerDraftPlugin) => {
 
   if (!([plugin.serverSync, folder.webRTCProvider?.room].includes(tx.origin))) return
 
@@ -24,7 +24,7 @@ const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: Share
   changedKeys.forEach(async (data, key) => {
 
     if (data.action === "add") {
-      const relativePath = tx.doc.getMap("documents").get(key) as string
+      const relativePath = tx.doc.getMap<string>("documents").get(key) as string
       const absolutePath = path.join(folder.path, relativePath)
       const file = plugin.app.vault.getAbstractFileByPath(absolutePath)
       if (file) {
@@ -41,7 +41,7 @@ const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: Share
               }, plugin)
               if (newDoc) {
                 // Update folder Y.Doc with new shareId
-                const documentMap = tx.doc.getMap("documents") as Y.Map<string>
+                const documentMap = tx.doc.getMap<string>("documents")
                 documentMap.delete(key)
                 documentMap.set(newDoc.shareId, relativePath)
               }
@@ -67,7 +67,7 @@ const handleUpdate = (ev: Y.YMapEvent<unknown>, tx: Y.Transaction, folder: Share
         await SharedDocument.fromIdAndPath(key, absolutePath, plugin)
       }
     } else if (data.action === "update") {
-      const newPath = tx.doc.getMap("documents").get(key) as string
+      const newPath = tx.doc.getMap<string>("documents").get(key) as string
       const document = SharedDocument.findById(key)
       if (!document) {
         showNotice("Document at " + newPath + " doesn't exist in your vault. Consider re-creating the synced folder from server.")
@@ -367,13 +367,13 @@ export class SharedFolder extends SharedEntity {
   }
 
   getDocsFragment() {
-    return this.yDoc.getMap('documents') as Y.Map<string>
+    return this.yDoc.getMap<string>('documents')
   }
 
 
   getDocByRelativePath(dir: string) {
     const normalizedPath = normalizePath(dir)
-    for (const entry of this.getDocsFragment().entries() as IterableIterator<[key: string, value: string]>) {
+    for (const entry of this.getDocsFragment().entries()) {
       if (entry[1] === normalizedPath) return entry[0]
     }
   }
@@ -551,7 +551,7 @@ export class SharedFolder extends SharedEntity {
 
   isFileInSyncObject(file: TFile) {
     const normalizedPath = normalizePath(file.path)
-    for (const value of (this.getDocsFragment() as Y.Map<string>).values()) {
+    for (const value of this.getDocsFragment().values()) {
       if (normalizedPath === path.join(this.root.path, value)) return true
     }
     return false
@@ -629,7 +629,7 @@ export class SharedFolder extends SharedEntity {
     const indexedDBWasEmpty = this._syncable.indexedDBWasEmpty
 
     this._ensureChildSubscriptions()
-    const docsMap = this.getDocsFragment() as Y.Map<string>
+    const docsMap = this.getDocsFragment()
     let anyChildSyncing = false
     let anyChildNotSynced = false
     for (const [shareId, relativePath] of docsMap.entries()) {
@@ -691,14 +691,14 @@ export class SharedFolder extends SharedEntity {
     this._syncable.on('syncStateChanged', () => {
       this._updateStatusIndicator()
     })
-    const docsMap = this.getDocsFragment() as Y.Map<string>
+    const docsMap = this.getDocsFragment()
     docsMap.observe((event) => {
       this._updateStatusIndicator()
     })
   }
 
   private _ensureChildSubscriptions() {
-    const docsMap = this.getDocsFragment() as Y.Map<string>
+    const docsMap = this.getDocsFragment()
     for (const [shareId, relativePath] of docsMap.entries()) {
       if (!this._subscribedChildDocs.has(shareId)) {
         const doc = SharedDocument.findById(shareId)

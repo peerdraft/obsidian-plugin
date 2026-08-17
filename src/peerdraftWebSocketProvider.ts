@@ -7,6 +7,7 @@ import * as math from 'lib0/math'
 import { SyncableDocument, type SyncableEntity } from './sharedEntities/syncableDocument'
 import { SyncableFolder } from './sharedEntities/syncableFolder'
 import { calculateHash, createRandomId, serialize } from './tools'
+import { PendingMessageQueue } from './pendingMessageQueue'
 
 export const MESSAGE_SYNC = 0
 export const MESSAGE_QUERY_AWARENESS = 3
@@ -157,6 +158,10 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
         provider.authenticate(provider.jwt, provider.version)
       }
 
+      // Anything queued while disconnected (e.g. a NEW_DOCUMENT registration
+      // that raced the socket opening) gets sent now instead of staying lost.
+      provider.flushPendingMessages()
+
       const folderPromises = SyncableFolder.getAll().map(async (folder) => {
         if (folder.indexedDBProvider) {
           if (!folder.indexedDBProvider.synced) await folder.indexedDBProvider.whenSynced
@@ -222,6 +227,7 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
   jwt: string | undefined
   version: string
   registry?: Map<string, import('./sharedEntities/syncableDocument').SyncableDocument>
+  private pendingMessages = new PendingMessageQueue()
 
   constructor(serverUrl: string, {
     connect = true,
@@ -362,7 +368,17 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
   sendMessage(buf: Uint8Array) {
     if (this.wsconnected && this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(buf)
+    } else {
+      this.pendingMessages.push(buf)
     }
+  }
+
+  get pendingMessageCount(): number {
+    return this.pendingMessages.size
+  }
+
+  flushPendingMessages(): void {
+    this.pendingMessages.flush((buf) => this.sendMessage(buf))
   }
 
   connected() {

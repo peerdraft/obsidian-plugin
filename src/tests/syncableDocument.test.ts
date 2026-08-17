@@ -426,6 +426,52 @@ describe('SyncableDocument State Tracking', () => {
     })
   })
 
+  describe('Data-loss guard: empty file vs non-empty Y.Doc', () => {
+    // Reproduces the "recreated as an empty placeholder" scenario: a file that
+    // should hold real collaborative content is (re)created empty on disk
+    // (e.g. because it was renamed away and settings still point at the old
+    // path). Reconciling must never treat that emptiness as authoritative and
+    // wipe the Y.Doc — instead the file should be repopulated from the Y.Doc.
+    test('should not delete Y.Doc content when file is empty', async () => {
+      yDoc.getText('content').insert(0, 'real collaborative content')
+      ;(mockFileIO.getMTime as jest.Mock).mockReturnValue(Date.now() - 1000)
+
+      await syncable.reconcileWithFileContent('')
+
+      expect(yDoc.getText('content').toString()).toBe('real collaborative content')
+    })
+
+    test('should write the Y.Doc content back into the empty file', async () => {
+      yDoc.getText('content').insert(0, 'real collaborative content')
+      ;(mockFileIO.getMTime as jest.Mock).mockReturnValue(Date.now() - 1000)
+
+      await syncable.reconcileWithFileContent('')
+
+      expect(mockFileIO.modify).toHaveBeenCalledWith('real collaborative content', expect.anything())
+    })
+
+    test('should still reconcile normally when both file and Y.Doc are empty', async () => {
+      ;(mockFileIO.getMTime as jest.Mock).mockReturnValue(Date.now() - 1000)
+
+      await syncable.reconcileWithFileContent('')
+
+      expect(mockFileIO.modify).not.toHaveBeenCalled()
+      expect(yDoc.getText('content').toString()).toBe('')
+    })
+
+    test('should still emit reconciled when repairing an empty file', async () => {
+      const reconciledHandler = jest.fn()
+      syncable.on('reconciled', reconciledHandler)
+
+      yDoc.getText('content').insert(0, 'real collaborative content')
+      ;(mockFileIO.getMTime as jest.Mock).mockReturnValue(Date.now() - 1000)
+
+      await syncable.reconcileWithFileContent('')
+
+      expect(reconciledHandler).toHaveBeenCalledTimes(1)
+    })
+  })
+
   describe('State Reset on Lifecycle Transitions', () => {
     test('should reset state flags on stopIndexedDBSync', async () => {
       setIndexedDBExisting(true)

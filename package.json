@@ -8,7 +8,8 @@
     "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
     "release": "node version-bump.mjs",
     "test": "jest",
-    "test:watch": "jest --watch"
+    "test:watch": "jest --watch",
+    "build:dev-local": "tsc -noEmit -skipLibCheck && PEERDRAFT_DEV_SERVER_URL=http://localhost:5174 node esbuild.config.mjs production"
   },
   "keywords": [],
   "author": "",

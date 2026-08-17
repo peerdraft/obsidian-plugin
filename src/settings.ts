@@ -104,16 +104,13 @@ const DEFAULT_SETTINGS: Omit<Settings, "oid"> = {
   }
 }
 
-const FORCE_SETTINGS: Partial<Settings> = {
-  /*
-    basePath: "http://localhost:5173",
-    subscriptionAPI: "http://localhost:5173/subscription",
-    connectAPI: "http://localhost:5173/subscription/connect",
-    sessionAPI: "http://localhost:5173/session",
-    sync: "ws://localhost:5173/sync",
-    signaling: "ws://localhost:5173/signal",
-    actives: "ws://localhost:5173/actives"
-    */
+// Injected by esbuild's `define` (see esbuild.config.mjs) from the
+// PEERDRAFT_DEV_SERVER_URL env var at build time. Empty string in a normal
+// `npm run build`, so FORCE_SETTINGS defaults to production unless a build
+// was explicitly run with that env var set (e.g. the e2e test harness).
+declare const PEERDRAFT_DEV_SERVER_URL: string
+
+const PRODUCTION_SETTINGS: Partial<Settings> = {
   basePath: "https://www.peerdraft.app",
   subscriptionAPI: "https://www.peerdraft.app/subscription",
   connectAPI: "https://www.peerdraft.app/subscription/connect",
@@ -122,6 +119,23 @@ const FORCE_SETTINGS: Partial<Settings> = {
   signaling: "wss://www.peerdraft.app/signal",
   actives: "wss://www.peerdraft.app/actives",
 }
+
+const devLocalSettings = (baseUrl: string): Partial<Settings> => {
+  const wsBase = baseUrl.replace(/^http/, "ws")
+  return {
+    basePath: baseUrl,
+    subscriptionAPI: `${baseUrl}/subscription`,
+    connectAPI: `${baseUrl}/subscription/connect`,
+    sessionAPI: `${baseUrl}/session`,
+    sync: `${wsBase}/sync`,
+    signaling: `${wsBase}/signal`,
+    actives: `${wsBase}/actives`,
+  }
+}
+
+const FORCE_SETTINGS: Partial<Settings> = PEERDRAFT_DEV_SERVER_URL
+  ? devLocalSettings(PEERDRAFT_DEV_SERVER_URL)
+  : PRODUCTION_SETTINGS
 
 export const migrateSettings = async (plugin: PeerdraftPlugin) => {
   const oldSettings = await getSettings(plugin)
