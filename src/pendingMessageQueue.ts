@@ -1,9 +1,7 @@
-// Kept dependency-free for testability.
+export class PendingMessageQueue<T = Uint8Array> {
+  private buffer: T[] = []
 
-export class PendingMessageQueue {
-  private buffer: Uint8Array[] = []
-
-  push(buf: Uint8Array): void {
+  push(buf: T): void {
     this.buffer.push(buf)
   }
 
@@ -11,7 +9,7 @@ export class PendingMessageQueue {
     return this.buffer.length
   }
 
-  flush(send: (buf: Uint8Array) => void): void {
+  flush(send: (buf: T) => void): void {
     const pending = this.buffer
     this.buffer = []
     for (const buf of pending) {

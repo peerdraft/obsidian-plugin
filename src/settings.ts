@@ -104,10 +104,7 @@ const DEFAULT_SETTINGS: Omit<Settings, "oid"> = {
   }
 }
 
-// Injected by esbuild's `define` (see esbuild.config.mjs) from the
-// PEERDRAFT_DEV_SERVER_URL env var at build time. Empty string in a normal
-// `npm run build`, so FORCE_SETTINGS defaults to production unless a build
-// was explicitly run with that env var set (e.g. the e2e test harness).
+// Injected by esbuild `define` from PEERDRAFT_DEV_SERVER_URL (see esbuild.config.mjs)
 declare const PEERDRAFT_DEV_SERVER_URL: string
 
 const PRODUCTION_SETTINGS: Partial<Settings> = {

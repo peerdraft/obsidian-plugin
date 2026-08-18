@@ -71,8 +71,7 @@ export const removeStatusClass = async (path: string, plugin: PeerdraftPlugin) =
 
 // fix by https://github.com/dtkav
 const getFileExplorers = async (plugin: PeerdraftPlugin) => {
-  // IMPORTANT: We manually iterate because a popular plugin make.md monkeypatches
-  // getLeavesOfType to return their custom folder explorer.
+  // IMPORTANT: manually iterate — make.md monkeypatches getLeavesOfType
   const fileExplorers: WorkspaceLeaf[] = [];
   plugin.app.workspace.iterateAllLeaves(async (leaf) => {
     const viewType = leaf.view.getViewType();

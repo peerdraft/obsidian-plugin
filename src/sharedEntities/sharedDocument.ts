@@ -59,6 +59,8 @@ export class SharedDocument extends SharedEntity {
   private _initializationGuardPassed = false
   private _initializationGuardMutex = new Mutex()
   private _vaultModifyListenerRegistered = false
+  private _catchUpIdleTimeout?: number
+  private _catchUpListenerAttached = false
 
   get initializationGuardPassed(): boolean {
     return this._initializationGuardPassed
@@ -246,7 +248,7 @@ export class SharedDocument extends SharedEntity {
       doc.setupFileSyncForCanvas()
     } else {
       doc.isCanvas = false
-      doc.setupFileSyncForContent
+      doc.setupFileSyncForContent()
     }
     doc._path = normalizedPath
     const existingFile = plugin.app.vault.getAbstractFileByPath(normalizedPath)
@@ -257,6 +259,7 @@ export class SharedDocument extends SharedEntity {
     doc._syncable.setFileIO(new VaultFileIO(file, plugin))
 
     doc.syncWithServer()
+    doc.startWebRTCSyncWithCatchUp()
     await doc.setPermanent()
     doc._setupInitializationGuard()
     doc._setupStatusIndicatorSubscriptions()
@@ -605,9 +608,9 @@ export class SharedDocument extends SharedEntity {
   syncWithServer() {
     return this._syncable.syncWithServer()
   }
-
+  
   startWebRTCSync() {
-    return super.startWebRTCSync((provider) => {
+    const provider = super.startWebRTCSync((provider) => {
       provider.awareness.on("update", async (msg: { added: Array<number>, removed: Array<number> }) => {
         const removed = msg.removed ?? [];
         if (removed && removed.length > 0) {
@@ -638,6 +641,32 @@ export class SharedDocument extends SharedEntity {
         }
       })
     })
+
+    this._clearCatchUpIdleTimeout()
+    return provider
+  }
+
+  startWebRTCSyncWithCatchUp() {
+    const provider = this.startWebRTCSync()
+    if (!provider) return provider
+    if (!this._catchUpListenerAttached) {
+      this._catchUpListenerAttached = true
+      provider.doc.on('update', () => this._scheduleCatchUpTeardown())
+    }
+    this._scheduleCatchUpTeardown()
+    return provider
+  }
+
+  private _scheduleCatchUpTeardown() {
+    this._clearCatchUpIdleTimeout()
+    this._catchUpIdleTimeout = window.setTimeout(() => this.stopWebRTCSync(), 8000)
+  }
+
+  private _clearCatchUpIdleTimeout() {
+    if (this._catchUpIdleTimeout !== undefined) {
+      window.clearTimeout(this._catchUpIdleTimeout)
+      this._catchUpIdleTimeout = undefined
+    }
   }
 
   async setNewFileLocation(file: TFile) {

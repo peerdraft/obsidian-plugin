@@ -11,10 +11,6 @@ import {
   type SyncableServerSync,
 } from './syncableDocument'
 
-// Folder counterpart of SyncableDocument. Owns folder-level Y.Doc, IndexedDB persistence,
-// syncWithServer, and registry for provider reconnect. Has no Obsidian imports for testability.
-// Simpler than SyncableDocument: folders are always permanent, updates sent immediately (no debounce),
-// and hash is deterministic serialization of document map.
 export class SyncableFolder extends ObservableV2<{
   flushed: (count: number) => void
   synced: (hash: SyncableHash) => void
@@ -38,8 +34,6 @@ export class SyncableFolder extends ObservableV2<{
   private _indexedDBProvider?: IndexeddbPersistence
   private indexedDBSyncPromise?: Promise<void>
 
-  // Deferred IndexedDB creation: when DB doesn't exist yet and server hasn't
-  // synced, we store the persistenceId and create the DB after server sync.
   private _deferredIndexedDBId?: string
   private _deferredIndexedDBHandler?: () => void
 
@@ -50,9 +44,6 @@ export class SyncableFolder extends ObservableV2<{
   private _serverSyncing = false
   private _serverSynced = false
 
-  // True when IndexedDB creation has been deferred (DB doesn't exist yet and
-  // server hasn't synced). Used by callers to decide whether to await
-  // indexedDBProvider.whenSynced before calling syncWithServer().
   get isIndexedDBDeferred(): boolean {
     return this._deferredIndexedDBId !== undefined
   }
@@ -105,9 +96,6 @@ export class SyncableFolder extends ObservableV2<{
     }
 
     if (opts.persistenceId) {
-      // Fire-and-forget; callers can await whenIndexedDBSynced().
-      // When deferred, _setupDeferredIndexedDBCreation sets indexedDBSyncPromise
-      // to a promise that waits for actual creation — don't overwrite it.
       const result = this.startIndexedDBSync(opts.persistenceId)
       if (!this.indexedDBSyncPromise && result) {
         this.indexedDBSyncPromise = result.then(() => undefined)
@@ -242,10 +230,6 @@ export class SyncableFolder extends ObservableV2<{
       // Check if IndexedDB already existed before this startup
       const hadExistingData = await checkIndexedDBAlreadyExists(dbName)
 
-      // If DB doesn't exist yet and server hasn't synced, defer creation.
-      // This ensures the warning indicator works correctly on subsequent
-      // startups: if IndexedDB exists, it was created after a successful
-      // server sync and contains reliable data.
       if (!hadExistingData && !this._serverSynced) {
         this._deferredIndexedDBId = persistenceId
         this._setupDeferredIndexedDBCreation()
@@ -284,9 +268,6 @@ export class SyncableFolder extends ObservableV2<{
     }
   }
 
-  // Set up one-time listener that creates IndexedDB after first successful server sync.
-  // Also sets indexedDBSyncPromise to resolve only after the deferred creation completes,
-  // so that whenIndexedDBSynced() doesn't resolve prematurely.
   private _setupDeferredIndexedDBCreation(): void {
     const id = this._deferredIndexedDBId!
     // Remove old handler if exists (avoid race condition where cleanup clears _deferredIndexedDBId)

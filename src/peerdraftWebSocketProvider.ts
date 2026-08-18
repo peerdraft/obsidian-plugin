@@ -158,8 +158,6 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
         provider.authenticate(provider.jwt, provider.version)
       }
 
-      // Anything queued while disconnected (e.g. a NEW_DOCUMENT registration
-      // that raced the socket opening) gets sent now instead of staying lost.
       provider.flushPendingMessages()
 
       const folderPromises = SyncableFolder.getAll().map(async (folder) => {

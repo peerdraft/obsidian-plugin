@@ -4,6 +4,7 @@ import * as math from 'lib0/math'
 import { SharedDocument } from './sharedEntities/sharedDocument'
 import { SharedFolder } from './sharedEntities/sharedFolder'
 import { showNotice } from './ui'
+import { PendingMessageQueue } from './pendingMessageQueue'
 
 type ClientMessage = {
   type: "add" | "remove" | "full",
@@ -103,6 +104,8 @@ const setupWS = (client: ActiveStreamClient) => {
         status: 'connected'
       }])
 
+      client.flushPendingMessages()
+
       client.send(JSON.stringify({
         type: "full",
         docs: Array.from(client.docIds)
@@ -128,6 +131,7 @@ export class ActiveStreamClient extends ObservableV2<Events> {
   _resyncInterval: number
 
   docIds: Set<string>
+  private pendingMessages = new PendingMessageQueue<string>()
 
   constructor(url: string, opts: {
     connect: boolean,
@@ -170,14 +174,19 @@ export class ActiveStreamClient extends ObservableV2<Events> {
   }
 
   send(data: string) {
-    if (this.ws && this.ws.readyState !== this.ws.CONNECTING && this.ws.readyState !== this.ws.OPEN) {
-      this.ws.close()
+    if (this.wsconnected && this.ws && this.ws.readyState === WebSocket.OPEN) {
+      try {
+        this.ws.send(data)
+      } catch (e) {
+        this.ws.close()
+      }
+    } else {
+      this.pendingMessages.push(data)
     }
-    try {
-      this.ws?.send(data)
-    } catch (e) {
-      this.ws?.close()
-    }
+  }
+
+  flushPendingMessages(): void {
+    this.pendingMessages.flush((data) => this.send(data))
   }
 
 
