@@ -61,7 +61,7 @@ const context = await esbuild.context({
 	treeShaking: true,
 	outfile: "dist/main.js",
 	define: {
-		PEERDRAFT_DEV_SERVER_URL: JSON.stringify(process.env.PEERDRAFT_DEV_SERVER_URL ?? ""),
+		PEERDRAFT_DEV_SERVER_URL: JSON.stringify(process.env.PEERDRAFT_DEV_SERVER_URL ?? "https://www.peerdraft.app"),
 	},
 });
 

@@ -107,17 +107,7 @@ const DEFAULT_SETTINGS: Omit<Settings, "oid"> = {
 // Injected by esbuild `define` from PEERDRAFT_DEV_SERVER_URL (see esbuild.config.mjs)
 declare const PEERDRAFT_DEV_SERVER_URL: string
 
-const PRODUCTION_SETTINGS: Partial<Settings> = {
-  basePath: "https://www.peerdraft.app",
-  subscriptionAPI: "https://www.peerdraft.app/subscription",
-  connectAPI: "https://www.peerdraft.app/subscription/connect",
-  sessionAPI: "https://www.peerdraft.app/session",
-  sync: "wss://www.peerdraft.app/sync",
-  signaling: "wss://www.peerdraft.app/signal",
-  actives: "wss://www.peerdraft.app/actives",
-}
-
-const devLocalSettings = (baseUrl: string): Partial<Settings> => {
+const settingsFromBaseUrl = (baseUrl: string): Partial<Settings> => {
   const wsBase = baseUrl.replace(/^http/, "ws")
   return {
     basePath: baseUrl,
@@ -130,9 +120,7 @@ const devLocalSettings = (baseUrl: string): Partial<Settings> => {
   }
 }
 
-const FORCE_SETTINGS: Partial<Settings> = PEERDRAFT_DEV_SERVER_URL
-  ? devLocalSettings(PEERDRAFT_DEV_SERVER_URL)
-  : PRODUCTION_SETTINGS
+const FORCE_SETTINGS: Partial<Settings> = settingsFromBaseUrl(PEERDRAFT_DEV_SERVER_URL)
 
 export const migrateSettings = async (plugin: PeerdraftPlugin) => {
   const oldSettings = await getSettings(plugin)
