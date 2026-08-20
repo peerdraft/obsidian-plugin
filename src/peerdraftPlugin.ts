@@ -368,6 +368,7 @@ export default class PeerdraftPlugin extends Plugin {
       folder.destroy()
     })
     this.activeStreamClient.destroy()
+    this.serverSync?.destroy()
   }
 
   log(message: string) {
