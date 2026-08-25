@@ -344,7 +344,7 @@ export class SharedFolder extends SharedEntity {
       yDoc: this.yDoc,
       shareId: this._shareId,
       serverSync: plugin.serverSync,
-      logger: { log: (...args: unknown[]) => {} }
+      logger: { log: (...args: unknown[]) => plugin.log(args.map((a) => String(a)).join(' ')) }
     })
 
     SharedFolder._sharedEntites.push(this)

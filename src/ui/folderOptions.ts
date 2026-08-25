@@ -166,8 +166,6 @@ class SharedFolderOptionsModal extends Modal {
       const { valid, message } = validateExtensions(value);
       isValid = valid;
       
-      console.log('Input validation - valid:', valid, 'value:', value);
-      
       // Update input styling
       if (!valid) {
         // Invalid state
@@ -193,7 +191,7 @@ class SharedFolderOptionsModal extends Modal {
       // Update or create error message
       if (!valid && message) {
         if (!errorEl) {
-          errorEl = extensions.descEl.createEl('div');
+          errorEl = extensions.descEl.createDiv();
           errorEl.style.cssText = `
             color: var(--text-error);
             font-size: 0.85em;
@@ -206,13 +204,13 @@ class SharedFolderOptionsModal extends Modal {
           `;
           
           // Add warning icon
-          const icon = document.createElement('span');
+          const icon = createSpan();
           icon.textContent = '⚠️';
           icon.style.fontSize = '0.9em';
           errorEl.appendChild(icon);
           
           // Add message text
-          const messageEl = document.createElement('span');
+          const messageEl = createSpan();
           messageEl.textContent = message;
           errorEl.appendChild(messageEl);
         } else {
@@ -320,13 +318,13 @@ class SharedFolderOptionsModal extends Modal {
           const modal = new Modal(this.app);
           modal.titleEl.setText('Confirm File Sharing Changes');
           
-          const content = modal.contentEl.createEl('div');
+          const content = modal.contentEl.createDiv();
           content.createEl('p', {
             text: 'The following changes will be made to shared files:'
           });
           
           if (addedFiles.length > 0) {
-            const addedSection = content.createEl('div');
+            const addedSection = content.createDiv();
             addedSection.createEl('h4', {
               text: `Files that will be SHARED (${addedFiles.length}):`
             });
@@ -342,7 +340,7 @@ class SharedFolderOptionsModal extends Modal {
           }
           
           if (removedFiles.length > 0) {
-            const removedSection = content.createEl('div');
+            const removedSection = content.createDiv();
             removedSection.createEl('h4', {
               text: `Files that will be UNSHARED (${removedFiles.length}):`
             });
@@ -357,7 +355,7 @@ class SharedFolderOptionsModal extends Modal {
             }
           }
           
-          const buttonContainer = content.createEl('div', {
+          const buttonContainer = content.createDiv({
             cls: 'pd-button-container'
           });
           

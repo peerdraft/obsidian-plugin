@@ -86,7 +86,7 @@ const setupWS = (client: ActiveStreamClient) => {
       } else {
         client.wsUnsuccessfulReconnects++
       }
-      setTimeout(
+      window.setTimeout(
         setupWS,
         math.min(
           math.pow(2, client.wsUnsuccessfulReconnects) * 100,
@@ -192,7 +192,7 @@ export class ActiveStreamClient extends ObservableV2<Events> {
 
   destroy() {
     if (this._resyncInterval !== 0) {
-      clearInterval(this._resyncInterval)
+      window.clearInterval(this._resyncInterval)
     }
     this.disconnect()
     super.destroy()

@@ -134,7 +134,7 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
       } else {
         provider.wsUnsuccessfulReconnects++
       }
-      setTimeout(
+      window.setTimeout(
         setupWS,
         math.min(
           math.pow(2, provider.wsUnsuccessfulReconnects) * 100,
@@ -442,9 +442,9 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
 
   destroy() {
     if (this._resyncInterval !== 0) {
-      clearInterval(this._resyncInterval)
+      window.clearInterval(this._resyncInterval)
     }
-    clearInterval(this._checkInterval)
+    window.clearInterval(this._checkInterval)
     this.disconnect()
     super.destroy()
   }

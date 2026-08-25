@@ -1,4 +1,4 @@
-import { Modal, Plugin, PluginSettingTab, Setting, debounce, normalizePath, requestUrl } from "obsidian";
+import { Modal, Plugin, PluginSettingTab, Setting, debounce, normalizePath, requestUrl, sanitizeHTMLToDom } from "obsidian";
 import { showTextModal } from "./ui";
 import PeerdraftPlugin from "./peerdraftPlugin";
 import { promptForFolderSelection } from "./ui/selectFolder";
@@ -242,9 +242,9 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
   accountSection.createEl("h2", { text: "Your Account", cls: "pd-section-header" })
 
   if (plugin.serverSync.authenticated) {
-    accountSection.createEl("div", { text: `You are logged in as ${plugin.settings.plan.email}.` })
+    accountSection.createDiv({ text: `You are logged in as ${plugin.settings.plan.email}.` })
 
-    const accountDiv = accountSection.createEl("div", { text: "Loading account information..." })
+    const accountDiv = accountSection.createDiv({ text: "Loading account information..." })
     
     fetchAccountSettings(plugin).then(settings => {
       if (!settings) {
@@ -256,7 +256,7 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
 
       // Plan Status subsection
       const planSubsection = accountDiv.createDiv({ cls: "pd-account-subsection" })
-      const planDiv = planSubsection.createEl("div")
+      const planDiv = planSubsection.createDiv()
       planDiv.createSpan({ text: "You are on the " }).createEl('b', { text: settings.plan.displayName })
       planDiv.createSpan({ text: " plan." })
       
@@ -264,13 +264,13 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
       if (settings.plan.expiresAt) {
         const expiryDate = new Date(settings.plan.expiresAt);
         const daysRemaining = Math.ceil((expiryDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
-        planSubsection.createEl("div", { 
+        planSubsection.createDiv({ 
           text: `Trial expires in ${daysRemaining} day${daysRemaining === 1 ? '' : 's'}`,
           cls: "setting-item-description"
         })
       } else if (settings.plan.renewsAt) {
         const renewalDate = new Date(settings.plan.renewsAt);
-        planSubsection.createEl("div", { 
+        planSubsection.createDiv({ 
           text: `Renews on ${renewalDate.toLocaleDateString()}`,
           cls: "setting-item-description"
         })
@@ -278,7 +278,7 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
 
       // Share Usage subsection
       const sharesSubsection = accountDiv.createDiv({ cls: "pd-account-subsection" })
-      const sharesDiv = sharesSubsection.createEl("div")
+      const sharesDiv = sharesSubsection.createDiv()
       if (settings.shares.limit === null) {
         sharesDiv.createSpan({ text: `You have ${settings.shares.current} active shares (unlimited).` })
       } else {
@@ -289,7 +289,7 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
 
       // Warning message
       if (settings.shares.warningMessage) {
-        sharesSubsection.createEl("div", {
+        sharesSubsection.createDiv({
           text: `⚠️ ${settings.shares.warningMessage}`,
           cls: "mod-warning"
         })
@@ -301,7 +301,7 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
         
         // Render HTML content
         const contentDiv = accountDiv.createDiv()
-        contentDiv.innerHTML = settings.upgrade.content
+        contentDiv.appendChild(sanitizeHTMLToDom(settings.upgrade.content))
         
         // Render buttons
         const upgradeSection = accountDiv.createDiv({ cls: "setting-item" })
@@ -323,7 +323,7 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
         // Show comment if available
         const optionWithComment = settings.upgrade.options.find(o => o.comment);
         if (optionWithComment) {
-          accountDiv.createEl("div", { 
+          accountDiv.createDiv({ 
             text: `💡 ${optionWithComment.comment}`,
             cls: "setting-item-description"
           })
@@ -341,8 +341,8 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
         })
       })
   } else {
-    accountSection.createEl("div", { text: `You are not logged in.` })
-    accountSection.createEl("div", { text: `To initiate new shared documents or folders you need to log in to your Peerdraft account. If you only work on shared documents and folders created by others, you don't need an account.` })
+    accountSection.createDiv({ text: `You are not logged in.` })
+    accountSection.createDiv({ text: `To initiate new shared documents or folders you need to log in to your Peerdraft account. If you only work on shared documents and folders created by others, you don't need an account.` })
 
     new Setting(accountSection)
       .setName("Log in or create account")

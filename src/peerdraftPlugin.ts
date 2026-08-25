@@ -138,7 +138,7 @@ export default class PeerdraftPlugin extends Plugin {
         this.serverSync.on('showMessage', (title, content) => {
           const modal = new Modal(plugin.app)
           modal.setTitle(title)
-          modal.contentEl.innerHTML = content
+          modal.contentEl.setText(content)
           modal.open()
         })
 
@@ -373,7 +373,7 @@ export default class PeerdraftPlugin extends Plugin {
 
   log(message: string) {
     if (this.settings.debug) {
-      console.log(message)
+      console.debug(message)
     }
   }
 

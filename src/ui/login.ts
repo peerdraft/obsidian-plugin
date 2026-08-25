@@ -40,7 +40,11 @@ class LoginModal extends Modal {
 
     const emailSetting = new Setting(this.contentEl)
     emailSetting.setName("Your e-mail address")
-    emailSetting.descEl.innerHTML = 'By signing up or logging in, you agree to <a href="https://www.peerdraft.app/terms">the Terms of Service</a> and the <a href="https://www.peerdraft.app/privacy">Privacy Policy</a>.'
+    emailSetting.descEl.createSpan({ text: "By signing up or logging in, you agree to " })
+    emailSetting.descEl.createEl("a", { text: "the Terms of Service", attr: { href: "https://www.peerdraft.app/terms" } })
+    emailSetting.descEl.createSpan({ text: " and the " })
+    emailSetting.descEl.createEl("a", { text: "Privacy Policy", attr: { href: "https://www.peerdraft.app/privacy" } })
+    emailSetting.descEl.createSpan({ text: "." })
     emailSetting.addText(text => {
       text.inputEl.setAttr("type", "email")
       text.setValue(this.email)

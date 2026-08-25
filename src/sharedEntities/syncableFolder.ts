@@ -59,7 +59,7 @@ export class SyncableFolder extends ObservableV2<{
   }
 
   private logEvent(event: 'indexedDBLoaded' | 'indexedDBLoadFailed' | 'serverSyncing' | 'serverSynced' | 'serverSyncFailed' | 'syncStateChanged', payload?: unknown): void {
-    console.log(`[SyncableFolder] event`, event, payload)
+    this.logger.log(`[SyncableFolder] event`, event, payload)
   }
 
   private readonly updateListener: (
