@@ -85,7 +85,8 @@ export const createMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlu
           item.setIcon('trash')
           item.onClick(async () => {
             sharedFolder.removeDocument(sharedDocument)
-            sharedDocument.unshare()
+            await plugin.serverSync.stopSession(sharedDocument.shareId)
+            await sharedDocument.unshare()
             plugin.app.vault.delete(sharedDocument.file)
           })
         })
