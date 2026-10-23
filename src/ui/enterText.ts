@@ -13,15 +13,29 @@ type RESULT = {
 
 class EnterTextModal extends Modal {
 
-  cb: (result: { text: string }) => any
+  cb: (result: RESULT | void) => void
   opts: OPTS
   result: RESULT
+  private acceptedResult?: RESULT
+  private settled = false
 
-  constructor(app: App, opts: OPTS, cb: (result: RESULT) => any) {
+  constructor(app: App, opts: OPTS, cb: (result: RESULT | void) => void) {
     super(app)
     this.cb = cb
     this.result = opts.initial
     this.opts = opts
+  }
+
+  private submit(): void {
+    if (this.settled) return
+    this.acceptedResult = { ...this.result }
+    this.close()
+  }
+
+  onClose(): void {
+    if (this.settled) return
+    this.settled = true
+    this.cb(this.acceptedResult)
   }
 
   async onOpen() {
@@ -35,8 +49,7 @@ class EnterTextModal extends Modal {
       text.inputEl.onkeydown = (ev) => {
         if (ev.key === "Enter") {
           ev.preventDefault()
-          this.close()
-          this.cb(this.result)
+          this.submit()
         }
       }
     }).setDesc(this.opts.description)
@@ -54,8 +67,7 @@ class EnterTextModal extends Modal {
       button.setButtonText("OK")
       button.setCta()
       button.onClick(() => {
-        this.close()
-        this.cb(this.result)
+        this.submit()
       })
     })
 

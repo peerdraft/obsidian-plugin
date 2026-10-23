@@ -6,7 +6,7 @@ import { getJWT } from "./login"
 import { PeerdraftWebsocketProvider } from "./peerdraftWebSocketProvider"
 import { ServerAPI } from "./serverAPI"
 import { installSignalingSocketGuard } from "./signalingSocketGuard"
-import { type Settings, createSettingsTab, migrateSettings, saveSettings } from "./settings"
+import { type Settings, createSettingsTab, migrateSettings, saveSettings, saveSettingsNow } from "./settings"
 import { SharedDocument } from "./sharedEntities/sharedDocument"
 import { fromShareURL } from "./sharedEntities/sharedEntityFactory"
 import { SharedFolder } from "./sharedEntities/sharedFolder"
@@ -465,15 +465,23 @@ export default class PeerdraftPlugin extends Plugin {
     )
 
     const settingsTab = createSettingsTab(plugin)
+    plugin.addSettingTab(settingsTab)
 
     if (!plugin.settings.name) {
-      const name = await promptForName(plugin.app)
-      if (name && name.text) {
-        this.settings.name = name.text
-        void saveSettings(this.settings, plugin)
-      }
+      plugin.app.workspace.onLayoutReady(() => {
+        if (stopped || plugin.settings.name) return
+        void (async () => {
+          const name = await promptForName(plugin.app)
+          if (stopped || plugin.settings.name || !name?.text) return
+          plugin.settings.name = name.text
+          await saveSettingsNow(plugin.settings, plugin)
+        })().catch((error: unknown) => {
+          if (stopped) return
+          console.error('[Peerdraft] Could not set the display name', error)
+          showNotice('Peerdraft could not save your display name. You can set it in the Peerdraft settings.')
+        })
+      })
     }
-    plugin.addSettingTab(settingsTab)
   }
 
   onunload() {
