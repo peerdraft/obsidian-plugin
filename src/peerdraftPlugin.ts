@@ -9,6 +9,8 @@ import { type Settings, createSettingsTab, migrateSettings, saveSettings } from 
 import { SharedDocument } from "./sharedEntities/sharedDocument"
 import { fromShareURL } from "./sharedEntities/sharedEntityFactory"
 import { SharedFolder } from "./sharedEntities/sharedFolder"
+import { handleRenameWithinSameFolder, relocateIfExisting } from "./sharedEntities/renameWithinFolder"
+import { runStartupSync } from "./startupSync"
 import { showNotice } from "./ui"
 import { isBinaryContent } from "./utils/fileTypeDetection"
 import { promptForSessionType } from "./ui/chooseSessionType"
@@ -137,20 +139,24 @@ export default class PeerdraftPlugin extends Plugin {
         this.serverSync.on('showMessage', (title, content) => {
           const modal = new Modal(plugin.app)
           modal.setTitle(title)
-          modal.contentEl.textContent = content
+          modal.contentEl.setText(content)
           modal.open()
         })
 
-        this.serverSync.connect()
-        void this.serverSync.connected()
-
-        for (const [path, data] of plugin.settings.serverShares.files.entries()) {
-          await SharedDocument.fromPermanentShareDocument({ path, persistenceId: data.persistenceId, shareId: data.shareId }, plugin)
-        }
-
-        for (const [path, data] of plugin.settings.serverShares.folders.entries()) {
-          await SharedFolder.fromPermanentShareFolder({ path, persistenceId: data.persistenceId, shareId: data.shareId }, plugin)
-        }
+        await runStartupSync({
+          connect: () => this.serverSync.connect(),
+          connected: () => this.serverSync.connected(),
+          restoreFiles: async () => {
+            for (const [path, data] of plugin.settings.serverShares.files.entries()) {
+              await SharedDocument.fromPermanentShareDocument({ path, persistenceId: data.persistenceId, shareId: data.shareId }, plugin)
+            }
+          },
+          restoreFolders: async () => {
+            for (const [path, data] of plugin.settings.serverShares.folders.entries()) {
+              await SharedFolder.fromPermanentShareFolder({ path, persistenceId: data.persistenceId, shareId: data.shareId }, plugin)
+            }
+          }
+        })
         updatePeerdraftWorkspace(plugin.app.workspace, plugin.pws)
         plugin.registerEvent(plugin.app.workspace.on("layout-change", () => {
           updatePeerdraftWorkspace(plugin.app.workspace, plugin.pws)
@@ -254,7 +260,7 @@ export default class PeerdraftPlugin extends Plugin {
 
         if (doc && oldPathInFolder && newPathInFolder) {
           if (oldPathInFolder === newPathInFolder) {
-            oldPathInFolder.updatePath(oldPath, file.path)
+            await handleRenameWithinSameFolder(oldPathInFolder, doc, oldPath, file)
             return
           }
           if (newPathInFolder.fileExtensions.has(file.extension)) {
@@ -291,6 +297,11 @@ export default class PeerdraftPlugin extends Plugin {
             const isTrackedAsBinary = oldPathInFolder?.isBinaryFileTracked(oldPath) ?? false
 
             if (isTrackedAsBinary) {
+              // Cross-folder move: also tell the OLD folder to drop its Y.Map
+              // entry - only routing to the new folder left a stale entry
+              // behind in the old folder forever (it has no other way to
+              // learn the file left).
+              oldPathInFolder?.handleBinaryFileRename(file, oldPath)
               newPathInFolder.handleBinaryFileRename(file, oldPath)
             } else {
               const content = await plugin.app.vault.readBinary(file)
@@ -299,6 +310,8 @@ export default class PeerdraftPlugin extends Plugin {
               if (isBinary) {
                 newPathInFolder.handleBinaryFileRename(file, oldPath)
               } else {
+                // doc may already exist under its old path (e.g. folder rename cascade) — relocate, don't duplicate.
+                await relocateIfExisting(doc, file)
                 const newDoc = doc ?? await SharedDocument.fromTFile(file, { permanent: true, folder: newPathInFolder.shareId }, plugin)
                 if (newDoc) {
                   newPathInFolder.addDocument(newDoc)
@@ -319,13 +332,13 @@ export default class PeerdraftPlugin extends Plugin {
             oldPathInFolder.handleBinaryFileRename(file, oldPath)
           }
           if (doc) {
+            oldPathInFolder.removeDocument(doc)
             doc.updateFileRef(file)
             void doc.unshare()
           }
         }
         else if (doc) {
           await doc.setNewFileLocation(file)
-          void doc.unshare()
         }
       } else if (file instanceof TFolder) {
         const folder = SharedFolder.findByPath(oldPath)
@@ -342,9 +355,13 @@ export default class PeerdraftPlugin extends Plugin {
       const folder = SharedFolder.getSharedFolderForSubPath(file.path)
       if (!folder) return
       if (!folder.fileExtensions.has(file.extension)) return
+      // This write was caused by our own binary-file download, not a local edit
+      if (folder.isRemoteBinaryUpdateInProgress(file.path)) return
 
       const content = await plugin.app.vault.readBinary(file)
-      const isBinary = await isBinaryContent(content, file.name)
+      // A file already shared as binary keeps syncing that way until it is moved over, so edits are not dropped
+      const stillSharedAsBinary = folder.isBinaryFileTracked(file.path) && !SharedDocument.findByPath(file.path)
+      const isBinary = stillSharedAsBinary || await isBinaryContent(content, file.name)
 
       if (isBinary) {
         await folder.handleBinaryFile(file)
@@ -377,6 +394,8 @@ export default class PeerdraftPlugin extends Plugin {
           if (SharedDocument.findByPath(file.path)) return
           if (plugin.settings.serverShares.files.has(normalizePath(file.path))) return
           if (!folder.fileExtensions.has(file.extension)) return
+          // This write was caused by our own binary-file download, not a local edit
+          if (folder.isRemoteBinaryUpdateInProgress(file.path)) return
 
           const content = await plugin.app.vault.readBinary(file)
           const isBinary = await isBinaryContent(content, file.name)
@@ -421,11 +440,12 @@ export default class PeerdraftPlugin extends Plugin {
       folder.destroy()
     })
     this.activeStreamClient.destroy()
+    this.serverSync?.destroy()
   }
 
   log(message: string) {
     if (this.settings.debug) {
-      console.log(message)
+      console.debug(message)
     }
   }
 

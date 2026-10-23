@@ -7,6 +7,7 @@ import * as math from 'lib0/math'
 import { SyncableDocument, type SyncableEntity } from './sharedEntities/syncableDocument'
 import { SyncableFolder } from './sharedEntities/syncableFolder'
 import { calculateHash, createRandomId, serialize } from './tools'
+import { PendingMessageQueue } from './pendingMessageQueue'
 
 export const MESSAGE_SYNC = 0
 export const MESSAGE_QUERY_AWARENESS = 3
@@ -28,6 +29,21 @@ export const NEW_SESSION_CONFIRMED = 9
 export const STOP_SESSION = 10
 export const STOP_SESSION_CONFIRMED = 11
 export const BINARY_PRESIGN_UPLOAD = 12
+export const STOP_SESSION_FAILED = 13
+
+export type StopSessionFailureReason = 'unauthenticated' | 'not_found' | 'not_permitted' | 'internal'
+
+export type StopSessionRejectionReason = Exclude<StopSessionFailureReason, 'not_found'> | 'timeout'
+
+/** Rejection from `stopSession` — `reason` tells deterministic answers
+ *  (`not_permitted`, `internal`, `unauthenticated` after retry) from a
+ *  timeout, so callers can phrase failure notices honestly. */
+export class StopSessionError extends Error {
+  constructor(public readonly reason: StopSessionRejectionReason, id: string) {
+    super(`stop-session for ${id} ${reason === 'timeout' ? 'timed out' : `failed: ${reason}`}`)
+    this.name = 'StopSessionError'
+  }
+}
 
 export const MESSAGE_AUTHENTICATION_REQUEST = 5
 export const MESSAGE_AUTHENTICATION_RESPONSE = 6
@@ -100,6 +116,12 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
             provider.emit("stop-session-confirmed", [id])
             break;
           }
+          case STOP_SESSION_FAILED: {
+            const id = decoding.readVarString(decoder)
+            const reason = decoding.readVarString(decoder)
+            provider.emit("stop-session-failed", [id, reason])
+            break;
+          }
           default:
             break;
         }
@@ -134,7 +156,7 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
       } else {
         provider.wsUnsuccessfulReconnects++
       }
-      setTimeout(
+      window.setTimeout(
         setupWS,
         math.min(
           math.pow(2, provider.wsUnsuccessfulReconnects) * 100,
@@ -157,6 +179,8 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
       if (provider.jwt) {
         void provider.authenticate(provider.jwt, provider.version)
       }
+
+      provider.flushPendingMessages()
 
       const folderPromises = SyncableFolder.getAll().map(async (folder) => {
         if (folder.indexedDBProvider) {
@@ -199,6 +223,7 @@ type Events = {
   'new-doc-confirmed': (tempId: string, id: string, checksum: string) => void
   'new-session-confirmed': (tempId: string, id: string) => void
   'stop-session-confirmed': (id: string) => void
+  'stop-session-failed': (id: string, reason: string) => void
   'authenticated': (data: AuthResponseData) => void
   'showMessage': (title: string, content: string) => void
 }
@@ -223,6 +248,7 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
   jwt: string | undefined
   version: string
   registry?: Map<string, import('./sharedEntities/syncableDocument').SyncableDocument>
+  private pendingMessages = new PendingMessageQueue()
 
   constructor(serverUrl: string, {
     connect = true,
@@ -363,7 +389,17 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
   sendMessage(buf: Uint8Array) {
     if (this.wsconnected && this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(buf)
+    } else {
+      this.pendingMessages.push(buf)
     }
+  }
+
+  get pendingMessageCount(): number {
+    return this.pendingMessages.size
+  }
+
+  flushPendingMessages(): void {
+    this.pendingMessages.flush((buf) => this.sendMessage(buf))
   }
 
   connected() {
@@ -414,24 +450,74 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
     })
   }
 
-  stopSession(id: string) {
-    return new Promise<string>(resolve => {
-      const handler = (sessionId: string) => {
-        if (sessionId === id) {
-          this.off("stop-session-confirmed", handler)
-          resolve(id)
+  stopSession(id: string, timeoutMs = 20000) {
+    return new Promise<string>((resolve, reject) => {
+      let settled = false
+      let retried = false
+      let timer = 0
+
+      const cleanup = () => {
+        this.off("stop-session-confirmed", onConfirmed)
+        this.off("stop-session-failed", onFailed)
+        this.off("authenticated", onAuthenticated)
+        window.clearTimeout(timer)
+      }
+      const settle = (action: () => void) => {
+        if (settled) return
+        settled = true
+        cleanup()
+        action()
+      }
+      const send = () => {
+        timer = window.setTimeout(onTimeout, timeoutMs)
+        this.sendStopSession(id)
+      }
+      const scheduleRetry = (failure: () => void) => {
+        if (retried) {
+          settle(failure)
+          return
+        }
+        retried = true
+        window.clearTimeout(timer)
+        if (this.authenticated) {
+          send()
+        } else {
+          this.on("authenticated", onAuthenticated)
+          timer = window.setTimeout(() => settle(failure), timeoutMs)
         }
       }
-      this.on("stop-session-confirmed", handler)
-      this.sendStopSession(id)
+      const onTimeout = () => scheduleRetry(() => reject(new StopSessionError('timeout', id)))
+      const onAuthenticated = () => {
+        if (settled) return
+        this.off("authenticated", onAuthenticated)
+        send()
+      }
+      const onConfirmed = (sessionId: string) => {
+        if (sessionId === id) settle(() => resolve(id))
+      }
+      const onFailed = (sessionId: string, reason: string) => {
+        if (sessionId !== id) return
+        if (reason === 'unauthenticated') {
+          scheduleRetry(() => reject(new StopSessionError('unauthenticated', id)))
+        } else if (reason === 'not_found') {
+          // The share is already gone server-side — the stop is achieved.
+          settle(() => resolve(id))
+        } else {
+          settle(() => reject(new StopSessionError(reason as 'not_permitted' | 'internal', id)))
+        }
+      }
+
+      this.on("stop-session-confirmed", onConfirmed)
+      this.on("stop-session-failed", onFailed)
+      send()
     })
   }
 
   destroy() {
     if (this._resyncInterval !== 0) {
-      clearInterval(this._resyncInterval)
+      window.clearInterval(this._resyncInterval)
     }
-    clearInterval(this._checkInterval)
+    window.clearInterval(this._checkInterval)
     this.disconnect()
     super.destroy()
   }

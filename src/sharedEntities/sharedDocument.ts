@@ -19,6 +19,7 @@ import { Mutex } from 'async-mutex';
 import { add, getDocByPath, moveDoc, removeDoc } from 'src/permanentShareStoreFS';
 import { openLoginModal } from 'src/ui/login';
 import { promptForText } from 'src/ui/enterText';
+import { StopSessionError } from '../peerdraftWebSocketProvider';
 import { addCanvasToYDoc, applyDataChangesToDoc, diffCanvases, yDocToCanvasJSON } from './canvas';
 import { addCanvasExtension, type CanvasView, type Node } from 'src/ui/canvas';
 import JSONC from "tiny-jsonc"
@@ -59,6 +60,8 @@ export class SharedDocument extends SharedEntity {
   private _initializationGuardPassed = false
   private _initializationGuardMutex = new Mutex()
   private _vaultModifyListenerRegistered = false
+  private _catchUpIdleTimeout?: number
+  private _catchUpUpdateListener?: (update: Uint8Array, origin: unknown) => void
 
   get initializationGuardPassed(): boolean {
     return this._initializationGuardPassed
@@ -86,9 +89,21 @@ export class SharedDocument extends SharedEntity {
     const doc = await this.fromTFile(view.file, opts, plugin)
     if (doc) {
       void doc.startWebRTCSync()
-      if (doc.isPermanent && doc._webRTCProvider) {
+      // Every share records who started it, permanent or not.
+      //
+      // "Stop when the owner leaves" only ever applies to a *fleeting* share —
+      // both this plugin and the web editor guard on `!isPermanent` — and both
+      // identify the owner by reading this fragment. Writing it only for
+      // permanent shares meant the two halves could never meet: a fleeting
+      // session compared the departing client against an empty string, never
+      // matched, and so never stopped.
+      if (doc._webRTCProvider) {
         doc.getOwnerFragment().insert(0, doc._webRTCProvider.awareness.clientID.toFixed(0))
-      } else {
+      }
+      // `!(isPermanent && provider)`, which is what the `else` this replaced
+      // covered: a permanent share whose provider is not up yet took this
+      // branch too. Splitting on `isPermanent` alone quietly changed that.
+      if (!doc.isPermanent || !doc._webRTCProvider) {
         doc.addStatusBarEntry()
         pinLeaf(view.leaf)
       }
@@ -246,7 +261,7 @@ export class SharedDocument extends SharedEntity {
       doc.setupFileSyncForCanvas()
     } else {
       doc.isCanvas = false
-      doc.setupFileSyncForContent
+      doc.setupFileSyncForContent()
     }
     doc._path = normalizedPath
     const existingFile = plugin.app.vault.getAbstractFileByPath(normalizedPath)
@@ -257,6 +272,7 @@ export class SharedDocument extends SharedEntity {
     doc._syncable.setFileIO(new VaultFileIO(file, plugin))
 
     void doc.syncWithServer()
+    doc.startWebRTCSyncWithCatchUp()
     await doc.setPermanent()
     doc._setupInitializationGuard()
     doc._setupStatusIndicatorSubscriptions()
@@ -605,9 +621,9 @@ export class SharedDocument extends SharedEntity {
   syncWithServer() {
     return this._syncable.syncWithServer()
   }
-
+  
   startWebRTCSync() {
-    return super.startWebRTCSync((provider) => {
+    const provider = super.startWebRTCSync((provider) => {
       provider.awareness.on("update", async (msg: { added: Array<number>, removed: Array<number> }) => {
         const removed = msg.removed ?? [];
         if (removed && removed.length > 0) {
@@ -638,6 +654,54 @@ export class SharedDocument extends SharedEntity {
         }
       })
     })
+
+    // Any ordinary start means this document is in use now — someone opened
+    // it, or the server asked us to peer again — so it is no longer a
+    // document catching up in the background. Ending catch-up mode has to
+    // detach the listener, not just drop the pending timeout: the listener
+    // re-arms that timeout on every update, so leaving it attached let a
+    // document that arrived from a shared folder tear its own WebRTC
+    // provider down eight seconds after each edit, for the rest of the
+    // session. Text and presence both ride that provider, so both stopped
+    // together — see e2e FINDINGS.md #24.
+    this._endCatchUp()
+    return provider
+  }
+
+  startWebRTCSyncWithCatchUp() {
+    const provider = this.startWebRTCSync()
+    if (!provider) return provider
+    // startWebRTCSync just ended catch-up mode; this re-enters it, for a
+    // document that has arrived but that nobody has opened.
+    // this.yDoc, not provider.doc — they are the same document (the provider
+    // is constructed with it), but attaching and detaching through the same
+    // expression is what keeps them provably the same.
+    this._catchUpUpdateListener = () => this._scheduleCatchUpTeardown()
+    this.yDoc.on('update', this._catchUpUpdateListener)
+    this._scheduleCatchUpTeardown()
+    return provider
+  }
+
+  private _scheduleCatchUpTeardown() {
+    this._clearCatchUpIdleTimeout()
+    this._catchUpIdleTimeout = window.setTimeout(() => this.stopWebRTCSync(), 8000)
+  }
+
+  /** Leaves catch-up mode: no pending teardown, and nothing left that could
+   * schedule another one. */
+  private _endCatchUp() {
+    this._clearCatchUpIdleTimeout()
+    if (this._catchUpUpdateListener) {
+      this.yDoc.off('update', this._catchUpUpdateListener)
+      this._catchUpUpdateListener = undefined
+    }
+  }
+
+  private _clearCatchUpIdleTimeout() {
+    if (this._catchUpIdleTimeout !== undefined) {
+      window.clearTimeout(this._catchUpIdleTimeout)
+      this._catchUpIdleTimeout = undefined
+    }
   }
 
   async setNewFileLocation(file: TFile) {
@@ -956,7 +1020,18 @@ export class SharedDocument extends SharedEntity {
 
     if (!text || text.text !== "YES") return
 
-    await plugin.serverSync.stopSession(id)
+    try {
+      await plugin.serverSync.stopSession(id)
+    } catch (e) {
+      if (e instanceof StopSessionError && (e.reason === 'not_permitted' || e.reason === 'internal')) {
+        showNotice(e.reason === 'not_permitted'
+          ? "You are not permitted to stop sharing this document. It is still shared."
+          : "The server failed to stop sharing this document. It is still shared.")
+      } else {
+        showNotice("The server didn't confirm the session stop. The document is still shared — please try again.")
+      }
+      return
+    }
     const doc = SharedDocument.findById(id)
     if (doc) await doc.unshare()
   }

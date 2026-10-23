@@ -1,8 +1,5 @@
 import { fileTypeFromBuffer } from 'file-type'
 
-/**
- * Text MIME type prefixes - files with these MIME types are synced as text via Y.Text
- */
 const TEXT_MIME_PREFIXES = [
   'text/',
   'application/json',
@@ -11,49 +8,10 @@ const TEXT_MIME_PREFIXES = [
   'application/typescript'
 ]
 
-/**
- * Detect if file content should be synced as binary based on MIME type
- * Uses magic bytes detection via file-type library, falls back to extension
- * @param content File content as ArrayBuffer or Uint8Array
- * @param filename Filename for fallback extension-based detection
- * @returns true if file should be synced as binary (S3), false for text (Y.Text)
- */
-export async function isBinaryContent(content: ArrayBuffer | Uint8Array, filename: string): Promise<boolean> {
-  try {
-    // Convert ArrayBuffer to Uint8Array if needed
-    const buffer = content instanceof ArrayBuffer ? new Uint8Array(content) : content
-    
-    // Try magic bytes detection
-    const fileType = await fileTypeFromBuffer(buffer)
-    if (fileType) {
-      // File type detected via magic bytes
-      return !TEXT_MIME_PREFIXES.some(prefix => fileType.mime.startsWith(prefix))
-    }
-    
-    // Fallback: simple extension check for common text files
-    const textExtensions = ['md', 'txt', 'json', 'xml', 'html', 'htm', 'css', 'js', 'ts', 'jsx', 'tsx', 'csv', 'yaml', 'yml', 'canvas']
-    const extension = filename.split('.').pop()?.toLowerCase()
-    const isTextExtension = extension ? textExtensions.includes(extension) : false
-    return !isTextExtension
-  } catch (error) {
-    console.error('[fileTypeDetection] Error detecting file type:', error)
-    // On error, assume binary to be safe
-    return true
-  }
-}
-
-/**
- * Synchronous binary file detection based on extension
- * Used ONLY for quick filtering in old dead code - prefer isBinaryContent
- * @param filename File name or path
- * @returns true if file is likely binary based on extension
- */
-export function isBinaryFile(filename: string): boolean {
-  // Simple heuristic: common text file extensions
-  const textExtensions = ['md', 'txt', 'json', 'xml', 'html', 'htm', 'css', 'js', 'ts', 'jsx', 'tsx', 'csv', 'yaml', 'yml', 'canvas']
-  const extension = filename.split('.').pop()?.toLowerCase()
-  return extension ? !textExtensions.includes(extension) : true
-}
+/** Extensions that are always stored as text documents, even when the content has no recognisable signature. */
+export const TEXT_EXTENSIONS: ReadonlySet<string> = new Set([
+  'md', 'txt', 'json', 'xml', 'html', 'htm', 'css', 'js', 'ts', 'jsx', 'tsx', 'csv', 'yaml', 'yml', 'canvas', 'base'
+])
 
 const EXTENSION_MIME_MAP: Record<string, string> = {
   mp3: 'audio/mpeg',
@@ -87,8 +45,62 @@ const EXTENSION_MIME_MAP: Record<string, string> = {
   pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 }
 
+/** Text documents are held in a Yjs document, so this matches the limit in SharedDocument.fromTFile. */
+const MAX_SNIFFED_TEXT_BYTES = 1 * 1024 * 1024
+const SNIFF_BYTES = 8192
+
+function getExtension(filename: string): string | undefined {
+  if (!filename.includes('.')) return undefined
+  return filename.split('.').pop()?.toLowerCase()
+}
+
+/** True when the start of the content is valid UTF-8 without NUL bytes, which is how git tells text from binary. */
+function looksLikeText(buffer: Uint8Array): boolean {
+  const sample = buffer.subarray(0, SNIFF_BYTES)
+  if (sample.includes(0)) return false
+  try {
+    // stream: true tolerates a multi-byte character cut off at the end of the sample
+    new TextDecoder('utf-8', { fatal: true }).decode(sample, { stream: true })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Decides whether a file is stored as a binary attachment (true) or a text document (false).
+ * Order: file signature, then extension lists, then the content itself. The last step lets
+ * text formats we have never heard of, such as `.base`, `.tex` or `.bib`, sync as text.
+ */
+export async function isBinaryContent(content: ArrayBuffer | Uint8Array, filename: string): Promise<boolean> {
+  try {
+    const buffer = content instanceof ArrayBuffer ? new Uint8Array(content) : content
+
+    const fileType = await fileTypeFromBuffer(buffer)
+    if (fileType) {
+      return !TEXT_MIME_PREFIXES.some(prefix => fileType.mime.startsWith(prefix))
+    }
+
+    const extension = getExtension(filename)
+    if (extension && TEXT_EXTENSIONS.has(extension)) return false
+    // Images such as SVG are text on disk but belong with the attachments
+    if (extension && extension in EXTENSION_MIME_MAP) return true
+
+    if (buffer.length === 0 || buffer.length > MAX_SNIFFED_TEXT_BYTES) return true
+    return !looksLikeText(buffer)
+  } catch (error) {
+    console.error('[fileTypeDetection] Error detecting file type:', error)
+    return true
+  }
+}
+
+export function isBinaryFile(filename: string): boolean {
+  const extension = getExtension(filename)
+  return extension ? !TEXT_EXTENSIONS.has(extension) : true
+}
+
 export function getMimeTypeFromExtension(filename: string): string {
-  const extension = filename.split('.').pop()?.toLowerCase()
+  const extension = getExtension(filename)
   if (extension && EXTENSION_MIME_MAP[extension]) {
     return EXTENSION_MIME_MAP[extension]
   }

@@ -1,10 +1,13 @@
 import { Modal, Plugin, PluginSettingTab, Setting, debounce, normalizePath, requestUrl, sanitizeHTMLToDom } from "obsidian";
-import { showTextModal } from "./ui";
-import PeerdraftPlugin from "./peerdraftPlugin";
+import { showNotice, showTextModal } from "./ui";
+import type PeerdraftPlugin from "./peerdraftPlugin";
 import { promptForFolderSelection } from "./ui/selectFolder";
 import { PermanentShareStoreIndexedDB } from "./permanentShareStore";
 import { getJWT, logout } from "./login";
 import { openLoginModal } from "./ui/login";
+import { createRandomId } from "./tools";
+import { assessVaultIdentity, resetVaultIdentity } from "./vaultIdentity";
+import { confirmVaultCopied } from "./ui/confirmVaultIdentity";
 
 interface ShareUsageResponse {
   currentCount: number;
@@ -78,7 +81,10 @@ export interface Settings {
   serverShares: {
     folders: Map<string, { persistenceId: string, shareId: string }>
     files: Map<string, { persistenceId: string, shareId: string }>
-  }
+  },
+  /** Vault base path the `oid`/`serverShares` identity belongs to —
+   *  detects data.json traveling with a copied `.obsidian` folder. */
+  oidVaultPath?: string
 }
 
 const DEFAULT_SETTINGS: Omit<Settings, "oid"> = {
@@ -104,24 +110,23 @@ const DEFAULT_SETTINGS: Omit<Settings, "oid"> = {
   }
 }
 
-const FORCE_SETTINGS: Partial<Settings> = {
-  /*
-    basePath: "http://localhost:5173",
-    subscriptionAPI: "http://localhost:5173/subscription",
-    connectAPI: "http://localhost:5173/subscription/connect",
-    sessionAPI: "http://localhost:5173/session",
-    sync: "ws://localhost:5173/sync",
-    signaling: "ws://localhost:5173/signal",
-    actives: "ws://localhost:5173/actives"
-*/
-  basePath: "https://www.peerdraft.app",
-  subscriptionAPI: "https://www.peerdraft.app/subscription",
-  connectAPI: "https://www.peerdraft.app/subscription/connect",
-  sessionAPI: "https://www.peerdraft.app/session",
-  sync: "wss://www.peerdraft.app/sync",
-  signaling: "wss://www.peerdraft.app/signal",
-  actives: "wss://www.peerdraft.app/actives",
+// Injected by esbuild `define` from PEERDRAFT_DEV_SERVER_URL (see esbuild.config.mjs)
+declare const PEERDRAFT_DEV_SERVER_URL: string
+
+const settingsFromBaseUrl = (baseUrl: string): Partial<Settings> => {
+  const wsBase = baseUrl.replace(/^http/, "ws")
+  return {
+    basePath: baseUrl,
+    subscriptionAPI: `${baseUrl}/subscription`,
+    connectAPI: `${baseUrl}/subscription/connect`,
+    sessionAPI: `${baseUrl}/session`,
+    sync: `${wsBase}/sync`,
+    signaling: `${wsBase}/signal`,
+    actives: `${wsBase}/actives`,
+  }
 }
+
+const FORCE_SETTINGS: Partial<Settings> = settingsFromBaseUrl(PEERDRAFT_DEV_SERVER_URL)
 
 export const migrateSettings = async (plugin: PeerdraftPlugin) => {
   const oldSettings = await getSettings(plugin)
@@ -160,6 +165,27 @@ export const migrateSettings = async (plugin: PeerdraftPlugin) => {
     })
     await saveSettingsNow(newSettings, plugin)
     await db.deleteDB()
+  }
+
+  // data.json travels with a copied `.obsidian` — compare the stored
+  // vault path to catch identity/registry claims from a copy. This must
+  // resolve before startup restores serverShares.
+  const adapter = plugin.app.vault.adapter
+  const currentVaultPath = 'getBasePath' in adapter && typeof adapter.getBasePath === 'function'
+    ? adapter.getBasePath()
+    : undefined
+  if (currentVaultPath) {
+    const assessment = assessVaultIdentity(newSettings.oidVaultPath, currentVaultPath)
+    if (assessment.action === 'first-run') {
+      newSettings.oidVaultPath = assessment.basePath
+    } else if (assessment.action === 'mismatch') {
+      const answer = await confirmVaultCopied(plugin.app, assessment.storedPath, assessment.currentPath)
+      if (answer?.copied) {
+        resetVaultIdentity(newSettings, createRandomId())
+        showNotice("Peerdraft gave this vault copy a new identity and cleared its share registry. Log in again to re-enable sharing.")
+      }
+      newSettings.oidVaultPath = currentVaultPath
+    }
   }
 
   await saveSettingsNow(newSettings, plugin)
@@ -243,9 +269,9 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
   accountSection.createEl("h2", { text: "Your Account", cls: "pd-section-header" })
 
   if (plugin.serverSync.authenticated) {
-    accountSection.createEl("div", { text: `You are logged in as ${plugin.settings.plan.email}.` })
+    accountSection.createDiv({ text: `You are logged in as ${plugin.settings.plan.email}.` })
 
-    const accountDiv = accountSection.createEl("div", { text: "Loading account information..." })
+    const accountDiv = accountSection.createDiv({ text: "Loading account information..." })
     
     void fetchAccountSettings(plugin).then(settings => {
       if (!settings) {
@@ -257,7 +283,7 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
 
       // Plan Status subsection
       const planSubsection = accountDiv.createDiv({ cls: "pd-account-subsection" })
-      const planDiv = planSubsection.createEl("div")
+      const planDiv = planSubsection.createDiv()
       planDiv.createSpan({ text: "You are on the " }).createEl('b', { text: settings.plan.displayName })
       planDiv.createSpan({ text: " plan." })
       
@@ -265,13 +291,13 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
       if (settings.plan.expiresAt) {
         const expiryDate = new Date(settings.plan.expiresAt);
         const daysRemaining = Math.ceil((expiryDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
-        planSubsection.createEl("div", { 
+        planSubsection.createDiv({ 
           text: `Trial expires in ${daysRemaining} day${daysRemaining === 1 ? '' : 's'}`,
           cls: "setting-item-description"
         })
       } else if (settings.plan.renewsAt) {
         const renewalDate = new Date(settings.plan.renewsAt);
-        planSubsection.createEl("div", { 
+        planSubsection.createDiv({ 
           text: `Renews on ${renewalDate.toLocaleDateString()}`,
           cls: "setting-item-description"
         })
@@ -279,7 +305,7 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
 
       // Share Usage subsection
       const sharesSubsection = accountDiv.createDiv({ cls: "pd-account-subsection" })
-      const sharesDiv = sharesSubsection.createEl("div")
+      const sharesDiv = sharesSubsection.createDiv()
       if (settings.shares.limit === null) {
         sharesDiv.createSpan({ text: `You have ${settings.shares.current} active shares (unlimited).` })
       } else {
@@ -290,7 +316,7 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
 
       // Warning message
       if (settings.shares.warningMessage) {
-        sharesSubsection.createEl("div", {
+        sharesSubsection.createDiv({
           text: `⚠️ ${settings.shares.warningMessage}`,
           cls: "mod-warning"
         })
@@ -324,7 +350,7 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
         // Show comment if available
         const optionWithComment = settings.upgrade.options.find(o => o.comment);
         if (optionWithComment) {
-          accountDiv.createEl("div", { 
+          accountDiv.createDiv({ 
             text: `💡 ${optionWithComment.comment}`,
             cls: "setting-item-description"
           })
@@ -342,8 +368,8 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
         })
       })
   } else {
-    accountSection.createEl("div", { text: `You are not logged in.` })
-    accountSection.createEl("div", { text: `To initiate new shared documents or folders you need to log in to your Peerdraft account. If you only work on shared documents and folders created by others, you don't need an account.` })
+    accountSection.createDiv({ text: `You are not logged in.` })
+    accountSection.createDiv({ text: `To initiate new shared documents or folders you need to log in to your Peerdraft account. If you only work on shared documents and folders created by others, you don't need an account.` })
 
     new Setting(accountSection)
       .setName("Log in or create account")

@@ -2,6 +2,7 @@ import { App, Modal, Plugin, Setting } from "obsidian";
 import { SharedDocument } from "src/sharedEntities/sharedDocument";
 import { SharedFolder } from "src/sharedEntities/sharedFolder";
 import { showNotice } from "src/ui";
+import { isBinaryContent } from "src/utils/fileTypeDetection";
 
 class SharedFolderOptionsModal extends Modal {
 
@@ -166,8 +167,6 @@ class SharedFolderOptionsModal extends Modal {
       const { valid, message } = validateExtensions(value);
       isValid = valid;
       
-      console.log('Input validation - valid:', valid, 'value:', value);
-      
       // Update input styling
       if (!valid) {
         // Invalid state
@@ -193,7 +192,7 @@ class SharedFolderOptionsModal extends Modal {
       // Update or create error message
       if (!valid && message) {
         if (!errorEl) {
-          errorEl = extensions.descEl.createEl('div');
+          errorEl = extensions.descEl.createDiv();
           errorEl.style.cssText = `
             color: var(--text-error);
             font-size: 0.85em;
@@ -206,13 +205,13 @@ class SharedFolderOptionsModal extends Modal {
           `;
           
           // Add warning icon
-          const icon = document.createElement('span');
+          const icon = createSpan();
           icon.textContent = '⚠️';
           icon.style.fontSize = '0.9em';
           errorEl.appendChild(icon);
           
           // Add message text
-          const messageEl = document.createElement('span');
+          const messageEl = createSpan();
           messageEl.textContent = message;
           errorEl.appendChild(messageEl);
         } else {
@@ -320,13 +319,13 @@ class SharedFolderOptionsModal extends Modal {
           const modal = new Modal(this.app);
           modal.titleEl.setText('Confirm File Sharing Changes');
           
-          const content = modal.contentEl.createEl('div');
+          const content = modal.contentEl.createDiv();
           content.createEl('p', {
             text: 'The following changes will be made to shared files:'
           });
           
           if (addedFiles.length > 0) {
-            const addedSection = content.createEl('div');
+            const addedSection = content.createDiv();
             addedSection.createEl('h4', {
               text: `Files that will be SHARED (${addedFiles.length}):`
             });
@@ -342,7 +341,7 @@ class SharedFolderOptionsModal extends Modal {
           }
           
           if (removedFiles.length > 0) {
-            const removedSection = content.createEl('div');
+            const removedSection = content.createDiv();
             removedSection.createEl('h4', {
               text: `Files that will be UNSHARED (${removedFiles.length}):`
             });
@@ -357,7 +356,7 @@ class SharedFolderOptionsModal extends Modal {
             }
           }
           
-          const buttonContainer = content.createEl('div', {
+          const buttonContainer = content.createDiv({
             cls: 'pd-button-container'
           });
           
@@ -391,10 +390,22 @@ class SharedFolderOptionsModal extends Modal {
               const isNowIncluded = newExtensions.has(ext);
               
               if (isNowIncluded && !wasIncluded) {
-                // Add document to shared folder
-                const doc = await SharedDocument.fromTFile(file, { permanent: true }, this.folder.plugin);
-                if (doc) {
-                  this.folder.addDocument(doc);
+                // Newly-allowed extension: route by actual content, same as
+                // peerdraftPlugin.ts's create/modify handlers, rather than
+                // assuming every matching file is a text document.
+                const content = await this.app.vault.readBinary(file);
+                if (await isBinaryContent(content, file.name)) {
+                  await this.folder.handleBinaryFile(file);
+                } else {
+                  const wasSharedAsBinary = this.folder.isBinaryFileTracked(file.path);
+                  const doc = await SharedDocument.fromTFile(file, { permanent: true }, this.folder.plugin);
+                  if (doc) {
+                    this.folder.addDocument(doc);
+                    // Move it over: a path shared as both a text document and a binary file shows up twice
+                    if (wasSharedAsBinary) {
+                      this.folder.unshareBinaryFile(file.path);
+                    }
+                  }
                 }
               } else if (!isNowIncluded && wasIncluded) {
                 // Remove document from shared folder
@@ -403,6 +414,7 @@ class SharedFolderOptionsModal extends Modal {
                   this.folder.removeDocument(doc);
                   void doc.unshare();
                 }
+                this.folder.unshareBinaryFile(file.path);
               }
             }
             

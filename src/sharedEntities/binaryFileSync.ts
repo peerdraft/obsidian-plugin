@@ -14,6 +14,7 @@ import { showNotice } from '../ui'
 import { setStatusClass, removeStatusClass } from '../workspace/explorerView'
 
 const BINARY_FILE_SYNC_DEBOUNCE_MS = 5000
+const PRESIGN_REQUEST_TIMEOUT_MS = 30000
 
 export interface BinaryFileMetadata {
   path: string
@@ -33,8 +34,19 @@ export class BinaryFileSync {
   private plugin: PeerDraftPlugin
   private getFolderId: () => string
   private uploadTimeouts: Map<string, number> = new Map()
-  private isUpdatingFromRemote = false
+  // Paths currently being written to disk as a result of a remote (Y.Map-driven)
+  // download, keyed per-file so one in-flight download doesn't cause an
+  // unrelated remote change (for a different file) to be ignored, and so
+  // peerdraftPlugin.ts can skip re-processing the vault event that write
+  // itself produces.
+  private remoteUpdatingPaths: Set<string> = new Set()
+  private unsharingPaths: Set<string> = new Set()
   private syncingFiles: Set<string> = new Set()
+  // Serializes presign requests: the WebSocket response for BINARY_PRESIGN_UPLOAD
+  // carries no request id, so at most one request may be in flight at a time or
+  // a concurrent second request's response could be mistaken for the first's.
+  private presignQueue: Promise<void> = Promise.resolve()
+  private yDocObserver?: (event: Y.YMapEvent<BinaryFileMetadata>) => void
 
   constructor(
     yDoc: Y.Doc,
@@ -48,9 +60,7 @@ export class BinaryFileSync {
     this.plugin = plugin
     this.getFolderId = getFolderId
     this.binaryFilesMap = yDoc.getMap('binaryFiles')
-
-    console.log(`[BinaryFileSync] Initializing for folder: ${folder.path}, shareId: ${getFolderId()}`)
-    // Listeners will be set up in initialize() to avoid processing events before ready
+    // Y.Doc observer is set up in initialize() to avoid processing events before ready
   }
 
   /**
@@ -75,7 +85,7 @@ export class BinaryFileSync {
 
       if (metadata) {
         const content = await this.vault.readBinary(file as TFile)
-        const hash = calculateFileHash(content)
+        const hash = await calculateFileHash(content)
         if (hash === metadata.hash) {
           await setStatusClass(absolutePath, this.plugin, 'insync')
         } else {
@@ -103,7 +113,7 @@ export class BinaryFileSync {
   }
 
   /**
-   * Remove status indicator for a file (e.g. when moved out of folder)
+   * Remove status indicator for a file (e.g. when deleted remotely)
    */
   private async removeStatus(relativePath: string): Promise<void> {
     try {
@@ -116,40 +126,31 @@ export class BinaryFileSync {
   }
 
   /**
-   * Initialize binary file sync - scan folder and sync existing files
+   * Initialize binary file sync - sets up the Y.Doc observer and syncs
+   * files already tracked in Y.Map (from previous sessions or remote
+   * peers). New local files are handled by peerdraftPlugin's create event
+   * handler, not scanned here.
    */
   async initialize(): Promise<void> {
-    console.log(`[BinaryFileSync] initialize() starting for folder: ${this.folder.path}`)
-    console.log(`[BinaryFileSync] Current binaryFilesMap entries: ${Array.from(this.binaryFilesMap.keys()).join(', ') || '(none)'}`)
-
-    // Setup observer for remote changes (but NOT vault listeners - peerdraftPlugin handles those)
     this.setupYDocObserver()
 
-    // Only sync files already tracked in Y.Map (from previous sessions or remote peers)
-    // New local files are handled by peerdraftPlugin's create event handler
     for (const [relativePath, metadata] of this.binaryFilesMap.entries()) {
       const absolutePath = this.getAbsolutePath(relativePath)
       const file = this.vault.getAbstractFileByPath(absolutePath)
-      console.log(`[BinaryFileSync] Checking Y.Map entry ${relativePath} - local exists: ${!!file}`)
       if (!file) {
         // File exists in Y.Map but not locally - download it
-        console.log(`[BinaryFileSync] Y.Map entry ${relativePath} missing locally - downloading`)
         await this.downloadFile(relativePath, metadata)
       } else if (file instanceof TFile) {
         // File exists locally and in Y.Map - compare hashes
         const content = await this.vault.readBinary(file)
-        const hash = calculateFileHash(content)
+        const hash = await calculateFileHash(content)
         if (hash !== metadata.hash) {
-          console.log(`[BinaryFileSync] Hashes differ for ${relativePath} - downloading from remote`)
           await this.downloadFile(relativePath, metadata)
         } else {
-          console.log(`[BinaryFileSync] Hashes match for ${relativePath} - no action needed`)
           await this.updateStatus(relativePath)
         }
       }
     }
-
-    console.log(`[BinaryFileSync] initialize() complete`)
   }
 
   /**
@@ -160,29 +161,81 @@ export class BinaryFileSync {
   }
 
   /**
+   * PUBLIC API: Whether relativePath is currently being written to disk as
+   * the result of a remote download - lets callers (peerdraftPlugin.ts)
+   * skip re-processing the vault event that write itself produces instead
+   * of paying for a content read + MIME sniff only to be told nothing
+   * changed.
+   */
+  public isRemoteUpdateInProgress(relativePath: string): boolean {
+    return this.remoteUpdatingPaths.has(relativePath)
+  }
+
+  /**
+   * Stops sharing a file without touching it on disk. Removing the map entry makes every other
+   * client delete its copy, which is what unsharing a file from a shared folder means.
+   * @returns true if the file was shared
+   */
+  public unshareFile(relativePath: string): boolean {
+    const wasShared = this.binaryFilesMap.has(relativePath)
+
+    const pendingUpload = this.uploadTimeouts.get(relativePath)
+    if (pendingUpload) {
+      window.clearTimeout(pendingUpload)
+      this.uploadTimeouts.delete(relativePath)
+    }
+
+    if (wasShared) {
+      // The observer deletes the local file when an entry disappears, so it must skip this one
+      this.unsharingPaths.add(relativePath)
+      try {
+        this.yDoc.transact(() => {
+          this.binaryFilesMap.delete(relativePath)
+        })
+      } finally {
+        this.unsharingPaths.delete(relativePath)
+      }
+    }
+
+    void this.removeStatus(relativePath)
+    return wasShared
+  }
+
+  /** True when a text document, not a binary attachment, now owns this path. */
+  private isOwnedByTextDocument(relativePath: string): boolean {
+    const normalizedPath = normalizePath(relativePath)
+    for (const documentPath of this.yDoc.getMap<string>('documents').values()) {
+      if (normalizePath(documentPath) === normalizedPath) return true
+    }
+    return false
+  }
+
+  /**
    * PUBLIC API: Handle a binary file that was created or modified
    * Called by peerdraftPlugin after determining file is binary
    */
   public async handleBinaryFile(file: TFile): Promise<void> {
     if (!this.isInFolder(file)) return
-    
+
     const relativePath = this.getRelativePath(file)
+    if (this.remoteUpdatingPaths.has(relativePath)) {
+      // This write was caused by our own downloadFile(), not a local edit
+      return
+    }
+
     const metadata = this.binaryFilesMap.get(relativePath)
-    
+
     if (metadata) {
       // File already tracked - check if hash changed
       const content = await this.vault.readBinary(file)
-      const hash = calculateFileHash(content)
+      const hash = await calculateFileHash(content)
       if (hash !== metadata.hash) {
-        console.log(`[BinaryFileSync] File hash changed, scheduling upload: ${file.path}`)
         this.scheduleUpload(file)
       } else {
-        console.log(`[BinaryFileSync] File hash unchanged: ${file.path}`)
         await this.updateStatus(relativePath)
       }
     } else {
       // New binary file - schedule upload
-      console.log(`[BinaryFileSync] New binary file, scheduling upload: ${file.path}`)
       this.scheduleUpload(file)
     }
   }
@@ -196,42 +249,43 @@ export class BinaryFileSync {
     const normalizedFolderPath = normalizePath(this.folder.path)
     const wasInFolder = normalizedOldPath === normalizedFolderPath || normalizedOldPath.startsWith(normalizedFolderPath + '/')
     const isInFolder = this.isInFolder(file)
-    
+
+    if (normalizedOldPath === normalizedFolderPath) {
+      // The shared folder itself was renamed, not a file within it
+      return
+    }
+
     if (wasInFolder && isInFolder) {
       // Rename within folder - update Y.Map path
-      if (normalizedOldPath !== normalizedFolderPath) {
-        const oldRelativePath = normalizedOldPath.slice(normalizedFolderPath.length + 1)
-        const newRelativePath = this.getRelativePath(file)
-        const metadata = this.binaryFilesMap.get(oldRelativePath)
-        if (metadata) {
-          this.yDoc.transact(() => {
-            this.binaryFilesMap.delete(oldRelativePath)
-            this.binaryFilesMap.set(newRelativePath, {
-              ...metadata,
-              path: newRelativePath
-            })
+      const oldRelativePath = this.relativePathFromAbsolute(normalizedOldPath)
+      const newRelativePath = this.getRelativePath(file)
+      const metadata = this.binaryFilesMap.get(oldRelativePath)
+      if (metadata) {
+        this.yDoc.transact(() => {
+          this.binaryFilesMap.delete(oldRelativePath)
+          this.binaryFilesMap.set(newRelativePath, {
+            ...metadata,
+            path: newRelativePath
           })
-        }
+        })
       }
     } else if (wasInFolder && !isInFolder) {
       // Moved out of folder - remove from Y.Map and cancel pending uploads
-      if (normalizedOldPath !== normalizedFolderPath) {
-        const oldRelativePath = normalizedOldPath.slice(normalizedFolderPath.length + 1)
-        if (this.binaryFilesMap.has(oldRelativePath)) {
-          this.yDoc.transact(() => {
-            this.binaryFilesMap.delete(oldRelativePath)
-          })
-        }
-        // Cancel pending upload if any
-        const existingTimeout = this.uploadTimeouts.get(oldRelativePath)
-        if (existingTimeout) {
-          window.clearTimeout(existingTimeout)
-          this.uploadTimeouts.delete(oldRelativePath)
-        }
-        // Use file.path (new path) because Obsidian re-keys fileItems to the new path after rename
-        void removeStatusClass(file.path, this.plugin)
-        this.syncingFiles.delete(oldRelativePath)
+      const oldRelativePath = this.relativePathFromAbsolute(normalizedOldPath)
+      if (this.binaryFilesMap.has(oldRelativePath)) {
+        this.yDoc.transact(() => {
+          this.binaryFilesMap.delete(oldRelativePath)
+        })
       }
+      // Cancel pending upload if any
+      const existingTimeout = this.uploadTimeouts.get(oldRelativePath)
+      if (existingTimeout) {
+        window.clearTimeout(existingTimeout)
+        this.uploadTimeouts.delete(oldRelativePath)
+      }
+      // Use file.path (new path) because Obsidian re-keys fileItems to the new path after rename
+      void removeStatusClass(file.path, this.plugin)
+      this.syncingFiles.delete(oldRelativePath)
     } else if (!wasInFolder && isInFolder) {
       // Moved into folder - schedule upload
       this.scheduleUpload(file)
@@ -242,22 +296,20 @@ export class BinaryFileSync {
    * Setup Y.Doc observer for remote changes
    */
   private setupYDocObserver(): void {
-    this.binaryFilesMap.observe((event) => {
-      console.log(`[BinaryFileSync] Y.Map observer triggered, isUpdatingFromRemote: ${this.isUpdatingFromRemote}, changes: ${event.changes.keys.size}`)
-      if (this.isUpdatingFromRemote) return
-
+    this.yDocObserver = (event) => {
       event.changes.keys.forEach((change, key) => {
-        console.log(`[BinaryFileSync] Y.Map change: ${change.action} on ${key}`)
+        if (this.remoteUpdatingPaths.has(key) || this.unsharingPaths.has(key)) return
+
         if (change.action === 'add' || change.action === 'update') {
           const metadata = this.binaryFilesMap.get(key)
           if (metadata) {
             const absolutePath = this.getAbsolutePath(key)
             const file = this.vault.getAbstractFileByPath(absolutePath)
-            
+
             if (file instanceof TFile) {
               // File exists locally - check if needs update
-              this.vault.readBinary(file).then((content) => {
-                const hash = calculateFileHash(content)
+              this.vault.readBinary(file).then(async (content) => {
+                const hash = await calculateFileHash(content)
                 if (hash !== metadata.hash) {
                   void this.downloadFile(key, metadata)
                 } else {
@@ -275,13 +327,16 @@ export class BinaryFileSync {
         } else if (change.action === 'delete') {
           const absolutePath = this.getAbsolutePath(key)
           void this.removeStatus(key)
+          // A file that moved to a text document is still shared, so its copy must stay
+          if (this.isOwnedByTextDocument(key)) return
           const file = this.vault.getAbstractFileByPath(absolutePath)
           if (file) {
             void this.vault.delete(file)
           }
         }
       })
-    })
+    }
+    this.binaryFilesMap.observe(this.yDocObserver)
   }
 
   /**
@@ -290,27 +345,23 @@ export class BinaryFileSync {
   private scheduleUpload(file: TFile): void {
     try {
       const relativePath = this.getRelativePath(file)
-      console.log(`[BinaryFileSync] scheduleUpload: ${relativePath}, debounce: ${BINARY_FILE_SYNC_DEBOUNCE_MS}ms`)
-      
+
       // Show syncing status immediately - don't wait for debounce
       void this.setSyncing(relativePath, true)
-      
+
       // Clear existing timeout
       const existingTimeout = this.uploadTimeouts.get(relativePath)
       if (existingTimeout) {
-        console.log(`[BinaryFileSync] Clearing existing timeout for ${relativePath}`)
         window.clearTimeout(existingTimeout)
       }
 
       // Set new timeout
-      const timeoutId = window.setTimeout(async () => {
-        console.log(`[BinaryFileSync] Debounce fired for ${relativePath} - starting upload`)
-        void this.uploadFile(file)
+      const timeoutId = window.setTimeout(() => {
         this.uploadTimeouts.delete(relativePath)
+        void this.uploadFile(file, relativePath)
       }, BINARY_FILE_SYNC_DEBOUNCE_MS)
 
       this.uploadTimeouts.set(relativePath, timeoutId)
-      console.log(`[BinaryFileSync] Upload scheduled for ${relativePath}, timeoutId: ${timeoutId}`)
     } catch (error) {
       console.error('[BinaryFileSync] Error scheduling upload:', error)
     }
@@ -319,32 +370,23 @@ export class BinaryFileSync {
   /**
    * Upload file to object storage
    */
-  private async uploadFile(file: TFile): Promise<void> {
-    console.log(`[BinaryFileSync] uploadFile starting for: ${file.path}`)
-    const relativePath = this.getRelativePath(file)
+  private async uploadFile(file: TFile, relativePath: string): Promise<void> {
     try {
       // Read file content
       const content = await this.vault.readBinary(file)
-      console.log(`[BinaryFileSync] Read ${content.byteLength} bytes from ${file.path}`)
-      
-      const hash = calculateFileHash(content)
-      console.log(`[BinaryFileSync] Calculated hash for ${relativePath}: ${hash}`)
+      const hash = await calculateFileHash(content)
 
       // Check if already up to date
       const existing = this.binaryFilesMap.get(relativePath)
       if (existing && existing.hash === hash) {
-        console.log(`[BinaryFileSync] File ${relativePath} already up to date, skipping upload`)
         return
       }
-      console.log(`[BinaryFileSync] Existing metadata: ${existing ? `hash=${existing.hash}` : 'none'}`)
 
       const folderId = this.getFolderId()
-      console.log(`[BinaryFileSync] Requesting presigned URL: folderId=${folderId}, path=${relativePath}, size=${file.stat.size}`)
 
       // Detect MIME type from file content using magic bytes
       const fileTypeResult = await fileTypeFromBuffer(content)
       const contentType = fileTypeResult?.mime || getMimeTypeFromExtension(file.name)
-      console.log(`[BinaryFileSync] Detected MIME type: ${contentType}${fileTypeResult ? '' : ' (extension fallback)'}`)
 
       // Request presigned upload URL from server
       const { uploadUrl, storageKey, downloadUrl } = await this.requestPresignedUpload({
@@ -354,24 +396,20 @@ export class BinaryFileSync {
         size: file.stat.size,
         contentType
       })
-      console.log(`[BinaryFileSync] Got presigned URL, storageKey=${storageKey}, uploadUrl length=${uploadUrl?.length || 0}`)
 
       // Upload directly to object storage via Obsidian's requestUrl
       // (bypasses CORS by making the request from the main process)
-      console.log(`[BinaryFileSync] Uploading to object storage via requestUrl...`)
       const uploadResponse = await requestUrl({
         url: uploadUrl,
         method: 'PUT',
         body: content
       })
-      console.log(`[BinaryFileSync] Upload response: ${uploadResponse.status}`)
 
       if (uploadResponse.status >= 400) {
         throw new Error(`Upload failed: ${uploadResponse.status}`)
       }
 
       // Update Y.Map with metadata
-      console.log(`[BinaryFileSync] Updating Y.Map for ${relativePath}`)
       this.yDoc.transact(() => {
         this.binaryFilesMap.set(relativePath, {
           path: relativePath,
@@ -379,12 +417,11 @@ export class BinaryFileSync {
           size: file.stat.size,
           storageKey,
           downloadUrl,
-          contentType, // Already detected from magic bytes above
+          contentType,
           uploadedAt: Date.now()
         })
       })
       await this.setSyncing(relativePath, false)
-      console.log(`[BinaryFileSync] Upload complete: ${file.name}`)
       new Notice(`Uploaded ${file.name}`)
     } catch (error) {
       await this.setSyncing(relativePath, false)
@@ -401,13 +438,11 @@ export class BinaryFileSync {
     metadata: BinaryFileMetadata
   ): Promise<void> {
     void this.setSyncing(relativePath, true)
-    console.log(`[BinaryFileSync] downloadFile starting for: ${relativePath}, url=${metadata.downloadUrl}`)
     try {
       const absolutePath = this.getAbsolutePath(relativePath)
-      
+
       // Download from object storage using URL provided by server
-      let downloadUrl = metadata.downloadUrl
-      console.log(`[BinaryFileSync] Fetching ${downloadUrl}`)
+      const downloadUrl = metadata.downloadUrl
       let response: { status: number; arrayBuffer: ArrayBuffer }
       try {
         response = await requestUrl({
@@ -416,33 +451,28 @@ export class BinaryFileSync {
         })
       } catch (err) {
         const status = (err as any)?.status ?? 0
-        console.log(`[BinaryFileSync] Download failed with status ${status}`)
         if (status === 400 || status === 404) {
-          console.log(`[BinaryFileSync] Removing corrupted Y.Map entry for ${relativePath} - will be re-uploaded`)
+          // Stale/corrupted Y.Map entry - drop it so the file gets re-uploaded
           this.yDoc.transact(() => {
             this.binaryFilesMap.delete(relativePath)
           })
         }
         return
       }
-      
-      console.log(`[BinaryFileSync] Download response: ${response.status}`)
+
       if (response.status >= 400) {
         throw new Error(`Download failed: ${response.status}`)
       }
 
       const arrayBuffer = response.arrayBuffer
-      console.log(`[BinaryFileSync] Downloaded ${arrayBuffer.byteLength} bytes`)
       void this.setSyncing(relativePath, false)
 
       // Check if file exists locally
       const existingFile = this.vault.getAbstractFileByPath(absolutePath)
-      console.log(`[BinaryFileSync] Existing file at ${absolutePath}: ${!!existingFile}`)
 
       // Ensure directory exists (same pattern as handleUpdate in sharedFolder.ts)
       const dir = normalizePath(path.parse(absolutePath).dir)
       if (dir && !this.vault.getAbstractFileByPath(dir)) {
-        console.log(`[BinaryFileSync] Creating directory: ${dir}`)
         await SharedFolder.getOrCreatePath(dir, this.plugin)
       }
 
@@ -460,24 +490,20 @@ export class BinaryFileSync {
       }
 
       const fileData = new Uint8Array(arrayBuffer).buffer
-      if (existingFile instanceof TFile) {
-        // Update existing file
-        console.log(`[BinaryFileSync] Modifying existing file: ${absolutePath}`)
-        this.isUpdatingFromRemote = true
-        await this.vault.modifyBinary(existingFile, fileData)
-        this.isUpdatingFromRemote = false
-      } else {
-        // Create new file
-        console.log(`[BinaryFileSync] Creating new file: ${absolutePath}`)
-        this.isUpdatingFromRemote = true
-        await this.vault.createBinary(absolutePath, fileData)
-        this.isUpdatingFromRemote = false
+      this.remoteUpdatingPaths.add(relativePath)
+      try {
+        if (existingFile instanceof TFile) {
+          await this.vault.modifyBinary(existingFile, fileData)
+        } else {
+          await this.vault.createBinary(absolutePath, fileData)
+        }
+      } finally {
+        this.remoteUpdatingPaths.delete(relativePath)
       }
 
-      console.log(`[BinaryFileSync] Download complete: ${relativePath}`)
       new Notice(`Downloaded ${relativePath}`)
     } catch (error) {
-      this.isUpdatingFromRemote = false
+      this.remoteUpdatingPaths.delete(relativePath)
       void this.setSyncing(relativePath, false)
       console.error('[BinaryFileSync] Binary file download error:', error)
       new Notice(`Failed to download ${relativePath}: ${(error as Error).message}`)
@@ -485,28 +511,68 @@ export class BinaryFileSync {
   }
 
   /**
-   * Request presigned upload URL from server via WebSocket
+   * Request a presigned upload URL from the server via WebSocket. Requests
+   * are serialized (see presignQueue) because the response carries no
+   * request id, so at most one may be in flight at a time.
    */
-  private async requestPresignedUpload(request: {
+  private requestPresignedUpload(request: {
     folderId: string
     relativePath: string
     hash: string
     size: number
     contentType: string
   }): Promise<{ uploadUrl: string; storageKey: string; downloadUrl: string }> {
-    console.log(`[BinaryFileSync] requestPresignedUpload: folderId=${request.folderId}, path=${request.relativePath}, size=${request.size}`)
+    const run = () => this.sendPresignRequest(request)
+    const result = this.presignQueue.then(run, run)
+    // Keep the queue moving regardless of whether this request succeeded
+    this.presignQueue = result.then(() => undefined, () => undefined)
+    return result
+  }
+
+  private sendPresignRequest(request: {
+    folderId: string
+    relativePath: string
+    hash: string
+    size: number
+    contentType: string
+  }): Promise<{ uploadUrl: string; storageKey: string; downloadUrl: string }> {
+    const ws = this.plugin.serverSync.ws
+    if (!ws) {
+      return Promise.reject(new Error('WebSocket not connected'))
+    }
+    if (ws.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error('WebSocket not open'))
+    }
+
     return new Promise((resolve, reject) => {
-      const ws = this.plugin.serverSync.ws
-      console.log(`[BinaryFileSync] WebSocket state: ${ws ? (ws.readyState === WebSocket.OPEN ? 'OPEN' : ws.readyState) : 'null'}`)
-      if (!ws) {
-        reject(new Error('WebSocket not connected'))
-        return
+      const cleanup = () => {
+        window.clearTimeout(timeoutId)
+        ws.removeEventListener('message', handleResponse)
       }
 
-      if (ws.readyState !== WebSocket.OPEN) {
-        reject(new Error('WebSocket not open'))
-        return
+      const handleResponse = (event: MessageEvent) => {
+        const decoder = decoding.createDecoder(new Uint8Array(event.data))
+        const messageType = decoding.readVarUint(decoder)
+        if (messageType !== MESSAGE_MULTIPLEX_SYNC) return
+
+        const syncType = decoding.readVarUint(decoder)
+        if (syncType !== BINARY_PRESIGN_UPLOAD) return
+
+        cleanup()
+        const status = decoding.readVarUint(decoder)
+        if (status === 0) {
+          const errorMessage = decoding.readVarString(decoder)
+          reject(new Error(errorMessage || 'Upload request failed'))
+        } else {
+          resolve({
+            uploadUrl: decoding.readVarString(decoder),
+            storageKey: decoding.readVarString(decoder),
+            downloadUrl: decoding.readVarString(decoder)
+          })
+        }
       }
+
+      ws.addEventListener('message', handleResponse)
 
       const encoder = encoding.createEncoder()
       encoding.writeVarUint(encoder, MESSAGE_MULTIPLEX_SYNC)
@@ -515,57 +581,12 @@ export class BinaryFileSync {
       encoding.writeVarString(encoder, request.hash)
       encoding.writeVarUint(encoder, request.size)
       encoding.writeVarString(encoder, request.contentType)
-
-      const handleResponse = (event: MessageEvent) => {
-        const decoder = decoding.createDecoder(new Uint8Array(event.data))
-        const messageType = decoding.readVarUint(decoder)
-        
-        if (messageType === MESSAGE_MULTIPLEX_SYNC) {
-          const syncType = decoding.readVarUint(decoder)
-          
-          if (syncType === BINARY_PRESIGN_UPLOAD) {
-            const status = decoding.readVarUint(decoder)
-            
-            ws.removeEventListener('message', handleResponse)
-            
-            if (status === 0) {
-              // Error response
-              const errorMessage = decoding.readVarString(decoder)
-              reject(new Error(errorMessage || 'Upload request failed'))
-            } else {
-              // Success response
-              const uploadUrl = decoding.readVarString(decoder)
-              const storageKey = decoding.readVarString(decoder)
-              const downloadUrl = decoding.readVarString(decoder)
-              console.log(`[BinaryFileSync] Got presign response: uploadUrl=${uploadUrl ? 'present' : 'missing'}, storageKey=${storageKey}`)
-              resolve({ uploadUrl, storageKey, downloadUrl })
-            }
-          }
-        }
-      }
-
-      ws.addEventListener('message', handleResponse)
       ws.send(encoding.toUint8Array(encoder))
-      console.log(`[BinaryFileSync] Sent BINARY_PRESIGN_UPLOAD request via WebSocket`)
 
-      // Timeout after 30 seconds
-      const timeoutId = setTimeout(() => {
-        ws.removeEventListener('message', handleResponse)
-        console.log(`[BinaryFileSync] Presign request timeout after 30s`)
+      const timeoutId = window.setTimeout(() => {
+        cleanup()
         reject(new Error('Upload URL request timeout'))
-      }, 30000)
-
-      // Clean up timeout if promise resolves/rejects before timeout
-      const originalResolve = resolve
-      const originalReject = reject
-      resolve = (...args: Parameters<typeof originalResolve>) => {
-        clearTimeout(timeoutId)
-        return originalResolve(...args)
-      }
-      reject = (...args: Parameters<typeof originalReject>) => {
-        clearTimeout(timeoutId)
-        return originalReject(...args)
-      }
+      }, PRESIGN_REQUEST_TIMEOUT_MS)
     })
   }
 
@@ -582,9 +603,18 @@ export class BinaryFileSync {
    * Get relative path from shared folder root
    */
   private getRelativePath(file: TAbstractFile): string {
+    return this.relativePathFromAbsolute(file.path)
+  }
+
+  /**
+   * Derive a path relative to the shared folder root from an absolute vault
+   * path (shared by getRelativePath and the rename handler, which only has
+   * the old path as a string, not a TAbstractFile).
+   */
+  private relativePathFromAbsolute(absolutePath: string): string {
     const folderPath = normalizePath(this.folder.path)
-    const filePath = normalizePath(file.path)
-    return filePath.slice(folderPath.length + 1)
+    const normalizedPath = normalizePath(absolutePath)
+    return normalizedPath.slice(folderPath.length + 1)
   }
 
   /**
@@ -604,7 +634,13 @@ export class BinaryFileSync {
     })
     this.uploadTimeouts.clear()
 
-    // Remove Y.Doc observer
-    // (Handled by Yjs garbage collection)
+    // The Y.Doc outlives this instance (SharedFolder doesn't destroy it on
+    // teardown), so the observer must be removed explicitly or it keeps
+    // firing - and keeps this whole instance alive - after this folder is
+    // unshared.
+    if (this.yDocObserver) {
+      this.binaryFilesMap.unobserve(this.yDocObserver)
+      this.yDocObserver = undefined
+    }
   }
 }

@@ -84,9 +84,30 @@ export const createMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlu
           item.setTitle(prefix + 'Delete and remove from Shared Folder')
           item.setIcon('trash')
           item.onClick(async () => {
+            const fileName = sharedDocument.file.basename
+            let cleanupFailed = false
+            try {
+              await plugin.serverSync.stopSession(sharedDocument.shareId)
+            } catch {
+              showNotice("Could not confirm the session stop. The document was kept in the shared folder. Please try again.")
+              return
+            }
             sharedFolder.removeDocument(sharedDocument)
-            void sharedDocument.unshare()
-            void plugin.app.vault.delete(sharedDocument.file)
+            try {
+              await sharedDocument.unshare()
+            } catch {
+              cleanupFailed = true
+              showNotice("Local cleanup failed after removing the document from the shared folder.")
+            }
+            try {
+              await plugin.app.vault.delete(sharedDocument.file)
+            } catch {
+              cleanupFailed = true
+              showNotice("The file could not be deleted from this vault.")
+            }
+            if (!cleanupFailed) {
+              showNotice(`${fileName} removed from shared folder.`)
+            }
           })
         })
       } else {
