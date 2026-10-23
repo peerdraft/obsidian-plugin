@@ -17,3 +17,6 @@ dist
 dev-plans/
 developer-notes/
 
+# Local Git worktrees
+/.worktrees/
+/.worktree/
