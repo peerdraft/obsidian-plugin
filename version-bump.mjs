@@ -180,15 +180,16 @@ const main = async () => {
       json.version = nextVersion;
     });
 
-    // Step 3: Update manifest.json and dist/manifest.json
-    [manifestJsonPath, distManifestJsonPath].forEach((file) => {
-      updateJsonFile(file, (json) => {
-        json.version = nextVersion;
-      });
+    // Step 3: Update manifest.json version, then copy full manifest to dist
+    updateJsonFile(manifestJsonPath, (json) => {
+      json.version = nextVersion;
     });
+    // Copy entire manifest.json to dist to ensure all fields are synchronized
+    const manifestJson = JSON.parse(readFileSync(manifestJsonPath, "utf8"));
+    writeFileSync(distManifestJsonPath, JSON.stringify(manifestJson, null, 2));
+    console.log(`Copied: ${manifestJsonPath} -> ${distManifestJsonPath}`);
 
     // Step 4: Update versions.json
-    const manifestJson = JSON.parse(readFileSync(manifestJsonPath, "utf8"));
     const minAppVersion = manifestJson.minAppVersion;
 
     updateJsonFile(versionsJsonPath, (json) => {
@@ -205,15 +206,10 @@ const main = async () => {
     runCommand(`git tag -a ${nextVersion} -m "Version ${nextVersion}"`);
     runCommand("git push");
     runCommand("git push --tags");
-    // Step 11: Create a new release in GitHub
-    const releaseFiles = ["dist/main.js", "dist/manifest.json", "dist/styles.css"];
-    const releaseFilesArgs = releaseFiles.map((file) => `${file}`).join(" ");
-    const preReleaseFlag = releaseType === 'pre' ? '--pre-release' : '';
-    runCommand(
-      `gh release create ${nextVersion} ${releaseFilesArgs} -t "${nextVersion}" --generate-notes ${preReleaseFlag}`
-    );
 
-    console.log(`Version bumped to ${nextVersion} and release created.`);
+    console.log(`Version bumped to ${nextVersion}.`);
+    console.log(`GitHub Actions will automatically build and create the release with attestation.`);
+    console.log(`Check the Actions tab: https://github.com/peerdraft/obsidian-plugin/actions`);
   } catch (error) {
     console.error('Error during version bump:', error.message);
     process.exit(1);

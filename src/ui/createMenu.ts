@@ -1,4 +1,4 @@
-import { MarkdownView, Menu, TAbstractFile, TFile, TFolder } from "obsidian";
+import { MarkdownView, Menu, TAbstractFile, TFile, TFolder, normalizePath } from "obsidian";
 import PeerdraftPlugin from "src/peerdraftPlugin";
 import { SharedFolder } from "src/sharedEntities/sharedFolder";
 import { openFolderOptions } from "./folderOptions";
@@ -27,7 +27,7 @@ export const createMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlu
           item.setTitle('Share Folder')
           item.setIcon('share-2')
           item.onClick(() => {
-            SharedFolder.fromTFolder(file, plugin)
+            void SharedFolder.fromTFolder(file, plugin)
           })
         })
       }
@@ -36,7 +36,7 @@ export const createMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlu
         item.setTitle('Copy URL')
         item.setIcon('clipboard-copy')
         item.onClick(() => {
-          navigator.clipboard.writeText(plugin.settings.basePath + '/team/' + sharedFolder.shareId)
+          void navigator.clipboard.writeText(plugin.settings.basePath + '/team/' + sharedFolder.shareId)
         })
       })
       menu.addItem(item => {
@@ -64,7 +64,7 @@ export const createMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlu
         item.setTitle('Show folder options')
         item.setIcon('settings')
         item.onClick(async () => {
-          openFolderOptions(plugin.app, sharedFolder)
+          void openFolderOptions(plugin.app, sharedFolder)
         })
       })
     }
@@ -76,7 +76,7 @@ export const createMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlu
         item.setTitle(prefix + 'Copy URL')
         item.setIcon('clipboard-copy')
         item.onClick(() => {
-          navigator.clipboard.writeText(plugin.settings.basePath + '/cm/' + sharedDocument.shareId)
+          void navigator.clipboard.writeText(plugin.settings.basePath + '/cm/' + sharedDocument.shareId)
         })
       })
       if (sharedFolder) {
@@ -84,10 +84,30 @@ export const createMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlu
           item.setTitle(prefix + 'Delete and remove from Shared Folder')
           item.setIcon('trash')
           item.onClick(async () => {
+            const fileName = sharedDocument.file.basename
+            let cleanupFailed = false
+            try {
+              await plugin.serverSync.stopSession(sharedDocument.shareId)
+            } catch {
+              showNotice("Could not confirm the session stop. The document was kept in the shared folder. Please try again.")
+              return
+            }
             sharedFolder.removeDocument(sharedDocument)
-            await plugin.serverSync.stopSession(sharedDocument.shareId)
-            await sharedDocument.unshare()
-            plugin.app.vault.delete(sharedDocument.file)
+            try {
+              await sharedDocument.unshare()
+            } catch {
+              cleanupFailed = true
+              showNotice("Local cleanup failed after removing the document from the shared folder.")
+            }
+            try {
+              await plugin.app.vault.delete(sharedDocument.file)
+            } catch {
+              cleanupFailed = true
+              showNotice("The file could not be deleted from this vault.")
+            }
+            if (!cleanupFailed) {
+              showNotice(`${fileName} removed from shared folder.`)
+            }
           })
         })
       } else {
@@ -106,6 +126,24 @@ export const createMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlu
           })
         })
       }
+    } else if (sharedFolder && file instanceof TFile) {
+      // Check if file is actually synced as binary by looking in binaryFilesMap
+      const relativePath = normalizePath(file.path.slice(sharedFolder.root.path.length + 1))
+      const isBinaryFile = sharedFolder.yDoc.getMap('binaryFiles').has(relativePath)
+      
+      if (isBinaryFile) {
+        // Binary file synced in shared folder
+        menu.addItem(item => {
+          item.setTitle(prefix + 'Delete and remove from Shared Folder')
+          item.setIcon('trash')
+          item.onClick(async () => {
+            // Remove from binaryFilesMap in Y.Doc
+            sharedFolder.yDoc.getMap('binaryFiles').delete(relativePath)
+            // Delete local file
+            void plugin.app.vault.delete(file)
+          })
+        })
+      }
     } else if (!sharedFolder && ['md', 'MD', 'canvas'].includes(file.extension)) {
 
       menu.addItem((item) => {
@@ -115,7 +153,7 @@ export const createMenu = (menu: Menu, file: TAbstractFile, plugin: PeerdraftPlu
           const result = await promptForSessionType(plugin.app)
           if (!result) return
           const leaf = await openFileInNewTab(file, plugin.app.workspace)
-          SharedDocument.fromView(leaf.view as MarkdownView, plugin, { permanent: result.permanent })
+          void SharedDocument.fromView(leaf.view as MarkdownView, plugin, { permanent: result.permanent })
         })
       })
     }

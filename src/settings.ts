@@ -1,10 +1,13 @@
 import { Modal, Plugin, PluginSettingTab, Setting, debounce, normalizePath, requestUrl, sanitizeHTMLToDom } from "obsidian";
-import { showTextModal } from "./ui";
-import PeerdraftPlugin from "./peerdraftPlugin";
+import { showNotice, showTextModal } from "./ui";
+import type PeerdraftPlugin from "./peerdraftPlugin";
 import { promptForFolderSelection } from "./ui/selectFolder";
 import { PermanentShareStoreIndexedDB } from "./permanentShareStore";
 import { getJWT, logout } from "./login";
 import { openLoginModal } from "./ui/login";
+import { createRandomId } from "./tools";
+import { assessVaultIdentity, resetVaultIdentity } from "./vaultIdentity";
+import { confirmVaultCopied } from "./ui/confirmVaultIdentity";
 
 interface ShareUsageResponse {
   currentCount: number;
@@ -78,7 +81,10 @@ export interface Settings {
   serverShares: {
     folders: Map<string, { persistenceId: string, shareId: string }>
     files: Map<string, { persistenceId: string, shareId: string }>
-  }
+  },
+  /** Vault base path the `oid`/`serverShares` identity belongs to —
+   *  detects data.json traveling with a copied `.obsidian` folder. */
+  oidVaultPath?: string
 }
 
 const DEFAULT_SETTINGS: Omit<Settings, "oid"> = {
@@ -161,6 +167,27 @@ export const migrateSettings = async (plugin: PeerdraftPlugin) => {
     await db.deleteDB()
   }
 
+  // data.json travels with a copied `.obsidian` — compare the stored
+  // vault path to catch identity/registry claims from a copy. This must
+  // resolve before startup restores serverShares.
+  const adapter = plugin.app.vault.adapter
+  const currentVaultPath = 'getBasePath' in adapter && typeof adapter.getBasePath === 'function'
+    ? adapter.getBasePath()
+    : undefined
+  if (currentVaultPath) {
+    const assessment = assessVaultIdentity(newSettings.oidVaultPath, currentVaultPath)
+    if (assessment.action === 'first-run') {
+      newSettings.oidVaultPath = assessment.basePath
+    } else if (assessment.action === 'mismatch') {
+      const answer = await confirmVaultCopied(plugin.app, assessment.storedPath, assessment.currentPath)
+      if (answer?.copied) {
+        resetVaultIdentity(newSettings, createRandomId())
+        showNotice("Peerdraft gave this vault copy a new identity and cleared its share registry. Log in again to re-enable sharing.")
+      }
+      newSettings.oidVaultPath = currentVaultPath
+    }
+  }
+
   await saveSettingsNow(newSettings, plugin)
 
   if (oldSettings && oldSettings.version != newSettings.version) {
@@ -211,7 +238,7 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
       text.setValue(settings.name)
       text.onChange(async (value) => {
         settings.name = value
-        saveSettings(settings, plugin);
+        void saveSettings(settings, plugin);
       })
     })
 
@@ -222,7 +249,7 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
     text.setValue(settings.root)
     text.onChange(async value => {
       settings.root = value
-      saveSettings(settings, plugin)
+      void saveSettings(settings, plugin)
     })
 
     pathSetting.addExtraButton(button => {
@@ -232,7 +259,7 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
         if (folder) {
           text.setValue(folder.path)
           settings.root = folder.path
-          saveSettings(settings, plugin)
+          void saveSettings(settings, plugin)
         }
       })
     })
@@ -246,7 +273,7 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
 
     const accountDiv = accountSection.createDiv({ text: "Loading account information..." })
     
-    fetchAccountSettings(plugin).then(settings => {
+    void fetchAccountSettings(plugin).then(settings => {
       if (!settings) {
         accountDiv.setText("Could not load account information.")
         return;
@@ -337,7 +364,7 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
         button.setButtonText("Log out")
         button.onClick(async (e) => {
           await logout(plugin)
-          renderSettings(el, plugin)
+          void renderSettings(el, plugin)
         })
       })
   } else {
@@ -350,7 +377,7 @@ export const renderSettings = async (el: HTMLElement, plugin: PeerdraftPlugin) =
         button.setButtonText("Log in or create account")
         button.onClick(async (e) => {
           await openLoginModal(plugin)
-          renderSettings(el, plugin)
+          void renderSettings(el, plugin)
         })
       })
   }

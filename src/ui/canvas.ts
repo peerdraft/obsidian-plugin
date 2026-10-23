@@ -66,7 +66,7 @@ export const addCanvasExtension = (doc: SharedDocument, view: CanvasView) => {
   const yCanvas = doc.yDoc.getMap("canvas") as Y.Map<Y.Map<Y.Map<any>>>
 
   const triggerDocUpdate = () => {
-    mutex.runExclusive(() => {
+    void mutex.runExclusive(() => {
       const data = canvas.getData()
       if (doc.file != view?.file) return
       applyDataChangesToDoc(data, doc.yDoc)

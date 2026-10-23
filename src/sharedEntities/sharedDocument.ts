@@ -11,7 +11,7 @@ import { PeerdraftRecord } from '../utils/peerdraftRecord';
 import { type PermanentShareDocument } from '../permanentShareStore';
 import { getLeafIdsByPath } from '../workspace/peerdraftWorkspace';
 import { SharedEntity } from './sharedEntity';
-import * as path from 'path';
+import * as path from 'path-browserify';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import { addIsSharedClass, removeIsSharedClass, setStatusClass, removeStatusClass } from 'src/workspace/explorerView';
 import { SharedFolder } from './sharedFolder';
@@ -19,6 +19,7 @@ import { Mutex } from 'async-mutex';
 import { add, getDocByPath, moveDoc, removeDoc } from 'src/permanentShareStoreFS';
 import { openLoginModal } from 'src/ui/login';
 import { promptForText } from 'src/ui/enterText';
+import { StopSessionError } from '../peerdraftWebSocketProvider';
 import { addCanvasToYDoc, applyDataChangesToDoc, diffCanvases, yDocToCanvasJSON } from './canvas';
 import { addCanvasExtension, type CanvasView, type Node } from 'src/ui/canvas';
 import JSONC from "tiny-jsonc"
@@ -60,7 +61,7 @@ export class SharedDocument extends SharedEntity {
   private _initializationGuardMutex = new Mutex()
   private _vaultModifyListenerRegistered = false
   private _catchUpIdleTimeout?: number
-  private _catchUpListenerAttached = false
+  private _catchUpUpdateListener?: (update: Uint8Array, origin: unknown) => void
 
   get initializationGuardPassed(): boolean {
     return this._initializationGuardPassed
@@ -87,14 +88,26 @@ export class SharedDocument extends SharedEntity {
     if (this.findByPath(view.file.path)) return
     const doc = await this.fromTFile(view.file, opts, plugin)
     if (doc) {
-      doc.startWebRTCSync()
-      if (doc.isPermanent && doc._webRTCProvider) {
+      void doc.startWebRTCSync()
+      // Every share records who started it, permanent or not.
+      //
+      // "Stop when the owner leaves" only ever applies to a *fleeting* share —
+      // both this plugin and the web editor guard on `!isPermanent` — and both
+      // identify the owner by reading this fragment. Writing it only for
+      // permanent shares meant the two halves could never meet: a fleeting
+      // session compared the departing client against an empty string, never
+      // matched, and so never stopped.
+      if (doc._webRTCProvider) {
         doc.getOwnerFragment().insert(0, doc._webRTCProvider.awareness.clientID.toFixed(0))
-      } else {
+      }
+      // `!(isPermanent && provider)`, which is what the `else` this replaced
+      // covered: a permanent share whose provider is not up yet took this
+      // branch too. Splitting on `isPermanent` alone quietly changed that.
+      if (!doc.isPermanent || !doc._webRTCProvider) {
         doc.addStatusBarEntry()
         pinLeaf(view.leaf)
       }
-      navigator.clipboard.writeText(plugin.settings.basePath + "/cm/" + doc.shareId)
+      void navigator.clipboard.writeText(plugin.settings.basePath + "/cm/" + doc.shareId)
       showNotice("Collaboration started for " + doc.path + ". Link copied to Clipboard.")
     }
     return doc
@@ -128,7 +141,7 @@ export class SharedDocument extends SharedEntity {
     if (doc.indexedDBProvider) {
       if (!doc.indexedDBProvider.synced) await doc.indexedDBProvider.whenSynced
     }
-    doc.syncWithServer()
+    void doc.syncWithServer()
     plugin.activeStreamClient.add([doc.shareId])
     doc._syncable._setNewDocConfirmed(true)
 
@@ -171,7 +184,7 @@ export class SharedDocument extends SharedEntity {
       }, 30000)
       doc.startWebRTCSync()
       if (isPermanent) {
-        doc.syncWithServer()
+        void doc.syncWithServer()
       }
       yDoc.on("update", handler)
     })
@@ -212,7 +225,7 @@ export class SharedDocument extends SharedEntity {
       if (doc.indexedDBProvider) {
         if (!doc.indexedDBProvider.synced) await doc.indexedDBProvider.whenSynced
       }
-      doc.syncWithServer()
+      void doc.syncWithServer()
       plugin.activeStreamClient.add([doc.shareId])
       await doc._updateStatusIndicator()
     } else {
@@ -258,12 +271,12 @@ export class SharedDocument extends SharedEntity {
     doc._file = file
     doc._syncable.setFileIO(new VaultFileIO(file, plugin))
 
-    doc.syncWithServer()
+    void doc.syncWithServer()
     doc.startWebRTCSyncWithCatchUp()
     await doc.setPermanent()
     doc._setupInitializationGuard()
     doc._setupStatusIndicatorSubscriptions()
-    doc._updateStatusIndicator()
+    void doc._updateStatusIndicator()
     await doc.startIndexedDBSync()
   }
 
@@ -312,11 +325,11 @@ export class SharedDocument extends SharedEntity {
     if (opts.permanent) {
       await doc.initServerYDoc(opts.folder)
       await doc.setPermanent()
-      doc.startIndexedDBSync()
+      void doc.startIndexedDBSync()
       doc._syncable._setIsNewDocument(true)
       doc._setupInitializationGuard()
       doc._setupStatusIndicatorSubscriptions()
-      doc.syncWithServer()
+      void doc.syncWithServer()
       await doc._updateStatusIndicator()
     } else {
       doc.setShareIdInternal(await plugin.serverSync.createNewSession())
@@ -428,7 +441,7 @@ export class SharedDocument extends SharedEntity {
     let lastCanvasUpdateMtime = 0
 
     const updateFile = debounce(() => {
-      canvasMutex.runExclusive(async () => {
+      void canvasMutex.runExclusive(async () => {
         const yCanvas = yDocToCanvasJSON(this.yDoc)
         const fileContent = await this.plugin.app.vault.read(this._file)
         const fileCanvas = JSONC.parse(fileContent || '{}')
@@ -450,7 +463,7 @@ export class SharedDocument extends SharedEntity {
 
     this.plugin.registerEvent(this.plugin.app.vault.on("modify", async (file) => {
       if (this.file === file && this.file.stat.mtime != lastCanvasUpdateMtime && this._canvasExtenstions.size === 0) {
-        canvasMutex.runExclusive(async () => {
+        void canvasMutex.runExclusive(async () => {
           const fileContent = await this.plugin.app.vault.read(this._file)
           applyDataChangesToDoc(JSONC.parse(fileContent || '{}'), this.yDoc)
         })
@@ -503,7 +516,7 @@ export class SharedDocument extends SharedEntity {
         }
 
         if (this.isPermanent) {
-          this._updateStatusIndicator()
+          void this._updateStatusIndicator()
         }
       } finally {
         release()
@@ -512,24 +525,24 @@ export class SharedDocument extends SharedEntity {
 
     const indexedDBHandler = (data: { wasEmpty: boolean }) => {
       if (this._checkInitializationGuard()) {
-        handleGuardConditionMet()
+        void handleGuardConditionMet()
       }
     }
     this._syncable.on('indexedDBLoaded', indexedDBHandler)
 
     const serverSyncedHandler = () => {
       if (this._checkInitializationGuard()) {
-        handleGuardConditionMet()
+        void handleGuardConditionMet()
       }
     }
     this._syncable.on('serverSynced', serverSyncedHandler)
 
     const syncStateChangedHandler = () => {
       if (this._checkInitializationGuard() && !this._initializationGuardPassed) {
-        handleGuardConditionMet()
+        void handleGuardConditionMet()
       }
       if (this.isPermanent && this._initializationGuardPassed) {
-        this._updateStatusIndicator()
+        void this._updateStatusIndicator()
       }
     }
     this._syncable.on('syncStateChanged', syncStateChangedHandler)
@@ -538,13 +551,13 @@ export class SharedDocument extends SharedEntity {
   private _setupStatusIndicatorSubscriptions() {
     this.plugin.serverSync.on('status', () => {
       if (this.isPermanent) {
-        this._updateStatusIndicator()
+        void this._updateStatusIndicator()
       }
     })
 
     this._syncable.on('syncStateChanged', () => {
       if (this.isPermanent) {
-        this._updateStatusIndicator()
+        void this._updateStatusIndicator()
       }
     })
   }
@@ -619,7 +632,7 @@ export class SharedDocument extends SharedEntity {
           if (owner != provider.awareness.clientID.toString()) {
             if (removedStrings.includes(owner) && !this.isPermanent) {
               showNotice("Shared session for " + this.path + " stopped by owner")
-              this.unshare()
+              void this.unshare()
             }
           }
         }
@@ -642,17 +655,29 @@ export class SharedDocument extends SharedEntity {
       })
     })
 
-    this._clearCatchUpIdleTimeout()
+    // Any ordinary start means this document is in use now — someone opened
+    // it, or the server asked us to peer again — so it is no longer a
+    // document catching up in the background. Ending catch-up mode has to
+    // detach the listener, not just drop the pending timeout: the listener
+    // re-arms that timeout on every update, so leaving it attached let a
+    // document that arrived from a shared folder tear its own WebRTC
+    // provider down eight seconds after each edit, for the rest of the
+    // session. Text and presence both ride that provider, so both stopped
+    // together — see e2e FINDINGS.md #24.
+    this._endCatchUp()
     return provider
   }
 
   startWebRTCSyncWithCatchUp() {
     const provider = this.startWebRTCSync()
     if (!provider) return provider
-    if (!this._catchUpListenerAttached) {
-      this._catchUpListenerAttached = true
-      provider.doc.on('update', () => this._scheduleCatchUpTeardown())
-    }
+    // startWebRTCSync just ended catch-up mode; this re-enters it, for a
+    // document that has arrived but that nobody has opened.
+    // this.yDoc, not provider.doc — they are the same document (the provider
+    // is constructed with it), but attaching and detaching through the same
+    // expression is what keeps them provably the same.
+    this._catchUpUpdateListener = () => this._scheduleCatchUpTeardown()
+    this.yDoc.on('update', this._catchUpUpdateListener)
     this._scheduleCatchUpTeardown()
     return provider
   }
@@ -660,6 +685,16 @@ export class SharedDocument extends SharedEntity {
   private _scheduleCatchUpTeardown() {
     this._clearCatchUpIdleTimeout()
     this._catchUpIdleTimeout = window.setTimeout(() => this.stopWebRTCSync(), 8000)
+  }
+
+  /** Leaves catch-up mode: no pending teardown, and nothing left that could
+   * schedule another one. */
+  private _endCatchUp() {
+    this._clearCatchUpIdleTimeout()
+    if (this._catchUpUpdateListener) {
+      this.yDoc.off('update', this._catchUpUpdateListener)
+      this._catchUpUpdateListener = undefined
+    }
   }
 
   private _clearCatchUpIdleTimeout() {
@@ -678,8 +713,19 @@ export class SharedDocument extends SharedEntity {
       this.addStatusBarEntry()
     }
     await moveDoc(oldPath, file.path, this.plugin)
-    removeIsSharedClass(oldPath, this.plugin)
-    this._updateStatusIndicator()
+    void removeIsSharedClass(oldPath, this.plugin)
+    // Remove status from new path because Obsidian re-keys fileItems to the new path after rename
+    void removeStatusClass(this._path, this.plugin)
+    void this._updateStatusIndicator()
+  }
+
+  /**
+   * Update internal file reference and path without moving doc or setting status.
+   * Used before unshare() so removeStatusClass targets the correct DOM element.
+   */
+  updateFileRef(file: TFile) {
+    this._file = file
+    this._path = normalizePath(file.path)
   }
 
   async setPermanent() {
@@ -890,7 +936,7 @@ export class SharedDocument extends SharedEntity {
     menu.addItem((item) => {
       item.setTitle("Copy link")
       item.onClick(() => {
-        navigator.clipboard.writeText(this.plugin.settings.basePath + "/cm/" + this.shareId)
+        void navigator.clipboard.writeText(this.plugin.settings.basePath + "/cm/" + this.shareId)
         showNotice("Link copied to clipboard.")
       })
     })
@@ -920,13 +966,13 @@ export class SharedDocument extends SharedEntity {
   async unshare() {
     const dbEntry = getDocByPath(this.path, this.plugin)
     if (dbEntry) {
-      removeDoc(this.path, this.plugin)
+      void removeDoc(this.path, this.plugin)
     }
     if (this._syncable.indexedDBProvider) {
       await this._syncable.indexedDBProvider.clearData()
       await this._syncable.indexedDBProvider.destroy()
     }
-    this.destroy()
+    void this.destroy()
     await removeStatusClass(this.path, this.plugin)
   }
 
@@ -935,7 +981,7 @@ export class SharedDocument extends SharedEntity {
   }
 
   updateProperty(name: string, value: string, oldProperty?: string, type?: "string" | "array") {
-    this.plugin.app.fileManager.processFrontMatter(this.file, (fm) => {
+    void this.plugin.app.fileManager.processFrontMatter(this.file, (fm) => {
       if (oldProperty) {
         delete fm[oldProperty]
       }
@@ -974,7 +1020,18 @@ export class SharedDocument extends SharedEntity {
 
     if (!text || text.text !== "YES") return
 
-    await plugin.serverSync.stopSession(id)
+    try {
+      await plugin.serverSync.stopSession(id)
+    } catch (e) {
+      if (e instanceof StopSessionError && (e.reason === 'not_permitted' || e.reason === 'internal')) {
+        showNotice(e.reason === 'not_permitted'
+          ? "You are not permitted to stop sharing this document. It is still shared."
+          : "The server failed to stop sharing this document. It is still shared.")
+      } else {
+        showNotice("The server didn't confirm the session stop. The document is still shared — please try again.")
+      }
+      return
+    }
     const doc = SharedDocument.findById(id)
     if (doc) await doc.unshare()
   }

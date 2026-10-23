@@ -1,16 +1,19 @@
 import { Mutex } from 'async-mutex';
 import { TAbstractFile, TFile, TFolder, normalizePath } from "obsidian";
-import * as path from 'path';
+import * as path from 'path-browserify';
 import PeerDraftPlugin from "src/main";
 import { type PermanentShareFolder } from "src/permanentShareStore";
 import { add, getFolderByPath, moveFolder, removeFolder } from "src/permanentShareStoreFS";
 import { promptForText } from "src/ui/enterText";
+import { StopSessionError } from "../peerdraftWebSocketProvider";
 import { openLoginModal } from "src/ui/login";
 import { removeIsSharedClass, removeStatusClass, setStatusClass } from "src/workspace/explorerView";
 import { IndexeddbPersistence } from "y-indexeddb";
 import * as Y from 'yjs';
 import { generateRandomString } from "../tools";
 import { showNotice } from "../ui";
+import { isBinaryContent } from "../utils/fileTypeDetection";
+import { BinaryFileSync } from "./binaryFileSync";
 import { SharedDocument } from "./sharedDocument";
 import { SharedEntity } from "./sharedEntity";
 import { SyncableFolder } from "./syncableFolder";
@@ -58,24 +61,35 @@ const handleUpdate = <T>(ev: Y.YMapEvent<T>, tx: Y.Transaction, folder: SharedFo
 
           const alteredPath = path.join(path.dirname(relativePath), path.basename(relativePath, path.extname(relativePath)) + "_" + generateRandomString() + path.extname(relativePath))
           const alteredAbsolutePath = path.join(folder.root.path, alteredPath)
-          plugin.app.fileManager.renameFile(file, alteredAbsolutePath)
-          SharedDocument.fromIdAndPath(key, absolutePath, plugin)
+          void plugin.app.fileManager.renameFile(file, alteredAbsolutePath)
+          void SharedDocument.fromIdAndPath(key, absolutePath, plugin)
         }
       } else {
         showNotice("Creating new shared document: " + absolutePath)
         await SharedFolder.getOrCreatePath(path.parse(absolutePath).dir, plugin)
-        await SharedDocument.fromIdAndPath(key, absolutePath, plugin)
+        const addPromise = SharedDocument.fromIdAndPath(key, absolutePath, plugin)
+        folder._pendingAdds.set(key, addPromise.then(() => undefined, () => undefined))
+        await addPromise
+        folder._pendingAdds.delete(key)
       }
     } else if (data.action === "update") {
       const newPath = tx.doc.getMap<string>("documents").get(key) as string
+      // If an "add" for this key is still in flight (fromIdAndPath doing a
+      // server round-trip), wait for it to finish before looking up the
+      // document — otherwise findById returns undefined and the rename is
+      // silently dropped.
+      const pendingAdd = folder._pendingAdds.get(key)
+      if (pendingAdd) {
+        await pendingAdd
+      }
       const document = SharedDocument.findById(key)
       if (!document) {
         showNotice("Document at " + newPath + " doesn't exist in your vault. Consider re-creating the synced folder from server.")
         return
       }
-      const folder = SharedFolder.getSharedFolderForSubPath(document.path)
-      if (!folder) return
-      let newAbsolutePath = path.join(folder.root.path, newPath)
+      const docFolder = SharedFolder.getSharedFolderForSubPath(document.path)
+      if (!docFolder) return
+      let newAbsolutePath = path.join(docFolder.root.path, newPath)
       await SharedFolder.getOrCreatePath(path.parse(newAbsolutePath).dir, plugin)
 
       const alreadyExists = SharedDocument.findByPath(newAbsolutePath)
@@ -84,20 +98,24 @@ const handleUpdate = <T>(ev: Y.YMapEvent<T>, tx: Y.Transaction, folder: SharedFo
         } else {
           showNotice("File " + newPath + " already exists. Renaming local file.")
           const alteredPath = path.join(path.dirname(newPath), path.basename(newPath, path.extname(newPath)) + "_" + generateRandomString() + path.extname(newPath))
-          const alteredAbsolutePath = path.join(folder.root.path, alteredPath)
-          plugin.app.fileManager.renameFile(alreadyExists.file, alteredAbsolutePath)
-          SharedDocument.fromIdAndPath(key, alteredAbsolutePath, plugin)
+          const alteredAbsolutePath = path.join(docFolder.root.path, alteredPath)
+          void plugin.app.fileManager.renameFile(alreadyExists.file, alteredAbsolutePath)
+          void SharedDocument.fromIdAndPath(key, alteredAbsolutePath, plugin)
         }
       } else {
         await plugin.app.fileManager.renameFile(document.file, newAbsolutePath)
       }
     } else if (data.action === "delete") {
+      const pendingAdd = folder._pendingAdds.get(key)
+      if (pendingAdd) {
+        await pendingAdd
+      }
       const document = SharedDocument.findById(key)
       if (!document) return
       const file = plugin.app.vault.getAbstractFileByPath(document.path)
-      document.unshare()
+      void document.unshare()
       if (!file) return
-      plugin.app.vault.delete(file)
+      void plugin.app.vault.delete(file)
     }
   })
 }
@@ -110,11 +128,68 @@ export class SharedFolder extends SharedEntity {
   private _initializationGuardPassed = false
   private _initializationGuardMutex = new Mutex()
 
+  // Tracks in-flight fromIdAndPath promises for keys being added. When an
+  // "update" event (rename) arrives for a key whose "add" hasn't finished
+  // yet, the update handler awaits this promise before looking up the
+  // document — without it, findById returns undefined and the rename is
+  // silently dropped (the file stays as Untitled.md forever).
+  _pendingAdds = new Map<string, Promise<void>>()
+
   // Sync-engine state delegated to composed SyncableFolder instance.
   private _syncable!: SyncableFolder
 
+  // Binary file sync manager
+  private _binaryFileSync?: BinaryFileSync
+
   override get indexedDBProvider(): IndexeddbPersistence | undefined {
     return this._syncable?.indexedDBProvider
+  }
+
+  /**
+   * Route a binary file event to BinaryFileSync
+   */
+  public async handleBinaryFile(file: TFile): Promise<void> {
+    await this._binaryFileSync?.handleBinaryFile(file)
+  }
+
+  /**
+   * Route a binary file rename event to BinaryFileSync
+   */
+  public handleBinaryFileRename(file: TFile, oldPath: string): void {
+    this._binaryFileSync?.handleBinaryFileRename(file, oldPath)
+  }
+
+  /** Stops sharing a binary file, leaving it in the vault. Returns false if it was not shared. */
+  public unshareBinaryFile(filePath: string): boolean {
+    const relativePath = this.relativeBinaryPath(filePath)
+    return relativePath !== undefined && (this._binaryFileSync?.unshareFile(relativePath) ?? false)
+  }
+
+  /**
+   * Check if a file is tracked as binary (by old or new path)
+   */
+  public isBinaryFileTracked(filePath: string): boolean {
+    const relativePath = this.relativeBinaryPath(filePath)
+    return relativePath !== undefined && (this._binaryFileSync?.isFileTracked(relativePath) ?? false)
+  }
+
+  /**
+   * Whether filePath is currently being written to disk as the result of a
+   * remote binary-file download - lets vault event handlers skip
+   * re-processing the event that write itself produces.
+   */
+  public isRemoteBinaryUpdateInProgress(filePath: string): boolean {
+    const relativePath = this.relativeBinaryPath(filePath)
+    return relativePath !== undefined && (this._binaryFileSync?.isRemoteUpdateInProgress(relativePath) ?? false)
+  }
+
+  private relativeBinaryPath(filePath: string): string | undefined {
+    const normalizedFolderPath = normalizePath(this.root.path)
+    const normalizedFilePath = normalizePath(filePath)
+    if (normalizedFilePath === normalizedFolderPath || !normalizedFilePath.startsWith(normalizedFolderPath + '/')) {
+      return undefined
+    }
+    return normalizedFilePath.slice(normalizedFolderPath.length + 1)
   }
 
   static async fromTFolder(root: TFolder, plugin: PeerDraftPlugin) {
@@ -137,9 +212,24 @@ export class SharedFolder extends SharedEntity {
 
     sharedFolder._setupInitializationGuard()
     sharedFolder._setupStatusIndicatorSubscriptions()
-    sharedFolder._updateStatusIndicator()
+    void sharedFolder._updateStatusIndicator()
 
-    const docs = await Promise.all(files.map((file) => {
+    // Files already present when the folder is first shared aren't vault
+    // 'create'/'modify' events - peerdraftPlugin.ts never sees them, so
+    // they need the same content-based binary/text routing done by hand
+    // here, or a pre-existing image would get misfiled as a SharedDocument.
+    const textFiles: TFile[] = []
+    const binaryFiles: TFile[] = []
+    for (const file of files) {
+      const content = await plugin.app.vault.readBinary(file)
+      if (await isBinaryContent(content, file.name)) {
+        binaryFiles.push(file)
+      } else {
+        textFiles.push(file)
+      }
+    }
+
+    const docs = await Promise.all(textFiles.map((file) => {
       return SharedDocument.fromTFile(file, {
         permanent: true
       }, plugin)
@@ -157,10 +247,18 @@ export class SharedFolder extends SharedEntity {
 
     await add(sharedFolder, plugin)
     await sharedFolder.startIndexedDBSync()
-    sharedFolder.syncWithServer()
-    sharedFolder.startWebRTCSync()
+    void sharedFolder.syncWithServer()
+    void sharedFolder.startWebRTCSync()
 
-    navigator.clipboard.writeText(plugin.settings.basePath + '/team/' + sharedFolder.shareId)
+    // Initialize binary file sync (sets up the Y.Map observer for remote
+    // changes and downloads any binary files already tracked remotely),
+    // then upload whichever binary files were already present locally.
+    await sharedFolder._binaryFileSync?.initialize()
+    for (const file of binaryFiles) {
+      await sharedFolder._binaryFileSync?.handleBinaryFile(file)
+    }
+
+    void navigator.clipboard.writeText(plugin.settings.basePath + '/team/' + sharedFolder.shareId)
     showNotice(`Folder ${sharedFolder.path} with ${docs.length} documents shared. URL copied to your clipboard.`, 0)
     return sharedFolder
   }
@@ -222,7 +320,7 @@ export class SharedFolder extends SharedEntity {
     await add(sFolder, plugin)
     sFolder._setupInitializationGuard()
     sFolder._setupStatusIndicatorSubscriptions()
-    sFolder._updateStatusIndicator()
+    void sFolder._updateStatusIndicator()
 
     const paths: Array<string> = []
     const documentMap = preFetchedDoc.getMap("documents") as Y.Map<string>
@@ -255,7 +353,7 @@ export class SharedFolder extends SharedEntity {
         if (existingDoc) {
           if (existingDoc.path === normalizedAbsPath) {
           } else {
-            plugin.app.fileManager.renameFile(existingDoc.file, absPath)
+            void plugin.app.fileManager.renameFile(existingDoc.file, absPath)
           }
         } else {
           docPath = normalizePath(path.join(path.dirname(docPath), path.basename(docPath, path.extname(docPath)) + "_" + generateRandomString() + path.extname(docPath)))
@@ -271,8 +369,12 @@ export class SharedFolder extends SharedEntity {
     if (sFolder.indexedDBProvider) {
       if (!sFolder.indexedDBProvider.synced) await sFolder.indexedDBProvider.whenSynced
     }
-    sFolder.syncWithServer()
-    sFolder.startWebRTCSync()
+    void sFolder.syncWithServer()
+    void sFolder.startWebRTCSync()
+    
+    // Initialize binary file sync
+    await sFolder._binaryFileSync?.initialize()
+    
     return sFolder
   }
 
@@ -299,9 +401,12 @@ export class SharedFolder extends SharedEntity {
 
     folder._setupInitializationGuard()
     folder._setupStatusIndicatorSubscriptions()
-    folder._updateStatusIndicator()
+    void folder._updateStatusIndicator()
     await folder.startIndexedDBSync()
-    folder.syncWithServer()
+    void folder.syncWithServer()
+
+    // Initialize binary file sync
+    await folder._binaryFileSync?.initialize()
 
     return folder
   }
@@ -323,7 +428,7 @@ export class SharedFolder extends SharedEntity {
     const normalizedPath = normalizePath(dir)
     const folders = this.getAll()
     for (const folder of folders) {
-      if (folder.root.path === normalizedPath) return
+      if (folder.root.path === normalizedPath) return folder
       if (folder.isPathSubPath(normalizedPath)) return folder
     }
   }
@@ -346,6 +451,14 @@ export class SharedFolder extends SharedEntity {
       serverSync: plugin.serverSync,
       logger: { log: (...args: unknown[]) => plugin.log(args.map((a) => String(a)).join(' ')) }
     })
+
+    // Initialize binary file sync
+    this._binaryFileSync = new BinaryFileSync(
+      this.yDoc,
+      this.root,
+      this.plugin,
+      () => this.shareId
+    )
 
     SharedFolder._sharedEntites.push(this)
   }
@@ -519,7 +632,7 @@ export class SharedFolder extends SharedEntity {
     const oldPath = this._path
     this.root = folder
     this._path = normalizePath(folder.path)
-    moveFolder(oldPath, folder.path, this.plugin)
+    void moveFolder(oldPath, folder.path, this.plugin)
   }
 
   async getOrCreateFile(relativePath: string) {
@@ -592,8 +705,8 @@ export class SharedFolder extends SharedEntity {
         if (this._initializationGuardPassed) return
         this._initializationGuardPassed = true
 
-        this.startWebRTCSync()
-        this._updateStatusIndicator()
+        void this.startWebRTCSync()
+        void this._updateStatusIndicator()
       } finally {
         release()
       }
@@ -601,23 +714,23 @@ export class SharedFolder extends SharedEntity {
 
     const indexedDBHandler = (data: { wasEmpty: boolean }) => {
       if (this._checkInitializationGuard()) {
-        handleGuardConditionMet()
+        void handleGuardConditionMet()
       }
     }
     this._syncable.on('indexedDBLoaded', indexedDBHandler)
 
     const serverSyncedHandler = () => {
       if (this._checkInitializationGuard()) {
-        handleGuardConditionMet()
+        void handleGuardConditionMet()
       }
     }
     this._syncable.on('serverSynced', serverSyncedHandler)
 
     const syncStateChangedHandler = () => {
       if (this._checkInitializationGuard() && !this._initializationGuardPassed) {
-        handleGuardConditionMet()
+        void handleGuardConditionMet()
       }
-      this._updateStatusIndicator()
+      void this._updateStatusIndicator()
     }
     this._syncable.on('syncStateChanged', syncStateChangedHandler)
   }
@@ -685,15 +798,15 @@ export class SharedFolder extends SharedEntity {
 
   private _setupStatusIndicatorSubscriptions() {
     this.plugin.serverSync.on('status', () => {
-      this._updateStatusIndicator()
+      void this._updateStatusIndicator()
     })
 
     this._syncable.on('syncStateChanged', () => {
-      this._updateStatusIndicator()
+      void this._updateStatusIndicator()
     })
     const docsMap = this.getDocsFragment()
     docsMap.observe((event) => {
-      this._updateStatusIndicator()
+      void this._updateStatusIndicator()
     })
   }
 
@@ -705,7 +818,7 @@ export class SharedFolder extends SharedEntity {
         if (doc) {
           this._subscribedChildDocs.add(shareId)
           doc.syncable.on('syncStateChanged', () => {
-            this._updateStatusIndicator()
+            void this._updateStatusIndicator()
           })
         }
       }
@@ -724,7 +837,18 @@ export class SharedFolder extends SharedEntity {
 
     if (!text || text.text !=="YES") return
 
-    await plugin.serverSync.stopSession(id)
+    try {
+      await plugin.serverSync.stopSession(id)
+    } catch (e) {
+      if (e instanceof StopSessionError && (e.reason === 'not_permitted' || e.reason === 'internal')) {
+        showNotice(e.reason === 'not_permitted'
+          ? "You are not permitted to stop sharing this folder. It is still shared."
+          : "The server failed to stop sharing this folder. It is still shared.")
+      } else {
+        showNotice("The server didn't confirm the session stop. The folder is still shared — please try again.")
+      }
+      return
+    }
     const folder = SharedFolder.findById(id)
     if (folder) await folder.unshare()
   }
@@ -732,7 +856,7 @@ export class SharedFolder extends SharedEntity {
   async unshare() {
     const dbEntry = getFolderByPath(this.path, this.plugin)
     if (dbEntry) {
-      removeFolder(this.path, this.plugin)
+      void removeFolder(this.path, this.plugin)
     }
 
     if (this._syncable.indexedDBProvider) {
@@ -741,16 +865,17 @@ export class SharedFolder extends SharedEntity {
 
 
     this.getDocsFragment().forEach((path: string, shareId: string) => {
-      SharedDocument.findById(shareId)?.unshare()
+      void SharedDocument.findById(shareId)?.unshare()
     })
 
     this.destroy()
-    removeIsSharedClass(this.path, this.plugin)
+    void removeIsSharedClass(this.path, this.plugin)
     await removeStatusClass(this.path, this.plugin)
   }
 
   destroy() {
     this._syncable.destroy()
+    this._binaryFileSync?.destroy()
     super.destroy()
     SharedFolder._sharedEntites.splice(SharedFolder._sharedEntites.indexOf(this), 1)
   }

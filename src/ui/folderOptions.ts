@@ -2,6 +2,7 @@ import { App, Modal, Plugin, Setting } from "obsidian";
 import { SharedDocument } from "src/sharedEntities/sharedDocument";
 import { SharedFolder } from "src/sharedEntities/sharedFolder";
 import { showNotice } from "src/ui";
+import { isBinaryContent } from "src/utils/fileTypeDetection";
 
 class SharedFolderOptionsModal extends Modal {
 
@@ -110,7 +111,7 @@ class SharedFolderOptionsModal extends Modal {
     link.addButton(btn => {
       btn.setButtonText("Copy Peerdraft URL to clipboard")
       btn.onClick(()=> {
-        navigator.clipboard.writeText(this.folder.getShareURL())
+        void navigator.clipboard.writeText(this.folder.getShareURL())
         showNotice("Link copied to clipboard.")
       })
     })
@@ -389,18 +390,31 @@ class SharedFolderOptionsModal extends Modal {
               const isNowIncluded = newExtensions.has(ext);
               
               if (isNowIncluded && !wasIncluded) {
-                // Add document to shared folder
-                const doc = await SharedDocument.fromTFile(file, { permanent: true }, this.folder.plugin);
-                if (doc) {
-                  this.folder.addDocument(doc);
+                // Newly-allowed extension: route by actual content, same as
+                // peerdraftPlugin.ts's create/modify handlers, rather than
+                // assuming every matching file is a text document.
+                const content = await this.app.vault.readBinary(file);
+                if (await isBinaryContent(content, file.name)) {
+                  await this.folder.handleBinaryFile(file);
+                } else {
+                  const wasSharedAsBinary = this.folder.isBinaryFileTracked(file.path);
+                  const doc = await SharedDocument.fromTFile(file, { permanent: true }, this.folder.plugin);
+                  if (doc) {
+                    this.folder.addDocument(doc);
+                    // Move it over: a path shared as both a text document and a binary file shows up twice
+                    if (wasSharedAsBinary) {
+                      this.folder.unshareBinaryFile(file.path);
+                    }
+                  }
                 }
               } else if (!isNowIncluded && wasIncluded) {
                 // Remove document from shared folder
                 const doc = SharedDocument.findByPath(file.path);
                 if (doc) {
                   this.folder.removeDocument(doc);
-                  doc.unshare();
+                  void doc.unshare();
                 }
+                this.folder.unshareBinaryFile(file.path);
               }
             }
             

@@ -78,7 +78,7 @@ class LoginModal extends Modal {
       toggl.setValue(this.storeJWT)
       toggl.onChange(value => {
         this.storeJWT = value
-        this.onOpen()
+        void this.onOpen()
       })
     })
 

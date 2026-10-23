@@ -33,8 +33,8 @@ const handleMessage = async (data: string) => {
     }
   } else if (message.type === "resync") {
     for (const id of message.docs) {
-      SharedDocument.findById(id)?.syncWithServer()
-      SharedFolder.findById(id)?.syncWithServer()
+      void SharedDocument.findById(id)?.syncWithServer()
+      void SharedFolder.findById(id)?.syncWithServer()
     }
   } else if (message.type === "delete") {
     for (const id of message.docs) {
@@ -48,7 +48,7 @@ const handleMessage = async (data: string) => {
           const inFolder = SharedFolder.getSharedFolderForSubPath(document.path)
           if (!inFolder) {
             showNotice(document.path + " is not shared anymore.", undefined)
-            document.unshare()
+            void document.unshare()
           }
         }
       }
@@ -65,7 +65,9 @@ const setupWS = (client: ActiveStreamClient) => {
 
     websocket.onmessage = (event) => {
       client.wsLastMessageReceived = time.getUnixTime()
-      handleMessage(event.data)
+      void handleMessage(event.data).catch((error) => {
+        console.error('[ActiveStreamClient] Failed to handle message', error)
+      })
     }
 
     websocket.onerror = (event) => {
@@ -129,6 +131,7 @@ export class ActiveStreamClient extends ObservableV2<Events> {
   wsLastMessageReceived: number
   shouldConnect: boolean
   _resyncInterval: number
+  _checkInterval: number
 
   docIds: Set<string>
   private pendingMessages = new PendingMessageQueue<string>()
@@ -168,6 +171,18 @@ export class ActiveStreamClient extends ObservableV2<Events> {
       }, opts.resyncInterval))
     }
 
+    // Check for stale connections - close if no messages received for 30 seconds
+    this._checkInterval = window.setInterval(() => {
+      if (
+        this.wsconnected &&
+        messageReconnectTimeout <
+        time.getUnixTime() - this.wsLastMessageReceived
+      ) {
+        // No message received in a long time - force reconnection
+        this.ws?.close()
+      }
+    }, messageReconnectTimeout / 10)
+
     if (opts.connect) {
       this.connect()
     }
@@ -194,6 +209,7 @@ export class ActiveStreamClient extends ObservableV2<Events> {
     if (this._resyncInterval !== 0) {
       window.clearInterval(this._resyncInterval)
     }
+    clearInterval(this._checkInterval)
     this.disconnect()
     super.destroy()
   }

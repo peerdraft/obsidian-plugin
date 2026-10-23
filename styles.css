@@ -9,7 +9,7 @@
 
 .pd-explorer-shared:before {
   content: "↖ ";
-  color: #000;
+  color: #000000;
   background: #0ea5e9;
   border-radius: 4px;
   margin-right: 0.5em;
@@ -17,7 +17,7 @@
 
 .pd-status-offline::before {
   content: "○ ";
-  color: #666;
+  color: #666666;
   margin-right: 0.5em;
 }
 
@@ -42,7 +42,7 @@
 
 .pd-status-disconnected::before {
   content: "○ ";
-  color: #666;
+  color: #666666;
   margin-right: 0.5em;
 }
 

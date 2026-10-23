@@ -1,10 +1,11 @@
 import { MarkdownView, Modal, Platform, Plugin, TFile, TFolder, normalizePath } from "obsidian"
-import * as path from "path"
+import * as path from "path-browserify"
 import { ActiveStreamClient } from "./activeStreamClient"
 import { prepareCommunication } from "./cookie"
 import { getJWT } from "./login"
 import { PeerdraftWebsocketProvider } from "./peerdraftWebSocketProvider"
 import { ServerAPI } from "./serverAPI"
+import { installSignalingSocketGuard } from "./signalingSocketGuard"
 import { type Settings, createSettingsTab, migrateSettings, saveSettings } from "./settings"
 import { SharedDocument } from "./sharedEntities/sharedDocument"
 import { fromShareURL } from "./sharedEntities/sharedEntityFactory"
@@ -12,6 +13,7 @@ import { SharedFolder } from "./sharedEntities/sharedFolder"
 import { handleRenameWithinSameFolder, relocateIfExisting } from "./sharedEntities/renameWithinFolder"
 import { runStartupSync } from "./startupSync"
 import { showNotice } from "./ui"
+import { isBinaryContent } from "./utils/fileTypeDetection"
 import { promptForSessionType } from "./ui/chooseSessionType"
 import { createMenu, createMenuAsSubMenu } from "./ui/createMenu"
 import { promptForName, promptForURL } from "./ui/enterText"
@@ -34,6 +36,8 @@ export default class PeerdraftPlugin extends Plugin {
 
   async onload() {
     const plugin = this
+
+    plugin.register(installSignalingSocketGuard())
 
     plugin.settings = await migrateSettings(plugin)
 
@@ -65,7 +69,7 @@ export default class PeerdraftPlugin extends Plugin {
           doc.removeExtensionFromLeaf(key)
           const leafs = getLeafsByPath(oldPath, plugin.pws.markdown)
           if (leafs.length === 0 && !doc.isPermanent) {
-            doc.unshare()
+            void doc.unshare()
           }
         }
         const newDoc = SharedDocument.findByPath(leaf.path)
@@ -96,7 +100,7 @@ export default class PeerdraftPlugin extends Plugin {
           doc.removeCanvasExtensionFromLeaf(key)
           const leafs = getCanvasLeafsByPath(oldPath, plugin.pws.canvas)
           if (leafs.length === 0 && !doc.isPermanent) {
-            doc.unshare()
+            void doc.unshare()
           }
         }
         SharedDocument.findByPath(leaf.path)?.addCanvasExtensionToLeaf(key)
@@ -122,7 +126,7 @@ export default class PeerdraftPlugin extends Plugin {
     );
 
     plugin.addRibbonIcon("users", "Show my Peerdraft Shares", () => {
-      activateView(plugin.app);
+      void activateView(plugin.app);
     });
 
     plugin.app.workspace.onLayoutReady(
@@ -132,7 +136,7 @@ export default class PeerdraftPlugin extends Plugin {
         this.serverSync.on("authenticated", (data) => {
           showNotice("Logged in to Peerdraft")
           plugin.settings.plan.type = data.plan.type
-          saveSettings(plugin.settings, plugin)
+          void saveSettings(plugin.settings, plugin)
         })
 
         this.serverSync.on('showMessage', (title, content) => {
@@ -183,9 +187,9 @@ export default class PeerdraftPlugin extends Plugin {
         const doc = SharedDocument.findByPath(file.path)
         if (doc) return false
         if (checking) return true
-        promptForSessionType(plugin.app).then(result => {
+        void promptForSessionType(plugin.app).then(result => {
           if (!result) return
-          SharedDocument.fromView(view, plugin, { permanent: result.permanent }).then(doc => {
+          void SharedDocument.fromView(view, plugin, { permanent: result.permanent }).then(doc => {
             if (!doc) {
               return showNotice("ERROR creating sharedDoc")
             }
@@ -203,7 +207,7 @@ export default class PeerdraftPlugin extends Plugin {
         const doc = SharedDocument.findByPath(file.path)
         if (!doc || doc.isPermanent) return false
         if (checking) return true
-        doc.unshare().then(() => { })
+        void doc.unshare()
       }
     });
 
@@ -222,7 +226,7 @@ export default class PeerdraftPlugin extends Plugin {
       id: "viewShares",
       name: "Manage active persistent shares created by me",
       callback() {
-        activateView(plugin.app);
+        void activateView(plugin.app);
       }
     })
 
@@ -257,14 +261,24 @@ export default class PeerdraftPlugin extends Plugin {
         const oldPathInFolder = SharedFolder.getSharedFolderForSubPath(oldPath)
         const newPathInFolder = SharedFolder.getSharedFolderForSubPath(file.path)
 
-        if (doc && oldPathInFolder) {
+        if (doc && oldPathInFolder && newPathInFolder) {
+          if (oldPathInFolder === newPathInFolder) {
+            await handleRenameWithinSameFolder(oldPathInFolder, doc, oldPath, file)
+            return
+          }
+          if (newPathInFolder.fileExtensions.has(file.extension)) {
+            const isTrackedAsBinary = oldPathInFolder.isBinaryFileTracked(oldPath)
 
-          if (newPathInFolder) {
-            if (oldPathInFolder === newPathInFolder) {
-              await handleRenameWithinSameFolder(oldPathInFolder, doc, oldPath, file)
-              return
+            if (isTrackedAsBinary) {
+              oldPathInFolder.handleBinaryFileRename(file, oldPath)
+              void newPathInFolder.handleBinaryFile(file)
             } else {
-              if (newPathInFolder.fileExtensions.has(file.extension)) {
+              const content = await plugin.app.vault.readBinary(file)
+              const isBinary = await isBinaryContent(content, file.name)
+
+              if (isBinary) {
+                newPathInFolder.handleBinaryFileRename(file, oldPath)
+              } else {
                 const newDoc = await SharedDocument.fromTFile(file, { permanent: true, folder: newPathInFolder.shareId }, plugin)
                 if (newDoc) {
                   newPathInFolder.addDocument(newDoc)
@@ -278,21 +292,52 @@ export default class PeerdraftPlugin extends Plugin {
             }
           }
           oldPathInFolder.removeDocument(doc);
-          doc.unshare();
+          doc.updateFileRef(file)
+          void doc.unshare();
         }
         else if (newPathInFolder) {
           if (newPathInFolder.fileExtensions.has(file.extension)) {
-            // doc may already exist under its old path (e.g. folder rename cascade) — relocate, don't duplicate.
-            await relocateIfExisting(doc, file)
-            const newDoc = doc ?? await SharedDocument.fromTFile(file, { permanent: true, folder: newPathInFolder.shareId }, plugin)
-            if (newDoc) {
-              newPathInFolder.addDocument(newDoc)
-              const prop = newPathInFolder.getAutoFillProperty()
-              if (prop) newDoc.updateProperty(prop, newDoc.getShareURL())
-              const authorProp = newPathInFolder.getAutoFillAuthorProperty()
-              const authorPropType = newPathInFolder.getAutoFillAuthorPropertyType()
-              if (authorProp) newDoc.updateProperty(authorProp, plugin.settings.name, undefined, authorPropType)
+            const isTrackedAsBinary = oldPathInFolder?.isBinaryFileTracked(oldPath) ?? false
+
+            if (isTrackedAsBinary) {
+              // Cross-folder move: also tell the OLD folder to drop its Y.Map
+              // entry - only routing to the new folder left a stale entry
+              // behind in the old folder forever (it has no other way to
+              // learn the file left).
+              oldPathInFolder?.handleBinaryFileRename(file, oldPath)
+              newPathInFolder.handleBinaryFileRename(file, oldPath)
+            } else {
+              const content = await plugin.app.vault.readBinary(file)
+              const isBinary = await isBinaryContent(content, file.name)
+
+              if (isBinary) {
+                newPathInFolder.handleBinaryFileRename(file, oldPath)
+              } else {
+                // doc may already exist under its old path (e.g. folder rename cascade) — relocate, don't duplicate.
+                await relocateIfExisting(doc, file)
+                const newDoc = doc ?? await SharedDocument.fromTFile(file, { permanent: true, folder: newPathInFolder.shareId }, plugin)
+                if (newDoc) {
+                  newPathInFolder.addDocument(newDoc)
+                  const prop = newPathInFolder.getAutoFillProperty()
+                  if (prop) newDoc.updateProperty(prop, newDoc.getShareURL())
+                  const authorProp = newPathInFolder.getAutoFillAuthorProperty()
+                  const authorPropType = newPathInFolder.getAutoFillAuthorPropertyType()
+                  if (authorProp) newDoc.updateProperty(authorProp, plugin.settings.name, undefined, authorPropType)
+                }
+              }
             }
+          }
+        }
+        else if (oldPathInFolder) {
+          // File moved out of shared folder
+          const isTrackedAsBinary = oldPathInFolder.isBinaryFileTracked(oldPath)
+          if (isTrackedAsBinary) {
+            oldPathInFolder.handleBinaryFileRename(file, oldPath)
+          }
+          if (doc) {
+            oldPathInFolder.removeDocument(doc)
+            doc.updateFileRef(file)
+            void doc.unshare()
           }
         }
         else if (doc) {
@@ -306,10 +351,30 @@ export default class PeerdraftPlugin extends Plugin {
       }
     }))
 
+    // Handle file modification
+    plugin.registerEvent(plugin.app.vault.on('modify', async (file) => {
+      if (!(file instanceof TFile)) return
+
+      const folder = SharedFolder.getSharedFolderForSubPath(file.path)
+      if (!folder) return
+      if (!folder.fileExtensions.has(file.extension)) return
+      // This write was caused by our own binary-file download, not a local edit
+      if (folder.isRemoteBinaryUpdateInProgress(file.path)) return
+
+      const content = await plugin.app.vault.readBinary(file)
+      // A file already shared as binary keeps syncing that way until it is moved over, so edits are not dropped
+      const stillSharedAsBinary = folder.isBinaryFileTracked(file.path) && !SharedDocument.findByPath(file.path)
+      const isBinary = stillSharedAsBinary || await isBinaryContent(content, file.name)
+
+      if (isBinary) {
+        await folder.handleBinaryFile(file)
+      }
+    }))
+
     plugin.registerEvent(plugin.app.vault.on('delete', async (file) => {
       if (file instanceof TFolder) {
         const folder = SharedFolder.findByPath(file.path)
-        folder?.unshare()
+        void folder?.unshare()
         return
       } else if (file instanceof TFile) {
         const folder = SharedFolder.getSharedFolderForSubPath(file.path)
@@ -332,17 +397,27 @@ export default class PeerdraftPlugin extends Plugin {
           if (SharedDocument.findByPath(file.path)) return
           if (plugin.settings.serverShares.files.has(normalizePath(file.path))) return
           if (!folder.fileExtensions.has(file.extension)) return
-          const doc = await SharedDocument.fromTFile(file, {
-            permanent: true,
-            folder: folder.shareId
-          }, plugin)
-          if (doc) {
-            folder.addDocument(doc)
-            const prop = folder.getAutoFillProperty()
-            if (prop) doc.updateProperty(prop, doc.getShareURL())
-            const authorProp = folder.getAutoFillAuthorProperty()
-            const authorPropType = folder.getAutoFillAuthorPropertyType()
-            if (authorProp) doc.updateProperty(authorProp, plugin.settings.name, undefined, authorPropType)
+          // This write was caused by our own binary-file download, not a local edit
+          if (folder.isRemoteBinaryUpdateInProgress(file.path)) return
+
+          const content = await plugin.app.vault.readBinary(file)
+          const isBinary = await isBinaryContent(content, file.name)
+
+          if (isBinary) {
+            await folder.handleBinaryFile(file)
+          } else {
+            const doc = await SharedDocument.fromTFile(file, {
+              permanent: true,
+              folder: folder.shareId
+            }, plugin)
+            if (doc) {
+              folder.addDocument(doc)
+              const prop = folder.getAutoFillProperty()
+              if (prop) doc.updateProperty(prop, doc.getShareURL())
+              const authorProp = folder.getAutoFillAuthorProperty()
+              const authorPropType = folder.getAutoFillAuthorPropertyType()
+              if (authorProp) doc.updateProperty(authorProp, plugin.settings.name, undefined, authorPropType)
+            }
           }
         })))
       }
@@ -354,7 +429,7 @@ export default class PeerdraftPlugin extends Plugin {
       const name = await promptForName(plugin.app)
       if (name && name.text) {
         this.settings.name = name.text
-        saveSettings(this.settings, plugin)
+        void saveSettings(this.settings, plugin)
       }
     }
     plugin.addSettingTab(settingsTab)
@@ -362,7 +437,7 @@ export default class PeerdraftPlugin extends Plugin {
 
   onunload() {
     SharedDocument.getAll().forEach((doc) => {
-      doc.destroy()
+      void doc.destroy()
     })
     SharedFolder.getAll().forEach(folder => {
       folder.destroy()
