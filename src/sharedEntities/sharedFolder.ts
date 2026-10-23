@@ -405,8 +405,12 @@ export class SharedFolder extends SharedEntity {
     await folder.startIndexedDBSync()
     void folder.syncWithServer()
 
-    // Initialize binary file sync
-    await folder._binaryFileSync?.initialize()
+    // Attachment catch-up must not hold up restored editors or other shares.
+    void folder._binaryFileSync?.initialize().catch((error: unknown) => {
+      if (SharedFolder.findByPath(folder.path) !== folder) return
+      console.error('[Peerdraft] Could not initialize attachments for shared folder', folder.path, error)
+      showNotice(`Peerdraft could not initialize attachments in ${folder.path}. See the console for details.`)
+    })
 
     return folder
   }
@@ -656,7 +660,13 @@ export class SharedFolder extends SharedEntity {
       const subPath = segments.slice(0, index + 1).join(path.sep)
       folder = plugin.app.vault.getAbstractFileByPath(normalizePath(subPath))
       if (!folder) {
-        folder = await plugin.app.vault.createFolder(normalizePath(subPath))
+        try {
+          folder = await plugin.app.vault.createFolder(normalizePath(subPath))
+        } catch (error) {
+          // Another share may have created the same parent while this call waited.
+          folder = plugin.app.vault.getAbstractFileByPath(normalizePath(subPath))
+          if (!(folder instanceof TFolder)) throw error
+        }
       }
     }
     return folder as TFolder

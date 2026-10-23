@@ -137,6 +137,7 @@ export class SharedDocument extends SharedEntity {
 
     doc._setupInitializationGuard()
     doc._setupStatusIndicatorSubscriptions()
+    void doc._updateStatusIndicator()
     await doc.startIndexedDBSync()
     if (doc.indexedDBProvider) {
       if (!doc.indexedDBProvider.synced) await doc.indexedDBProvider.whenSynced

@@ -11,7 +11,7 @@ import { SharedDocument } from "./sharedEntities/sharedDocument"
 import { fromShareURL } from "./sharedEntities/sharedEntityFactory"
 import { SharedFolder } from "./sharedEntities/sharedFolder"
 import { handleRenameWithinSameFolder, relocateIfExisting } from "./sharedEntities/renameWithinFolder"
-import { runStartupSync } from "./startupSync"
+import { restoreSharesInParallel, runStartupSync } from "./startupSync"
 import { showNotice } from "./ui"
 import { isBinaryContent } from "./utils/fileTypeDetection"
 import { promptForSessionType } from "./ui/chooseSessionType"
@@ -20,6 +20,7 @@ import { promptForName, promptForURL } from "./ui/enterText"
 import { PEERDRAFT_SHARE_VIEW_TYPE, PeerdraftShareView, activateView } from "./ui/shareView"
 import { PeerdraftRecord } from "./utils/peerdraftRecord"
 import { PeerdraftLeaf } from "./workspace/peerdraftLeaf"
+import { removeStatusClass, setStatusClass, setStatusClasses } from "./workspace/explorerView"
 import { getCanvasLeafsByPath, getLeafsByPath, updatePeerdraftWorkspace } from "./workspace/peerdraftWorkspace"
 import type { PeerdraftCanvas } from "./workspace/peerdraftCanvas"
 
@@ -36,6 +37,8 @@ export default class PeerdraftPlugin extends Plugin {
 
   async onload() {
     const plugin = this
+    let stopped = false
+    plugin.register(() => { stopped = true })
 
     plugin.register(installSignalingSocketGuard())
 
@@ -131,7 +134,33 @@ export default class PeerdraftPlugin extends Plugin {
 
     plugin.app.workspace.onLayoutReady(
       async () => {
+        if (stopped) return
         this.serverSync = new PeerdraftWebsocketProvider(this.settings.sync, { jwt: getJWT(plugin.settings.oid) ?? undefined, version: plugin.manifest.version, connect: false })
+
+        const failedPaths = new Set<string>()
+        const pendingPaths = (): string[] => [
+          ...Array.from(plugin.settings.serverShares.files.keys()).filter(path => !SharedDocument.findByPath(path)),
+          ...Array.from(plugin.settings.serverShares.folders.keys()).filter(path => !SharedFolder.findByPath(path)),
+        ].filter(path => !failedPaths.has(path))
+
+        this.serverSync.on('connection-close', () => {
+          if (!stopped) void setStatusClasses(pendingPaths(), plugin, 'offline')
+        })
+        this.serverSync.on('status', ({ status }) => {
+          if (!stopped && status === 'connecting') {
+            void setStatusClasses(pendingPaths(), plugin, 'syncing')
+          }
+        })
+        plugin.register(() => {
+          for (const path of new Set([...pendingPaths(), ...failedPaths])) void removeStatusClass(path, plugin)
+        })
+
+        const reportRestoreError = (path: string, error: unknown): void => {
+          if (stopped) return
+          failedPaths.add(path)
+          console.error('[Peerdraft] Could not initialize shared item', path, error)
+          void setStatusClass(path, plugin, 'warning', 'Could not initialize this share. See the console for details.')
+        }
 
         this.serverSync.on("authenticated", (data) => {
           showNotice("Logged in to Peerdraft")
@@ -147,19 +176,31 @@ export default class PeerdraftPlugin extends Plugin {
         })
 
         await runStartupSync({
+          showPendingShares: () => setStatusClasses(pendingPaths(), plugin, 'syncing'),
+          isStopped: () => stopped,
           connect: () => this.serverSync.connect(),
           connected: () => this.serverSync.connected(),
-          restoreFiles: async () => {
-            for (const [path, data] of plugin.settings.serverShares.files.entries()) {
+          restoreFiles: () => restoreSharesInParallel(
+            plugin.settings.serverShares.files.entries(),
+            async ([path, data]) => {
               await SharedDocument.fromPermanentShareDocument({ path, persistenceId: data.persistenceId, shareId: data.shareId }, plugin)
-            }
-          },
-          restoreFolders: async () => {
-            for (const [path, data] of plugin.settings.serverShares.folders.entries()) {
+              if (!SharedDocument.findByPath(path)) throw new Error('Saved document could not be restored')
+            },
+            ([path], error) => reportRestoreError(path, error),
+          ),
+          restoreFolders: () => restoreSharesInParallel(
+            plugin.settings.serverShares.folders.entries(),
+            async ([path, data]) => {
               await SharedFolder.fromPermanentShareFolder({ path, persistenceId: data.persistenceId, shareId: data.shareId }, plugin)
-            }
-          }
+              if (!SharedFolder.findByPath(path)) throw new Error('Saved folder could not be restored')
+            },
+            ([path], error) => reportRestoreError(path, error),
+          ),
         })
+        if (stopped) return
+        if (failedPaths.size > 0) {
+          showNotice(`Peerdraft could not initialize ${failedPaths.size} shared item(s). See the console for details.`)
+        }
         updatePeerdraftWorkspace(plugin.app.workspace, plugin.pws)
         plugin.registerEvent(plugin.app.workspace.on("layout-change", () => {
           updatePeerdraftWorkspace(plugin.app.workspace, plugin.pws)
@@ -442,7 +483,7 @@ export default class PeerdraftPlugin extends Plugin {
     SharedFolder.getAll().forEach(folder => {
       folder.destroy()
     })
-    this.activeStreamClient.destroy()
+    this.activeStreamClient?.destroy()
     this.serverSync?.destroy()
   }
 
