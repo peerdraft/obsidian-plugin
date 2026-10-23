@@ -58,6 +58,11 @@ export class SharedDocument extends SharedEntity {
   private _canvasExtenstions: PeerdraftRecord<() => any>
 
   private _initializationGuardPassed = false
+  private _destroyed = false
+  private _initialCacheCheckComplete = false
+  private _initializeFromLocal?: () => Promise<boolean>
+  private _initializationRetryTimeout?: number
+  private _pendingInitialServerSync?: () => void
   private _initializationGuardMutex = new Mutex()
   private _vaultModifyListenerRegistered = false
   private _catchUpIdleTimeout?: number
@@ -142,9 +147,10 @@ export class SharedDocument extends SharedEntity {
     if (doc.indexedDBProvider) {
       if (!doc.indexedDBProvider.synced) await doc.indexedDBProvider.whenSynced
     }
-    void doc.syncWithServer()
-    plugin.activeStreamClient.add([doc.shareId])
-    doc._syncable._setNewDocConfirmed(true)
+    await doc._startInitialServerSync(() => {
+      plugin.activeStreamClient.add([doc.shareId])
+      doc._syncable._setNewDocConfirmed(true)
+    })
 
     return doc
   }
@@ -406,6 +412,12 @@ export class SharedDocument extends SharedEntity {
       fileIO,
       clock,
       editorAttachedCount: () => this._extensions.size,
+      canWriteFile: () => !this._destroyed && (this.isCanvas || !this.isPermanent || this._initializationGuardPassed),
+      canStartServerSync: () => !this._destroyed && (
+        this.isCanvas || !this.isPermanent || this._initializationGuardPassed || (
+          this._initialCacheCheckComplete && (!this._syncable.indexedDBLoaded || this._syncable.indexedDBWasEmpty)
+        )
+      ),
       logger: { log: (...args: unknown[]) => plugin.log(args.map((a) => String(a)).join(' ')) }
     })
 
@@ -482,8 +494,7 @@ export class SharedDocument extends SharedEntity {
 
     this.plugin.registerEvent(this.plugin.app.vault.on("modify", async (file) => {
       if (this.file === file) {
-        const fileContent = await this.plugin.app.vault.read(this._file)
-        await this._syncable.reconcileWithFileContent(fileContent)
+        await this._syncable.reconcileWithFile()
       }
     }))
     this._vaultModifyListenerRegistered = true
@@ -493,19 +504,38 @@ export class SharedDocument extends SharedEntity {
     return this._syncable.serverSynced || (this._syncable.indexedDBLoaded && !this._syncable.indexedDBWasEmpty)
   }
 
+  private async _startInitialServerSync(afterStart: () => void): Promise<void> {
+    const start = () => {
+      if (this._destroyed) return
+      void this.syncWithServer()
+      afterStart()
+    }
+    const hasCachedState = this._syncable.indexedDBLoaded && !this._syncable.indexedDBWasEmpty
+    if (!this.isCanvas && hasCachedState && !this._initializationGuardPassed && !this._syncable.serverSynced) {
+      this._pendingInitialServerSync = start
+      await this._initializeFromLocal?.()
+      return
+    }
+    start()
+  }
+
   private _setupInitializationGuard() {
-    const handleGuardConditionMet = async () => {
-      const release = await this._initializationGuardMutex.acquire()
-      try {
-        if (this._initializationGuardPassed) return
+    const scheduleRetry = () => {
+      if (this._destroyed || this.isCanvas || this._initializationRetryTimeout !== undefined) return
+      this._initializationRetryTimeout = window.setTimeout(() => {
+        this._initializationRetryTimeout = undefined
+        void handleGuardConditionMet()
+      }, 1000)
+    }
+    const handleGuardConditionMet = (): Promise<boolean> => this._initializationGuardMutex.runExclusive(async () => {
+      if (this._destroyed) return false
+      if (this._initializationGuardPassed) return true
+      if (!this._checkInitializationGuard()) return false
+
+      if (this.isCanvas) {
+        // Canvas JSON has its own observers and reconciliation path.
         this._initializationGuardPassed = true
-
-        if (this.isCanvas) {
-          this.setupFileSyncForCanvas()
-        } else {
-          this.setupFileSyncForContent()
-        }
-
+        this.setupFileSyncForCanvas()
         const leafIds = getLeafIdsByPath(this.path, this.plugin.pws.markdown)
         if (leafIds.length > 0) {
           for (const id of leafIds) {
@@ -515,26 +545,62 @@ export class SharedDocument extends SharedEntity {
           const fileContent = await this.plugin.app.vault.read(this._file)
           await this._syncable.reconcileWithFileContent(fileContent)
         }
-
-        if (this.isPermanent) {
-          void this._updateStatusIndicator()
+      } else {
+        const initialState = this._syncable.indexedDBLoaded && !this._syncable.indexedDBWasEmpty && !this._syncable.serverSynced
+          ? 'cached'
+          : 'server'
+        const reconciled = await this._syncable.reconcileWithFile(() => {
+          // Workspace discovery can still be pending during cache replay.
+          // Only text differing from current disk content is an unsaved edit.
+          const leaves = this.plugin.app.workspace.getLeavesOfType('markdown')
+          const leaf = leaves.find((candidate) => {
+            const view = candidate.view as MarkdownView
+            return !candidate.isDeferred && view.file?.path === this.path
+          })
+          return (leaf?.view as MarkdownView | undefined)?.editor.getValue()
+        }, { initialState })
+        if (this._destroyed) return false
+        if (!reconciled) {
+          scheduleRetry()
+          return false
         }
-      } finally {
-        release()
+        this.setupFileSyncForContent()
+        this._initializationGuardPassed = true
+        for (const id of getLeafIdsByPath(this.path, this.plugin.pws.markdown)) {
+          this.addExtensionToLeaf(id)
+        }
+        // A pre-readiness debounce may already have expired; persist any
+        // remaining document changes now that local text is protected.
+        if (this._extensions.size === 0) {
+          void this._syncable.flushToFile().catch((error: unknown) => {
+            console.error('[Peerdraft] Could not write initialized shared text', this.path, error)
+          })
+        }
       }
-    }
 
-    const indexedDBHandler = (data: { wasEmpty: boolean }) => {
-      if (this._checkInitializationGuard()) {
-        void handleGuardConditionMet()
+      if (this._initializationRetryTimeout !== undefined) {
+        window.clearTimeout(this._initializationRetryTimeout)
+        this._initializationRetryTimeout = undefined
       }
+      const pendingInitialServerSync = this._pendingInitialServerSync
+      this._pendingInitialServerSync = undefined
+      pendingInitialServerSync?.()
+      if (this.isPermanent) void this._updateStatusIndicator()
+      return true
+    }).catch((error: unknown) => {
+      console.error('[Peerdraft] Could not initialize shared text', this.path, error)
+      scheduleRetry()
+      return false
+    })
+    this._initializeFromLocal = handleGuardConditionMet
+
+    const indexedDBHandler = () => {
+      if (this._checkInitializationGuard()) void handleGuardConditionMet()
     }
     this._syncable.on('indexedDBLoaded', indexedDBHandler)
 
     const serverSyncedHandler = () => {
-      if (this._checkInitializationGuard()) {
-        void handleGuardConditionMet()
-      }
+      if (this._checkInitializationGuard()) void handleGuardConditionMet()
     }
     this._syncable.on('serverSynced', serverSyncedHandler)
 
@@ -547,6 +613,9 @@ export class SharedDocument extends SharedEntity {
       }
     }
     this._syncable.on('syncStateChanged', syncStateChangedHandler)
+
+    // Joining a share can finish its server request before these listeners exist.
+    if (!this.isCanvas && this._checkInitializationGuard()) void handleGuardConditionMet()
   }
 
   private _setupStatusIndicatorSubscriptions() {
@@ -800,10 +869,18 @@ export class SharedDocument extends SharedEntity {
   }
 
   async startIndexedDBSync(): Promise<IndexeddbPersistence | undefined> {
-    if (this._syncable.indexedDBProvider) return this._syncable.indexedDBProvider
+    if (this._syncable.indexedDBProvider) {
+      if (!this._syncable.indexedDBProvider.synced) await this._syncable.indexedDBProvider.whenSynced
+      this._initialCacheCheckComplete = true
+      return this._syncable.indexedDBProvider
+    }
     const id = (getDocByPath(this.path, this.plugin))?.persistenceId
-    if (!id) return
+    if (!id) {
+      this._initialCacheCheckComplete = true
+      return
+    }
     const provider = await this._syncable.startIndexedDBSync(id)
+    this._initialCacheCheckComplete = true
     return provider
   }
 
@@ -827,7 +904,8 @@ export class SharedDocument extends SharedEntity {
     const view = leaf.view as MarkdownView
     const editor = view.editor
 
-    editor.setValue(this.getValue())
+    const content = this.getValue()
+    if (editor.getValue() !== content) editor.setValue(content)
 
     const undoManager = new Y.UndoManager(this.getContentFragment())
 
@@ -905,7 +983,8 @@ export class SharedDocument extends SharedEntity {
     if (node.file.path != this._path) return
     const editor = node.child?.editor
     if (!editor) return
-    editor.setValue(this.getValue())
+    const content = this.getValue()
+    if (editor.getValue() !== content) editor.setValue(content)
     const undoManager = new Y.UndoManager(this.getContentFragment())
     const extension = yCollab(this.getContentFragment(), webRTCProvider.awareness, { undoManager })
     const compartment = new Compartment()
@@ -1039,6 +1118,12 @@ export class SharedDocument extends SharedEntity {
 
 
   async destroy() {
+    this._destroyed = true
+    this._pendingInitialServerSync = undefined
+    if (this._initializationRetryTimeout !== undefined) {
+      window.clearTimeout(this._initializationRetryTimeout)
+      this._initializationRetryTimeout = undefined
+    }
     for (const key of this._extensions.keys) {
       this.removeExtensionFromLeaf(key)
     }

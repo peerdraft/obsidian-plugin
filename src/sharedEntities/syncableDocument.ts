@@ -53,6 +53,10 @@ export interface SyncableDocumentOptions {
   clock?: SyncableClock
   // Predicate returning how many CodeMirror editor extensions are attached.
   editorAttachedCount?: () => number
+  // Prevent disk flushes until initial local text has been reconciled. Defaults to true.
+  canWriteFile?: () => boolean
+  // Reconnects must not interrupt the factory's initial local reconciliation.
+  canStartServerSync?: () => boolean
   // Default 1000 ms. Debounce for yDoc → file flushes.
   fileFlushIntervalMs?: number
   // Optional custom registry for this syncable. Used by test harnesses.
@@ -129,6 +133,8 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
   private fileIO?: SyncableFileIO
   private readonly clock: SyncableClock
   private readonly editorAttachedCount: () => number
+  private readonly canWriteFile: () => boolean
+  private readonly serverSyncReady: () => boolean
   private readonly fileFlushIntervalMs: number
   private fileFlushTimer: ReturnType<typeof setTimeout> | null = null
   private readonly fileMutex = new Mutex()
@@ -166,6 +172,8 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
     this.fileIO = opts.fileIO
     this.clock = opts.clock ?? { now: () => Date.now() }
     this.editorAttachedCount = opts.editorAttachedCount ?? (() => 0)
+    this.canWriteFile = opts.canWriteFile ?? (() => true)
+    this.serverSyncReady = opts.canStartServerSync ?? (() => true)
     this.fileFlushIntervalMs = opts.fileFlushIntervalMs ?? 1000
     this.registry = opts.registry ?? SyncableDocument._registry
 
@@ -228,6 +236,11 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
 
   get serverSyncing(): boolean {
     return this._serverSyncing
+  }
+
+  /** Whether reconnect work may start before factory-owned local initialization finishes. */
+  get canStartServerSync(): boolean {
+    return this.serverSyncReady()
   }
 
   get serverSynced(): boolean {
@@ -460,64 +473,118 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
   }
 
   async flushToFile(): Promise<void> {
-    if (!this.fileIO) return
+    const fileIO = this.fileIO
+    if (!fileIO || !this.canWriteFile()) return
     if (this.fileFlushTimer) {
       clearTimeout(this.fileFlushTimer)
       this.fileFlushTimer = null
     }
-    return this.fileMutex.runExclusive(async () => {
+    let reconcileLocalChange = false
+    await this.fileMutex.runExclusive(async () => {
+      if (this.fileIO !== fileIO || !this.canWriteFile() || this.editorAttachedCount() > 0) return
+      const previousMtime = fileIO.getMTime()
+      const fileContent = await fileIO.read()
+      if (this.fileIO !== fileIO || !this.canWriteFile() || this.editorAttachedCount() > 0) return
+      if (fileIO.getMTime() !== previousMtime) {
+        reconcileLocalChange = true
+        return
+      }
+      // Read the latest document after disk I/O; cache replay or a remote
+      // update need not touch the file when its text already matches.
       const content = this.yDoc.getText('content').toString()
+      if (fileContent === content) return
       const mtime = this.clock.now()
-      await this.fileIO!.modify(content, { mtime })
+      await fileIO.modify(content, { mtime })
       this._lastUpdateTriggeredByDocChange = mtime
       this.emit('file-flushed', [mtime])
+    })
+    // A vault edit observed during the read takes priority over this flush.
+    // Acquire a fresh read only after releasing the write lock.
+    if (reconcileLocalChange && this.fileIO === fileIO) await this.reconcileWithFile()
+  }
+
+  /**
+   * Reconcile fresh local text under the file-write lock. Returns false if the
+   * adapter or file changed during the read, so initialization can retry safely.
+   */
+  reconcileWithFile(
+    readEditorContent?: () => string | undefined,
+    options: { initialState?: 'cached' | 'server' } = {},
+  ): Promise<boolean> {
+    const fileIO = this.fileIO
+    if (!fileIO) return Promise.resolve(false)
+    return this.fileMutex.runExclusive(async () => {
+      if (this.fileIO !== fileIO) return false
+      if (this.editorAttachedCount() > 0) return true
+      const previousMtime = fileIO.getMTime()
+      const isSelfEcho = previousMtime === this._lastUpdateTriggeredByDocChange
+      if (!options.initialState && isSelfEcho) return true
+      const fileContent = await fileIO.read()
+      if (this.fileIO !== fileIO || fileIO.getMTime() !== previousMtime) return false
+      if (this.editorAttachedCount() > 0) return true
+      const editorContent = readEditorContent?.()
+      const dirtyEditor = editorContent !== undefined && editorContent !== fileContent
+      if (options.initialState === 'server' && editorContent !== undefined && !dirtyEditor) return true
+      if (!dirtyEditor && isSelfEcho) return true
+      await this.reconcileFileContentUnlocked(
+        fileIO,
+        dirtyEditor ? editorContent : fileContent,
+        dirtyEditor,
+      )
+      return this.fileIO === fileIO
     })
   }
 
   reconcileWithFileContent(fileContent: string): Promise<void> {
     const fileIO = this.fileIO
     if (!fileIO) return Promise.resolve()
-    if (this.editorAttachedCount() > 0) return Promise.resolve()
-    if (fileIO.getMTime() === this._lastUpdateTriggeredByDocChange) {
-      return Promise.resolve()
-    }
     return this.fileMutex.runExclusive(async () => {
-      const yDocContent = this.yDoc.getText('content').toString()
-      if (yDocContent === fileContent) return
-
-      // Empty file, non-empty Y.Doc: repopulate the file, don't wipe the Y.Doc.
-      if (fileContent === '' && yDocContent !== '') {
-        const mtime = this.clock.now()
-        await fileIO.modify(yDocContent, { mtime })
-        this._lastUpdateTriggeredByDocChange = mtime
-        this.emit('reconciled', [this.calculateHash()])
-        return
-      }
-
-      const diffs = diff(yDocContent, fileContent)
-      diffCleanupEfficiency(diffs)
-      const content = this.yDoc.getText('content')
-      let pos = 0
-      this.yDoc.transact(() => {
-        for (const d of diffs) {
-          const text = d[1] as string
-          const length = text.length
-          switch (d[0]) {
-            case 0:
-              pos += length
-              break
-            case -1:
-              content.delete(pos, length)
-              break
-            case 1:
-              content.insert(pos, text)
-              pos += length
-              break
-          }
-        }
-      })
-      this.emit('reconciled', [this.calculateHash()])
+      if (this.fileIO !== fileIO || this.editorAttachedCount() > 0) return
+      if (fileIO.getMTime() === this._lastUpdateTriggeredByDocChange) return
+      await this.reconcileFileContentUnlocked(fileIO, fileContent)
     })
+  }
+
+  private async reconcileFileContentUnlocked(
+    fileIO: SyncableFileIO,
+    fileContent: string,
+    isEditorContent = false,
+  ): Promise<void> {
+    const yDocContent = this.yDoc.getText('content').toString()
+    if (yDocContent === fileContent) return
+
+    // Empty disk files can be placeholders; an explicitly emptied editor is an edit.
+    if (!isEditorContent && fileContent === '' && yDocContent !== '') {
+      const mtime = this.clock.now()
+      await fileIO.modify(yDocContent, { mtime })
+      this._lastUpdateTriggeredByDocChange = mtime
+      this.emit('reconciled', [this.calculateHash()])
+      return
+    }
+
+    const diffs = diff(yDocContent, fileContent)
+    diffCleanupEfficiency(diffs)
+    const content = this.yDoc.getText('content')
+    let pos = 0
+    this.yDoc.transact(() => {
+      for (const d of diffs) {
+        const text = d[1] as string
+        const length = text.length
+        switch (d[0]) {
+          case 0:
+            pos += length
+            break
+          case -1:
+            content.delete(pos, length)
+            break
+          case 1:
+            content.insert(pos, text)
+            pos += length
+            break
+        }
+      }
+    })
+    this.emit('reconciled', [this.calculateHash()])
   }
 
   private scheduleFileFlush(): void {
@@ -529,6 +596,7 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
   }
 
   destroy(): void {
+    this.fileIO = undefined
     if (this.contentObserver) {
       this.yDoc.getText('content').unobserve(this.contentObserver)
       this.contentObserver = undefined

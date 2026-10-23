@@ -167,6 +167,10 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
     }
 
     websocket.onopen = async () => {
+      // Connected listeners start restoring models. Their factories own the
+      // initial cache-first sync, so only reconnect models already registered.
+      const reconnectFolders = SyncableFolder.getAll()
+      const reconnectDocuments = SyncableDocument.getAll().filter(syncable => syncable.isPermanent)
       provider.wsLastMessageReceived = time.getUnixTime()
       provider.wsconnecting = false
       provider.wsconnected = true
@@ -182,7 +186,7 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
 
       provider.flushPendingMessages()
 
-      const folderPromises = SyncableFolder.getAll().map(async (folder) => {
+      const folderPromises = reconnectFolders.map(async (folder) => {
         if (folder.indexedDBProvider) {
           if (!folder.indexedDBProvider.synced) await folder.indexedDBProvider.whenSynced
         }
@@ -190,12 +194,12 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
       })
       await Promise.all(folderPromises)
 
-      const docPromises = SyncableDocument.getAll().map(async (syncable) => {
+      const docPromises = reconnectDocuments.map(async (syncable) => {
         if (syncable.isPermanent) {
           if (syncable.indexedDBProvider) {
             if (!syncable.indexedDBProvider.synced) await syncable.indexedDBProvider.whenSynced
           }
-          void syncable.syncWithServer()
+          if (syncable.canStartServerSync) void syncable.syncWithServer()
         }
       })
       await Promise.all(docPromises)

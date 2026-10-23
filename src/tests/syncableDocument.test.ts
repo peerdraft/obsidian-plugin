@@ -100,9 +100,9 @@ describe('SyncableDocument State Tracking', () => {
       log: jest.fn(),
     }
     mockFileIO = {
-      read: jest.fn(),
+      read: jest.fn().mockResolvedValue(''),
       modify: jest.fn().mockResolvedValue(undefined),
-      getMTime: jest.fn(() => Date.now()),
+      getMTime: jest.fn(() => 123),
     }
     mockClock = {
       now: jest.fn(() => Date.now()),
@@ -407,6 +407,7 @@ describe('SyncableDocument State Tracking', () => {
     test('should still emit file-flushed event', async () => {
       const fileFlushedHandler = jest.fn()
       syncable.on('file-flushed', fileFlushedHandler)
+      yDoc.getText('content').insert(0, 'changed content')
 
       await syncable.flushToFile()
 
@@ -423,6 +424,225 @@ describe('SyncableDocument State Tracking', () => {
       await syncable.reconcileWithFileContent('different content')
 
       expect(reconciledHandler).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  describe('Avoid unchanged-file writes during synchronization', () => {
+    test('cache replay and repeated flushes preserve unchanged contents and mtime', async () => {
+      const text = 'Already on disk\n'
+      ;(mockFileIO.read as jest.Mock).mockResolvedValue(text)
+      ;(mockFileIO.getMTime as jest.Mock).mockReturnValue(123)
+      const fileFlushed = jest.fn()
+      syncable.on('file-flushed', fileFlushed)
+      yDoc.transact(() => yDoc.getText('content').insert(0, text), 'cached update')
+
+      await syncable.flushToFile()
+      await syncable.flushToFile()
+
+      expect(mockFileIO.modify).not.toHaveBeenCalled()
+      expect(mockFileIO.getMTime()).toBe(123)
+      expect(mockClock.now).not.toHaveBeenCalled()
+      expect(fileFlushed).not.toHaveBeenCalled()
+    })
+
+    test('writes changed remote content once, then skips an equal repeated flush', async () => {
+      let diskContent = 'Old content'
+      let mtime = 123
+      ;(mockFileIO.read as jest.Mock).mockImplementation(async () => diskContent)
+      ;(mockClock.now as jest.Mock).mockReturnValue(456)
+      ;(mockFileIO.modify as jest.Mock).mockImplementation(async (content: string, opts: { mtime: number }) => {
+        diskContent = content
+        mtime = opts.mtime
+      })
+      const fileFlushed = jest.fn()
+      syncable.on('file-flushed', fileFlushed)
+      yDoc.transact(() => yDoc.getText('content').insert(0, 'Remote content'), 'server update')
+
+      await syncable.flushToFile()
+      await syncable.flushToFile()
+
+      expect(diskContent).toBe('Remote content')
+      expect(mtime).toBe(456)
+      expect(mockFileIO.modify).toHaveBeenCalledTimes(1)
+      expect(fileFlushed).toHaveBeenCalledTimes(1)
+      expect(fileFlushed).toHaveBeenCalledWith(456)
+    })
+
+    test('uses the latest document when it changes during the file read', async () => {
+      let finishRead: (content: string) => void = () => {}
+      ;(mockFileIO.read as jest.Mock).mockReturnValue(new Promise<string>(resolve => { finishRead = resolve }))
+      yDoc.getText('content').insert(0, 'First version')
+      const pending = syncable.flushToFile()
+      await Promise.resolve()
+      yDoc.getText('content').insert(yDoc.getText('content').length, ' plus new changes')
+      finishRead('Old disk content')
+      await pending
+
+      expect(mockFileIO.modify).toHaveBeenCalledWith('First version plus new changes', expect.anything())
+    })
+
+    test('skips a stale adapter replaced while its read is in flight', async () => {
+      let finishRead: (content: string) => void = () => {}
+      ;(mockFileIO.read as jest.Mock).mockReturnValue(new Promise<string>(resolve => { finishRead = resolve }))
+      yDoc.getText('content').insert(0, 'Remote content')
+      const pending = syncable.flushToFile()
+      await Promise.resolve()
+      const currentFileIO: SyncableFileIO = {
+        read: jest.fn().mockResolvedValue('Old disk content'),
+        modify: jest.fn().mockResolvedValue(undefined),
+        getMTime: () => 123,
+      }
+      syncable.setFileIO(currentFileIO)
+      finishRead('Old disk content')
+      await pending
+      expect(mockFileIO.modify).not.toHaveBeenCalled()
+      expect(currentFileIO.modify).not.toHaveBeenCalled()
+
+      await syncable.flushToFile()
+      expect(currentFileIO.modify).toHaveBeenCalledWith('Remote content', expect.anything())
+    })
+
+    test('does not write if file syncing is removed during the read', async () => {
+      let finishRead: (content: string) => void = () => {}
+      ;(mockFileIO.read as jest.Mock).mockReturnValue(new Promise<string>(resolve => { finishRead = resolve }))
+      yDoc.getText('content').insert(0, 'Remote content')
+      const pending = syncable.flushToFile()
+      await Promise.resolve()
+      syncable.setFileIO(undefined)
+      finishRead('Old disk content')
+      await pending
+      expect(mockFileIO.modify).not.toHaveBeenCalled()
+    })
+
+    test('preserves a local edit that arrives during an asynchronous flush read', async () => {
+      let diskContent = 'Previous file'
+      let mtime = 123
+      let finishRead: (content: string) => void = () => {}
+      ;(mockFileIO.getMTime as jest.Mock).mockImplementation(() => mtime)
+      ;(mockFileIO.read as jest.Mock)
+        .mockReturnValueOnce(new Promise<string>(resolve => { finishRead = resolve }))
+        .mockImplementation(async () => diskContent)
+      yDoc.getText('content').insert(0, 'Remote text')
+      const flushing = syncable.flushToFile()
+      await Promise.resolve()
+      diskContent = 'Local edit during the read'
+      mtime = 124
+      finishRead('Previous file')
+      await flushing
+      for (let i = 0; i < 10; i++) await Promise.resolve()
+
+      expect(mockFileIO.modify).not.toHaveBeenCalled()
+      expect(yDoc.getText('content').toString()).toBe('Local edit during the read')
+    })
+
+    test('does not overwrite or emit a successful flush after a read failure', async () => {
+      const error = new Error('Read failed')
+      ;(mockFileIO.read as jest.Mock).mockRejectedValue(error)
+      const fileFlushed = jest.fn()
+      syncable.on('file-flushed', fileFlushed)
+
+      await expect(syncable.flushToFile()).rejects.toBe(error)
+      expect(mockFileIO.modify).not.toHaveBeenCalled()
+      expect(fileFlushed).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('Initial local-content protection', () => {
+    const createGated = (canWriteFile: () => boolean): void => {
+      syncable.destroy()
+      syncable = new SyncableDocument({
+        yDoc, shareId: 'test-share-id', isPermanent: true, serverSync: mockServerSync,
+        fileIO: mockFileIO, clock: mockClock, canWriteFile,
+      })
+    }
+
+    test('cache replay cannot overwrite offline local edits before reconciliation', async () => {
+      jest.useFakeTimers()
+      let ready = false
+      createGated(() => ready)
+      ;(mockFileIO.read as jest.Mock).mockResolvedValue('Offline local edits')
+      try {
+        yDoc.transact(() => yDoc.getText('content').insert(0, 'Cached old text'), 'cache')
+        await jest.advanceTimersByTimeAsync(1000)
+        expect(mockFileIO.modify).not.toHaveBeenCalled()
+
+        await syncable.reconcileWithFile()
+        ready = true
+        await syncable.flushToFile()
+
+        expect(yDoc.getText('content').toString()).toBe('Offline local edits')
+        expect(mockFileIO.modify).not.toHaveBeenCalled()
+      } finally { jest.useRealTimers() }
+    })
+
+    test('initial read and reconciliation finish before a queued flush can write', async () => {
+      let finishRead: (content: string) => void = () => {}
+      ;(mockFileIO.read as jest.Mock)
+        .mockReturnValueOnce(new Promise<string>(resolve => { finishRead = resolve }))
+        .mockResolvedValue('Local edit')
+      yDoc.getText('content').insert(0, 'Cached text')
+      const reconcile = syncable.reconcileWithFile()
+      await Promise.resolve()
+      const flush = syncable.flushToFile()
+      await Promise.resolve()
+      expect(mockFileIO.modify).not.toHaveBeenCalled()
+      finishRead('Local edit')
+      await Promise.all([reconcile, flush])
+
+      expect(yDoc.getText('content').toString()).toBe('Local edit')
+      expect(mockFileIO.modify).not.toHaveBeenCalled()
+    })
+
+    test('initial reconciliation reports incomplete when its file adapter changes during the read', async () => {
+      let finishRead: (content: string) => void = () => {}
+      ;(mockFileIO.read as jest.Mock).mockReturnValue(new Promise<string>(resolve => { finishRead = resolve }))
+      const pending = syncable.reconcileWithFile()
+      await Promise.resolve()
+      const currentFileIO: SyncableFileIO = {
+        read: jest.fn().mockResolvedValue('Replacement local edits'),
+        modify: jest.fn(), getMTime: () => 456,
+      }
+      syncable.setFileIO(currentFileIO)
+      finishRead('Old file')
+      await expect(pending).resolves.toBe(false)
+      expect(currentFileIO.modify).not.toHaveBeenCalled()
+      await expect(syncable.reconcileWithFile()).resolves.toBe(true)
+      expect(yDoc.getText('content').toString()).toBe('Replacement local edits')
+    })
+
+    test('keeps an intentional empty editor edit instead of repairing it from cached text', async () => {
+      yDoc.getText('content').insert(0, 'Cached text')
+      ;(mockFileIO.read as jest.Mock).mockResolvedValue('Cached text')
+      await syncable.reconcileWithFile(() => '')
+      expect(yDoc.getText('content').toString()).toBe('')
+    })
+
+    test('retains saved local text for a closed file when its cache is unavailable', async () => {
+      yDoc.getText('content').insert(0, 'Server text')
+      ;(mockFileIO.read as jest.Mock).mockResolvedValue('Saved local changes')
+      await syncable.reconcileWithFile(undefined, { initialState: 'server' })
+      expect(yDoc.getText('content').toString()).toBe('Saved local changes')
+      expect(mockFileIO.modify).not.toHaveBeenCalled()
+    })
+
+    test('a queued self-write echo cannot restore a stale snapshot over a newer update', async () => {
+      let diskContent = 'Old disk text'
+      let mtime = 123
+      let echo: Promise<boolean> | undefined
+      ;(mockFileIO.read as jest.Mock).mockImplementation(async () => diskContent)
+      ;(mockFileIO.getMTime as jest.Mock).mockImplementation(() => mtime)
+      ;(mockClock.now as jest.Mock).mockReturnValue(456)
+      ;(mockFileIO.modify as jest.Mock).mockImplementation(async (content: string) => {
+        diskContent = content
+        mtime = 456
+        // Obsidian can notify listeners before vault.modify() resolves.
+        echo = syncable.reconcileWithFile()
+        yDoc.getText('content').insert(yDoc.getText('content').length, ' + newer remote edit')
+      })
+      yDoc.getText('content').insert(0, 'Shared text')
+      await syncable.flushToFile()
+      await echo
+      expect(yDoc.getText('content').toString()).toBe('Shared text + newer remote edit')
     })
   })
 
