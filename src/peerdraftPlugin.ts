@@ -5,6 +5,7 @@ import { prepareCommunication } from "./cookie"
 import { getJWT } from "./login"
 import { PeerdraftWebsocketProvider } from "./peerdraftWebSocketProvider"
 import { FastRestartManager, type FastRestartDocument, type SyncProof } from "./fastRestart"
+import { importFileOperationActive } from './folderImport'
 import { RestartResyncQueue } from "./restartResyncQueue"
 import { ServerAPI } from "./serverAPI"
 import { installSignalingSocketGuard } from "./signalingSocketGuard"
@@ -157,7 +158,14 @@ export default class PeerdraftPlugin extends Plugin {
             plugin.settings.restartCheckpoints = records
             await saveSettingsNow(plugin.settings, plugin)
           },
-          requestResync: id => restartResync.request(id),
+          requestResync: id => {
+            const folder = SharedFolder.findById(id)
+            if (folder) {
+              void folder.refreshImportManifest().catch(error => {
+                if (!stopped) console.error('[Peerdraft] Could not refresh imported folder', error)
+              })
+            } else restartResync.request(id)
+          },
           isStopped: () => stopped,
         })
         this.serverSync.on('sync-proof', (id, proof) => {
@@ -229,7 +237,12 @@ export default class PeerdraftPlugin extends Plugin {
           restoreFiles: () => restoreSharesInParallel(
             plugin.settings.serverShares.files.entries(),
             async ([path, data]) => {
-              await SharedDocument.fromPermanentShareDocument({ path, persistenceId: data.persistenceId, shareId: data.shareId }, plugin)
+              // Reserved import paths are materialized only after a complete
+              // download. A crash must not turn one into an empty placeholder.
+              const pendingImport = Object.values(plugin.settings.folderImports ?? {})
+                .some(session => session.documents[data.shareId]?.path === path)
+              if (pendingImport) return
+              await SharedDocument.fromPermanentShareDocument({ path, persistenceId: data.persistenceId, shareId: data.shareId, importedComplete: data.importedComplete }, plugin)
               if (!SharedDocument.findByPath(path)) throw new Error('Saved document could not be restored')
             },
             ([path], error) => reportRestoreError(path, error),
@@ -342,6 +355,7 @@ export default class PeerdraftPlugin extends Plugin {
     })
 
     plugin.registerEvent(plugin.app.vault.on('rename', async (file, oldPath) => {
+      if (importFileOperationActive(plugin, oldPath) || importFileOperationActive(plugin, file.path)) return
       if (file instanceof TFile) {
         const doc = SharedDocument.findByPath(oldPath)
 
@@ -461,6 +475,7 @@ export default class PeerdraftPlugin extends Plugin {
     }))
 
     plugin.registerEvent(plugin.app.vault.on('delete', async (file) => {
+      if (importFileOperationActive(plugin, file.path)) return
       if (file instanceof TFolder) {
         const folder = SharedFolder.findByPath(file.path)
         void folder?.unshare()
@@ -479,6 +494,7 @@ export default class PeerdraftPlugin extends Plugin {
     plugin.app.workspace.onLayoutReady(
       () => {
         plugin.registerEvent((plugin.app.vault.on("create", async (file) => {
+          if (importFileOperationActive(plugin, file.path)) return
           if (!(file instanceof TFile)) return
           const folder = SharedFolder.getSharedFolderForSubPath(file.path)
           if (!folder) return

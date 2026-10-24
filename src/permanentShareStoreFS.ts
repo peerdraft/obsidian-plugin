@@ -7,7 +7,7 @@ import { saveSettings } from "./settings"
 import { normalizePath } from "obsidian"
 
 export interface PermanentShareDocument {
-  path: string, persistenceId: string, shareId: string
+  path: string, persistenceId: string, shareId: string, importedComplete?: boolean, importedFrom?: string
 }
 
 export interface PermanentShareFolder {

@@ -67,6 +67,7 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
     provider.wsconnected = false
 
     websocket.onmessage = (event) => {
+      if (provider.ws !== websocket) return
       provider.wsLastMessageReceived = time.getUnixTime()
       const data = new Uint8Array(event.data)
       if (data.length == 0) return
@@ -111,7 +112,14 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
             const id = decoding.readVarString(decoder)
             const update = decoding.readVarUint8Array(decoder)
             const checksum = decoding.readVarString(decoder)
-            provider.emit("document-received", [id, update, checksum])
+            let proof: SyncProof | undefined
+            if (decoding.hasContent(decoder)) {
+              try {
+                const value: unknown = JSON.parse(decoding.readVarString(decoder))
+                if (isSyncProof(value)) proof = value
+              } catch { /* Old servers and optional malformed proofs use normal synchronization. */ }
+            }
+            provider.emit("document-received", [id, update, checksum, proof])
           } break;
           case NEW_SESSION_CONFIRMED: {
             const tempId = decoding.readVarString(decoder)
@@ -162,7 +170,9 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
     }
 
     websocket.onclose = (event) => {
+      if (provider.ws !== websocket) return
       provider.clearCheckpointRequests()
+      provider.clearDocumentRequests()
       for (const document of SyncableDocument.getAll()) document.resetServerSyncFlight()
       provider.emit('connection-close', [event, provider])
       if (provider.authenticated) {
@@ -239,13 +249,21 @@ interface AuthResponseData {
   }
 }
 
+export interface DocumentSnapshot {
+  doc: Y.Doc
+  checksum: string
+  proof?: SyncProof
+  /** False once the socket that supplied this snapshot has been lost. */
+  isCurrent(): boolean
+}
+
 type Events = {
   synced: (id: string, hash: string) => void
   "connection-error": (event: Event, provider: PeerdraftWebsocketProvider) => void
   "connection-close": (event: Event, provider: PeerdraftWebsocketProvider) => void
   status: (status: { status: string }) => void
   connected: () => void
-  'document-received': (id: string, update: Uint8Array, checksum: string) => void
+  'document-received': (id: string, update: Uint8Array, checksum: string, proof?: SyncProof) => void
   'new-doc-confirmed': (tempId: string, id: string, checksum: string) => void
   'new-session-confirmed': (tempId: string, id: string) => void
   'stop-session-confirmed': (id: string) => void
@@ -277,6 +295,9 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
   version: string
   registry?: Map<string, import('./sharedEntities/syncableDocument').SyncableDocument>
   private pendingMessages = new PendingMessageQueue()
+  private destroyed = false
+  private connectionGeneration = 0
+  private readonly documentRequests = new Set<(error: Error) => void>()
   private readonly checkpointRequests = new Map<string, {
     ids: string[]; resolve: (manifest: CheckpointManifest) => void;
     reject: (error: Error) => void; timer: ReturnType<typeof setTimeout>
@@ -558,29 +579,85 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
     })
   }
 
-  requestDocument(docId: string) {
-    return new Promise<Y.Doc>(async resolve => {
-      await this.connected()
-      const handler = (serverId: string, update: Uint8Array, checksum: string) => {
-        if (docId === serverId) {
-          this.off('document-received', handler)
-          const doc = new Y.Doc()
+  /** Download complete state once; callers own the returned document. */
+  requestDocumentSnapshot(docId: string, timeoutMs = 20000): Promise<DocumentSnapshot> {
+    if (this.destroyed) return Promise.reject(new Error('Sync provider was destroyed'))
+    if (!docId || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+      return Promise.reject(new Error('Invalid document snapshot request'))
+    }
+    return new Promise<DocumentSnapshot>((resolve, reject) => {
+      let settled = false
+      let requestedSocket: WebSocket | null = null
+      let requestedGeneration = this.connectionGeneration
+      const cleanup = (): void => {
+        clearTimeout(timer)
+        this.off('connected', send)
+        this.off('document-received', receive)
+        this.documentRequests.delete(fail)
+      }
+      const fail = (error: Error): void => {
+        if (settled) return
+        settled = true
+        cleanup()
+        reject(error)
+      }
+      const receive = (id: string, update: Uint8Array, checksum: string, proof?: SyncProof): void => {
+        if (id !== docId || settled || !requestedSocket) return
+        if (!this.wsconnected || this.ws !== requestedSocket || this.connectionGeneration !== requestedGeneration) {
+          fail(new Error('Document snapshot socket changed'))
+          return
+        }
+        const doc = new Y.Doc()
+        try {
           Y.applyUpdate(doc, update)
-
-          const docs = Array.from(doc.getMap("documents"))
-          if (docs.length > 0) {
-            const serialized = serialize(Array.from(docs))
-            const calculatedHash = calculateHash(serialized)
-            if (calculatedHash != checksum) {
-              this.sendUpdateMessage(docId, Y.encodeStateAsUpdate(doc), calculatedHash)
-            }
-          }
-          resolve(doc)
+        } catch (error) {
+          doc.destroy()
+          fail(error instanceof Error ? error : new Error('Invalid document snapshot'))
+          return
+        }
+        settled = true
+        cleanup()
+        const socket = requestedSocket
+        const generation = requestedGeneration
+        resolve({
+          doc, checksum, proof,
+          isCurrent: () => !this.destroyed && this.wsconnected && this.ws === socket && this.connectionGeneration === generation,
+        })
+      }
+      const send = (): void => {
+        if (settled || !this.wsconnected || !this.ws) return
+        this.off('connected', send)
+        requestedSocket = this.ws
+        requestedGeneration = this.connectionGeneration
+        try { this.sendGetDocumentAsUpdate(docId) } catch (error) {
+          fail(error instanceof Error ? error : new Error('Document snapshot request failed'))
         }
       }
-      this.on('document-received', handler)
-      this.sendGetDocumentAsUpdate(docId)
+      const timer = setTimeout(() => fail(new Error(`Document snapshot ${docId} timed out`)), timeoutMs)
+      this.documentRequests.add(fail)
+      this.on('document-received', receive)
+      this.on('connected', send)
+      send()
     })
+  }
+
+  clearDocumentRequests(): void {
+    this.connectionGeneration++
+    for (const fail of Array.from(this.documentRequests)) fail(new Error('Sync socket disconnected'))
+  }
+
+  async requestDocument(docId: string): Promise<Y.Doc> {
+    const { doc, checksum } = await this.requestDocumentSnapshot(docId)
+    // Preserve folder checksum repair for existing callers. Initial document
+    // imports use the snapshot API and verify complete state before acceptance.
+    const docs = Array.from(doc.getMap("documents"))
+    if (docs.length > 0) {
+      const calculatedHash = calculateHash(serialize(Array.from(docs)))
+      if (calculatedHash !== checksum) {
+        this.sendUpdateMessage(docId, Y.encodeStateAsUpdate(doc), calculatedHash)
+      }
+    }
+    return doc
   }
 
   createNewSession() {
@@ -661,6 +738,7 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
   }
 
   destroy() {
+    this.destroyed = true
     if (this._resyncInterval !== 0) {
       window.clearInterval(this._resyncInterval)
     }
@@ -671,6 +749,7 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
 
   disconnect() {
     this.clearCheckpointRequests()
+    this.clearDocumentRequests()
     this.shouldConnect = false
     if (this.ws !== null) {
       this.ws.close()

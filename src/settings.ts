@@ -81,13 +81,18 @@ export interface Settings {
   version: string,
   serverShares: {
     folders: Map<string, { persistenceId: string, shareId: string }>
-    files: Map<string, { persistenceId: string, shareId: string }>
+    files: Map<string, { persistenceId: string, shareId: string, importedComplete?: boolean, importedFrom?: string }>
   },
   /** Vault base path the `oid`/`serverShares` identity belongs to —
    *  detects data.json traveling with a copied `.obsidian` folder. */
   oidVaultPath?: string
   /** Verified local-cache/server state, scoped to the current vault and endpoint. */
   restartCheckpoints?: Record<string, RestartRecord>
+  /** Folder joins remain resumable until every current manifest entry is durable. */
+  folderImports?: Record<string, {
+    path: string; startedAt: number
+    documents: Record<string, { path: string; contentHash?: string; materialized?: boolean }>
+  }>
 }
 
 const DEFAULT_SETTINGS: Omit<Settings, "oid"> = {
@@ -212,16 +217,46 @@ export const getSettings = async (plugin: Plugin) => {
   return settings
 }
 
-export const saveSettingsNow = async (settings: Settings, plugin: PeerdraftPlugin) => {
+interface SettingsWriteState {
+  settings: Settings
+  waiters: Array<{ resolve: () => void; reject: (error: unknown) => void }>
+  running: boolean
+}
+const settingsWrites = new WeakMap<PeerdraftPlugin, SettingsWriteState>()
 
-  const serialized = JSON.parse(JSON.stringify(settings))
-
-  serialized.serverShares = {
-    files: Array.from(settings.serverShares.files.entries()),
-    folders: Array.from(settings.serverShares.folders.entries())
+export const saveSettingsNow = (settings: Settings, plugin: PeerdraftPlugin): Promise<void> => {
+  let state = settingsWrites.get(plugin)
+  if (!state) {
+    state = { settings, waiters: [], running: false }
+    settingsWrites.set(plugin, state)
   }
-
-  await plugin.saveData(serialized)
+  state.settings = settings
+  const current = state
+  const completion = new Promise<void>((resolve, reject) => current.waiters.push({ resolve, reject }))
+  if (!current.running) {
+    current.running = true
+    // Coalesce mutations from one group of import workers. Each caller still
+    // waits until a snapshot containing its mutation has actually reached disk.
+    queueMicrotask(() => { void (async () => {
+      while (current.waiters.length) {
+        const batch = current.waiters.splice(0)
+        try {
+          const latest = current.settings
+          const serialized = JSON.parse(JSON.stringify(latest))
+          serialized.serverShares = {
+            files: Array.from(latest.serverShares.files.entries()),
+            folders: Array.from(latest.serverShares.folders.entries())
+          }
+          await plugin.saveData(serialized)
+          for (const waiter of batch) waiter.resolve()
+        } catch (error) {
+          for (const waiter of batch) waiter.reject(error)
+        }
+      }
+      current.running = false
+    })() })
+  }
+  return completion
 }
 
 export const saveSettings = debounce(saveSettingsNow, 1000, true)

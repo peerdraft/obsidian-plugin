@@ -1,5 +1,5 @@
 import { Mutex } from 'async-mutex';
-import { TAbstractFile, TFile, TFolder, normalizePath } from "obsidian";
+import { TAbstractFile, TFile, TFolder, Notice, normalizePath } from "obsidian";
 import * as path from 'path-browserify';
 import PeerDraftPlugin from "src/main";
 import { type PermanentShareFolder } from "src/permanentShareStore";
@@ -17,17 +17,21 @@ import { BinaryFileSync } from "./binaryFileSync";
 import { SharedDocument } from "./sharedDocument";
 import { SharedEntity } from "./sharedEntity";
 import { SyncableFolder } from "./syncableFolder";
+import { folderImportQueue, importedFilePath, withImportFileOperation } from '../folderImport';
+import { saveSettingsNow } from '../settings';
+import { textSha256 } from '../fastRestart';
 
 const handleUpdate = <T>(ev: Y.YMapEvent<T>, tx: Y.Transaction, folder: SharedFolder, plugin: PeerDraftPlugin) => {
 
-  if (!([plugin.serverSync, folder.webRTCProvider?.room].includes(tx.origin))) return
+  if (!folder.isActive || !([plugin.serverSync, folder.webRTCProvider?.room].includes(tx.origin))) return
 
   const changedKeys = ev.changes.keys
 
-  changedKeys.forEach(async (data, key) => {
-
+  changedKeys.forEach((data, key) => {
+    void (async () => {
     if (data.action === "add") {
-      const relativePath = tx.doc.getMap<string>("documents").get(key) as string
+      const relativePath = tx.doc.getMap<string>("documents").get(key)
+      if (typeof relativePath !== 'string') return
       const absolutePath = path.join(folder.path, relativePath)
       const file = plugin.app.vault.getAbstractFileByPath(absolutePath)
       if (file) {
@@ -53,6 +57,9 @@ const handleUpdate = <T>(ev: Y.YMapEvent<T>, tx: Y.Transaction, folder: SharedFo
         } else {
           const inServerShares = plugin.settings.serverShares.files.has(normalizePath(absolutePath))
           if (inServerShares) {
+            if (plugin.settings.serverShares.files.get(normalizePath(absolutePath))?.shareId === key) {
+              await folder.queueDocumentImport(key)
+            }
             return
           }
 
@@ -61,19 +68,14 @@ const handleUpdate = <T>(ev: Y.YMapEvent<T>, tx: Y.Transaction, folder: SharedFo
 
           const alteredPath = path.join(path.dirname(relativePath), path.basename(relativePath, path.extname(relativePath)) + "_" + generateRandomString() + path.extname(relativePath))
           const alteredAbsolutePath = path.join(folder.root.path, alteredPath)
-          void plugin.app.fileManager.renameFile(file, alteredAbsolutePath)
-          void SharedDocument.fromIdAndPath(key, absolutePath, plugin)
+          await plugin.app.fileManager.renameFile(file, alteredAbsolutePath)
+          if (folder.isActive) await folder.queueDocumentImport(key)
         }
       } else {
-        showNotice("Creating new shared document: " + absolutePath)
-        await SharedFolder.getOrCreatePath(path.parse(absolutePath).dir, plugin)
-        const addPromise = SharedDocument.fromIdAndPath(key, absolutePath, plugin)
-        folder._pendingAdds.set(key, addPromise.then(() => undefined, () => undefined))
-        await addPromise
-        folder._pendingAdds.delete(key)
+        await folder.queueDocumentImport(key)
       }
     } else if (data.action === "update") {
-      const newPath = tx.doc.getMap<string>("documents").get(key) as string
+      let newPath = tx.doc.getMap<string>("documents").get(key) as string
       // If an "add" for this key is still in flight (fromIdAndPath doing a
       // server round-trip), wait for it to finish before looking up the
       // document — otherwise findById returns undefined and the rename is
@@ -82,9 +84,17 @@ const handleUpdate = <T>(ev: Y.YMapEvent<T>, tx: Y.Transaction, folder: SharedFo
       if (pendingAdd) {
         await pendingAdd
       }
+      newPath = folder.getDocsFragment().get(key) as string
+      if (!folder.isActive || !newPath) return
       const document = SharedDocument.findById(key)
       if (!document) {
-        showNotice("Document at " + newPath + " doesn't exist in your vault. Consider re-creating the synced folder from server.")
+        await folder.recoverChangedImport(key, data.oldValue as string, newPath)
+        return
+      }
+      const expectedOldPath = importedFilePath(folder.path, data.oldValue as string)
+      const expectedNewPath = importedFilePath(folder.path, newPath)
+      if (document.path !== expectedOldPath && document.path !== expectedNewPath) {
+        await folder.queueDocumentImport(key)
         return
       }
       const docFolder = SharedFolder.getSharedFolderForSubPath(document.path)
@@ -110,13 +120,27 @@ const handleUpdate = <T>(ev: Y.YMapEvent<T>, tx: Y.Transaction, folder: SharedFo
       if (pendingAdd) {
         await pendingAdd
       }
+      if (!folder.isActive || folder.getDocsFragment().has(key)) return
       const document = SharedDocument.findById(key)
-      if (!document) return
+      if (!document) {
+        await folder.recoverChangedImport(key, data.oldValue as string)
+        return
+      }
+      if (document.path !== importedFilePath(folder.path, data.oldValue as string)) {
+        await folder.recoverChangedImport(key, data.oldValue as string)
+        return
+      }
       const file = plugin.app.vault.getAbstractFileByPath(document.path)
-      void document.unshare()
-      if (!file) return
-      void plugin.app.vault.delete(file)
+      await document.unshare()
+      if (!file || !folder.isActive || folder.getDocsFragment().has(key)) return
+      await plugin.app.vault.delete(file)
     }
+    })().catch(error => {
+      if (folder.isActive) {
+        console.error('[Peerdraft] Could not apply shared folder change', error)
+        showNotice('Could not apply a shared folder change. Reload to retry.')
+      }
+    })
   })
 }
 
@@ -134,6 +158,16 @@ export class SharedFolder extends SharedEntity {
   // document — without it, findById returns undefined and the rename is
   // silently dropped (the file stays as Untitled.md forever).
   _pendingAdds = new Map<string, Promise<void>>()
+  private _importStopped = false
+  private _importTask?: Promise<void>
+  private _manifestRefresh?: Promise<void>
+  private _manifestRefreshRequested = false
+  private _importNotice?: Notice
+  private _importProgressTimer?: ReturnType<typeof setTimeout>
+  private _importTotal = 0
+  private _reconcilingImport = false
+  private readonly _importRecovery = new Map<string, Mutex>()
+  private readonly _importFailures = new Set<string>()
 
   // Sync-engine state delegated to composed SyncableFolder instance.
   private _syncable!: SyncableFolder
@@ -288,6 +322,7 @@ export class SharedFolder extends SharedEntity {
     }
 
     let folderPath = location
+    await plugin.fastRestart?.prepare([id])
     const preFetchedDoc = await plugin.serverSync.requestDocument(id)
 
 
@@ -361,16 +396,19 @@ export class SharedFolder extends SharedEntity {
           absPath = path.join(folderPath!, docPath)
         }
       }
-      await SharedDocument.fromIdAndPath(entry[0], absPath, plugin)
       paths.push(normalizePath(docPath))
     }
 
+    // Make the manifest/cache durable first. Recovery must not depend on
+    // receiving add events for unchanged entries after a process restart.
+    sFolder.beginImportJournal()
+    await saveSettingsNow(plugin.settings, plugin)
+    await sFolder._syncable.syncWithServer(20000)
     await sFolder.startIndexedDBSync()
-    if (sFolder.indexedDBProvider) {
-      if (!sFolder.indexedDBProvider.synced) await sFolder.indexedDBProvider.whenSynced
-    }
-    void sFolder.syncWithServer()
+    await sFolder._syncable.whenIndexedDBSynced()
+    if (!sFolder._syncable.indexedDBLoaded) throw new Error('Could not persist shared folder manifest')
     void sFolder.startWebRTCSync()
+    await sFolder.importMissingDocuments()
     
     // Initialize binary file sync
     await sFolder._binaryFileSync?.initialize()
@@ -403,6 +441,7 @@ export class SharedFolder extends SharedEntity {
     folder._setupStatusIndicatorSubscriptions()
     void folder._updateStatusIndicator()
     await folder.startIndexedDBSync()
+    folder._syncable.on('serverSynced', () => { void folder.importMissingDocuments() })
     void folder.syncWithServer()
 
     // Attachment catch-up must not hold up restored editors or other shares.
@@ -618,6 +657,329 @@ export class SharedFolder extends SharedEntity {
     return files
   }
 
+  get isActive(): boolean { return !this._importStopped }
+
+  /** Import also catches server/API membership changes without requiring a live peer. */
+  refreshImportManifest(): Promise<void> {
+    if (this._importStopped) return Promise.resolve()
+    this._manifestRefreshRequested = true
+    if (this._manifestRefresh) return this._manifestRefresh
+    const task = (async (): Promise<void> => {
+      do {
+        this._manifestRefreshRequested = false
+        await this._syncable.syncWithServer(20000)
+      } while (!this._importStopped && this._manifestRefreshRequested)
+    })()
+    this._manifestRefresh = task
+    const clear = (): void => { if (this._manifestRefresh === task) this._manifestRefresh = undefined }
+    void task.then(clear, clear)
+    return task
+  }
+
+  private beginImportJournal() {
+    const sessions = this.plugin.settings.folderImports ??= {}
+    const session = sessions[this.shareId] ??= { path: this.path, startedAt: Date.now(), documents: {} }
+    session.path = this.path
+    session.documents ??= {}
+    for (const [id, relative] of this.getDocsFragment().entries()) {
+      const target = importedFilePath(this.path, relative)
+      const previous = session.documents[id]
+      if (!previous) session.documents[id] = { path: target }
+    }
+    this._importTotal = this.getDocsFragment().size
+    return session
+  }
+
+  /** Queue both cold-join and live-add work through the same vault-wide budget. */
+  queueDocumentImport(id: string): Promise<void> {
+    const pending = this._pendingAdds.get(id)
+    if (pending) return pending
+    if (this._importStopped || !this.getDocsFragment().has(id)) return Promise.resolve()
+    const queue = folderImportQueue(this.plugin)
+    let runningRoot: string | undefined
+    const run = queue.schedule(this.shareId + ':' + id, async () => {
+      if (this._importStopped) return
+      runningRoot = this.path
+      const relative = this.getDocsFragment().get(id)
+      if (!relative) return
+      const target = importedFilePath(this.path, relative)
+      const current = (): boolean => !this._importStopped && this.getDocsFragment().get(id) === relative &&
+        importedFilePath(this.path, relative) === target
+      const sessions = this.plugin.settings.folderImports ??= {}
+      const session = sessions[this.shareId] ??= { path: this.path, startedAt: Date.now(), documents: {} }
+      const entry = session.documents[id] ??= { path: target }
+      let allowExistingFile = false
+      const file = this.plugin.app.vault.getAbstractFileByPath(target)
+      const saved = this.plugin.settings.serverShares.files.get(target)
+      if (file instanceof TFile && !saved) {
+        if (entry.path === target && (entry.materialized ||
+          (entry.contentHash && await textSha256(await this.plugin.app.vault.read(file)) === entry.contentHash))) {
+          allowExistingFile = true
+        } else {
+          if (!current()) return
+          // A user-created file at a queued destination is kept as a conflict
+          // copy, never silently adopted or uploaded as the remote document.
+          const extension = path.extname(target)
+          const alternate = target.slice(0, target.length - extension.length) + '_' + generateRandomString() + extension
+          await withImportFileOperation(this.plugin, [file.path, alternate],
+            () => this.plugin.app.fileManager.renameFile(file, alternate))
+          showNotice('Kept an existing local file as ' + alternate)
+        }
+      }
+      if (!current()) return
+      const document = await SharedDocument.fromIdAndPath(id, target, this.plugin, {
+        quiet: true, isCurrent: current, allowExistingFile,
+        beforeCreate: async content => {
+          if (!current()) throw new Error('Import stopped before file creation')
+          const contentHash = await textSha256(content)
+          if (!current()) throw new Error('Import changed while preparing file ownership')
+          entry.path = target
+          entry.contentHash = contentHash
+          entry.materialized = false
+          await saveSettingsNow(this.plugin.settings, this.plugin)
+        },
+        afterCreate: async () => {
+          // The pre-create hash already makes a late completed write recoverable.
+          // An unloaded plugin must not persist an older settings snapshot.
+          if (this._importStopped) return
+          entry.materialized = true
+          await saveSettingsNow(this.plugin.settings, this.plugin)
+        },
+      })
+      if (!current()) return
+      if (document.path !== target) throw new Error('Share is already active at another local path')
+      this._importFailures.delete(id)
+      const savedDocument = this.plugin.settings.serverShares.files.get(target)
+      if (savedDocument?.shareId === id) savedDocument.importedFrom = this.shareId
+      delete session.documents[id]
+      await saveSettingsNow(this.plugin.settings, this.plugin)
+    })
+    const completion = run.catch(error => {
+      if (this._importStopped || !this.getDocsFragment().has(id) ||
+        (runningRoot !== undefined && runningRoot !== this.path)) return
+      // Renames are recovered by their observer after this pending job settles.
+      const target = this.plugin.settings.folderImports?.[this.shareId]?.documents[id]?.path
+      try {
+        if (target && target !== importedFilePath(this.path, this.getDocsFragment().get(id)!)) return
+      } catch { /* Invalid current paths are visible failures, not escaped writes. */ }
+      this._importFailures.add(id)
+      console.error('[Peerdraft] Could not import shared document', error)
+    }).then(async () => {
+      this._pendingAdds.delete(id)
+      await this.finishImportIfComplete()
+      this.scheduleImportProgress()
+    })
+    this._pendingAdds.set(id, completion)
+    this.scheduleImportProgress()
+    return completion
+  }
+
+  /** Cache replay does not emit remote add events; explicitly resume missing entries. */
+  private importMissingDocuments(): Promise<void> {
+    if (this._importTask) return this._importTask
+    if (this._importStopped) return Promise.resolve()
+    const candidates = SharedDocument.getAll()
+    const known = new Map(candidates.map(doc => [doc.shareId, doc]))
+    const needsWork = Array.from(this.getDocsFragment().entries()).some(([id, relative]) => {
+      const doc = known.get(id)
+      return !doc || doc.initialImportInProgress || doc.path !== importedFilePath(this.path, relative)
+    }) || Array.from(this.plugin.settings.serverShares.files.entries()).some(([savedPath, saved]) =>
+      saved.importedFrom === this.shareId && savedPath.startsWith(this.path + '/') &&
+      !this.getDocsFragment().has(saved.shareId))
+    const previous = this.plugin.settings.folderImports?.[this.shareId]
+    if (!needsWork && !previous) return Promise.resolve()
+    const task = (async (): Promise<void> => {
+      const session = this.beginImportJournal()
+      this._reconcilingImport = true
+      try {
+        // Preserve an old path/hash until a cached rename/deletion has really
+        // reached disk. Cache replay alone emits no remote membership event.
+        const entries = new Map(Object.entries(session.documents))
+        for (const [savedPath, saved] of this.plugin.settings.serverShares.files) {
+          if (saved.importedFrom === this.shareId && savedPath.startsWith(this.path + '/') && !this.getDocsFragment().has(saved.shareId)) {
+            entries.set(saved.shareId, { path: savedPath, materialized: true })
+          }
+        }
+        for (const [id, entry] of entries) {
+          if (this._importStopped) return
+          if (this._pendingAdds.has(id)) continue
+          const relative = this.getDocsFragment().get(id)
+          const model = SharedDocument.findById(id)
+          const sourceAuthorized = model && (this.plugin.settings.serverShares.files.get(model.path)?.importedFrom === this.shareId ||
+            (entry.path === model.path && (entry.materialized || !!entry.contentHash)))
+          const oldPath = sourceAuthorized ? model.path : entry.path
+          const target = relative ? importedFilePath(this.path, relative) : undefined
+          if (oldPath !== target) {
+            await this.recoverChangedImport(id, path.relative(this.path, oldPath), relative, false)
+          }
+        }
+      } finally { this._reconcilingImport = false }
+      const restored = new Map(SharedDocument.getAll().map(doc => [doc.shareId, doc]))
+      const missing = Array.from(this.getDocsFragment().entries()).filter(([id, relative]) => {
+        const doc = restored.get(id)
+        return !doc || doc.initialImportInProgress || doc.path !== importedFilePath(this.path, relative)
+      }).map(([id]) => id)
+      for (const id of Object.keys(session.documents)) {
+        const doc = restored.get(id)
+        const relative = this.getDocsFragment().get(id)
+        if (relative && doc && !doc.initialImportInProgress && doc.path === importedFilePath(this.path, relative)) {
+          delete session.documents[id]
+        }
+      }
+      await saveSettingsNow(this.plugin.settings, this.plugin)
+      if (this._importStopped) return
+      if (missing.length) this._importNotice = showNotice('Importing ' + this.path + ': 0 / ' + this._importTotal, 0)
+      await this.plugin.fastRestart?.prepare([this.shareId, ...missing])
+      if (this._importStopped) return
+      await Promise.all(missing.map(id => this.queueDocumentImport(id)))
+      await this.finishImportIfComplete()
+      this.scheduleImportProgress()
+    })().catch(error => {
+      if (!this._importStopped) {
+        console.error('[Peerdraft] Could not continue folder import', error)
+        showNotice('Import paused in ' + this.path + '. Reload Obsidian to resume.')
+      }
+    })
+    this._importTask = task
+    void task.then(() => { if (this._importTask === task) this._importTask = undefined })
+    return task
+  }
+
+  private async finishImportIfComplete(): Promise<void> {
+    const session = this.plugin.settings.folderImports?.[this.shareId]
+    const complete = (): boolean => !this._importStopped && !this._reconcilingImport && !this._pendingAdds.size &&
+      !this._importFailures.size && !!session && !Object.keys(session.documents).length &&
+      this.plugin.settings.folderImports?.[this.shareId] === session
+    if (!complete()) return
+    try {
+      await this.plugin.fastRestart?.flushPersistence()
+      if (!complete()) return
+      delete this.plugin.settings.folderImports![this.shareId]
+      await saveSettingsNow(this.plugin.settings, this.plugin)
+      if (!this._importStopped && this._importNotice) {
+        this._importNotice.hide()
+        this._importNotice = undefined
+        showNotice('Imported ' + this.getDocsFragment().size + ' documents in ' + this.path)
+      }
+    } catch (error) {
+      console.error('[Peerdraft] Could not persist import completion', error)
+    }
+  }
+
+  /** Recover a renamed/deleted pending entry even if its initialization was cancelled. */
+  async recoverChangedImport(id: string, previousRelative: string, nextRelative?: string, queueNext = true): Promise<void> {
+    const mutex = this._importRecovery.get(id) ?? new Mutex()
+    this._importRecovery.set(id, mutex)
+    try {
+      await mutex.runExclusive(() => this.recoverChangedImportLocked(id, previousRelative, nextRelative, queueNext))
+    } finally {
+      if (!mutex.isLocked() && this._importRecovery.get(id) === mutex) this._importRecovery.delete(id)
+    }
+  }
+
+  private async recoverChangedImportLocked(id: string, previousRelative: string, nextRelative: string | undefined, queueNext: boolean): Promise<void> {
+    if (this._importStopped) return
+    const recoveryRoot = this.path
+    const session = this.plugin.settings.folderImports?.[this.shareId]
+    const entry = session?.documents[id]
+    const candidate = SharedDocument.findById(id)
+    const sourceAuthorized = candidate && (this.plugin.settings.serverShares.files.get(candidate.path)?.importedFrom === this.shareId ||
+      (entry?.path === candidate.path && (entry.materialized || !!entry.contentHash)))
+    const previousPath = sourceAuthorized ? candidate.path : entry?.path ?? importedFilePath(this.path, previousRelative)
+    const model = candidate?.path === previousPath ? candidate : undefined
+    const file = this.plugin.app.vault.getAbstractFileByPath(previousPath)
+    const saved = this.plugin.settings.serverShares.files.get(previousPath)
+    let owned = (entry?.path === previousPath && entry.materialized) ||
+      (saved?.shareId === id && saved.importedFrom === this.shareId)
+    if (!owned && file instanceof TFile && entry?.contentHash) {
+      owned = await textSha256(await this.plugin.app.vault.read(file)) === entry.contentHash
+    }
+    if (this._importStopped || this.path !== recoveryRoot) return
+    // A later rename/delete may supersede the observer that started this work.
+    nextRelative = this.getDocsFragment().get(id)
+    if (file instanceof TFile && owned) {
+      if (nextRelative) {
+        let nextPath: string
+        // Directory I/O may yield to another remote rename. Keep the per-ID
+        // recovery lock and choose the latest manifest target before moving.
+        while (true) {
+          nextRelative = this.getDocsFragment().get(id)
+          if (!nextRelative) {
+            return this.recoverDeletedImport(id, file, saved, entry, session)
+          }
+          nextPath = importedFilePath(this.path, nextRelative)
+          await SharedFolder.getOrCreatePath(path.dirname(nextPath), this.plugin)
+          if (this._importStopped || this.path !== recoveryRoot) return
+          if (this.getDocsFragment().get(id) === nextRelative) break
+        }
+        const collision = this.plugin.app.vault.getAbstractFileByPath(nextPath)
+        if (collision && collision !== file) {
+          this._importFailures.add(id)
+          showNotice('Import rename conflicts with an existing file: ' + nextPath)
+          return
+        }
+        if (file.path !== nextPath) {
+          await withImportFileOperation(this.plugin, [file.path, nextPath],
+            () => this.plugin.app.fileManager.renameFile(file, nextPath))
+        }
+        if (saved) {
+          this.plugin.settings.serverShares.files.delete(previousPath)
+          this.plugin.settings.serverShares.files.set(nextPath, saved)
+        }
+        model?.updateFileRef(file)
+        if (entry) entry.path = nextPath
+      } else {
+        if (model) await model.unshare()
+        this.plugin.settings.serverShares.files.delete(previousPath)
+        if (this._importStopped || this.getDocsFragment().has(id)) return
+        await withImportFileOperation(this.plugin, [file.path], () => this.plugin.app.vault.delete(file))
+      }
+    }
+    if (!nextRelative) {
+      if (session) delete session.documents[id]
+      this._importFailures.delete(id)
+      await saveSettingsNow(this.plugin.settings, this.plugin)
+    } else {
+      if (entry) entry.path = importedFilePath(this.path, nextRelative)
+      await saveSettingsNow(this.plugin.settings, this.plugin)
+      if (queueNext) await this.queueDocumentImport(id)
+    }
+    await this.finishImportIfComplete()
+    this.scheduleImportProgress()
+  }
+
+  private async recoverDeletedImport(
+    id: string, file: TFile,
+    saved: { shareId: string; persistenceId: string } | undefined,
+    entry: { path: string } | undefined,
+    session: { documents: Record<string, { path: string }> } | undefined,
+  ): Promise<void> {
+    if (this._importStopped || this.getDocsFragment().has(id)) return
+    const model = SharedDocument.findById(id)
+    if (model?.file === file) await model.unshare()
+    if (saved) this.plugin.settings.serverShares.files.delete(entry?.path ?? file.path)
+    if (this._importStopped || this.getDocsFragment().has(id)) return
+    await withImportFileOperation(this.plugin, [file.path], () => this.plugin.app.vault.delete(file))
+    if (session) delete session.documents[id]
+    this._importFailures.delete(id)
+    await saveSettingsNow(this.plugin.settings, this.plugin)
+    await this.finishImportIfComplete()
+    this.scheduleImportProgress()
+  }
+
+  private scheduleImportProgress(): void {
+    if (this._importStopped || this._importProgressTimer) return
+    this._importProgressTimer = setTimeout(() => {
+      this._importProgressTimer = undefined
+      if (this._importStopped) return
+      this._importTotal = this.getDocsFragment().size
+      const remaining = Object.keys(this.plugin.settings.folderImports?.[this.shareId]?.documents ?? {}).length
+      this._importNotice?.setMessage('Importing ' + this.path + ': ' + Math.max(0, this._importTotal - remaining) +
+        ' / ' + this._importTotal + (this._importFailures.size ? ' — some files need retry; reload to resume' : ''))
+      void this._updateStatusIndicator()
+    }, 100)
+  }
+
   private getFilesInFolder(folder: TFolder): Array<TFile> {
     return SharedFolder.getAllFilesInFolder(folder, this.fileExtensions)
   }
@@ -636,7 +998,31 @@ export class SharedFolder extends SharedEntity {
     const oldPath = this._path
     this.root = folder
     this._path = normalizePath(folder.path)
-    void moveFolder(oldPath, folder.path, this.plugin)
+    await moveFolder(oldPath, folder.path, this.plugin)
+    const session = this.plugin.settings.folderImports?.[this.shareId]
+    if (session) {
+      session.path = this.path
+      for (const entry of Object.values(session.documents)) {
+        if (entry.path.startsWith(oldPath + '/')) entry.path = this.path + entry.path.slice(oldPath.length)
+      }
+      for (const [savedPath, saved] of Array.from(this.plugin.settings.serverShares.files)) {
+        if (savedPath.startsWith(oldPath + '/')) {
+          this.plugin.settings.serverShares.files.delete(savedPath)
+          this.plugin.settings.serverShares.files.set(this.path + savedPath.slice(oldPath.length), saved)
+        }
+      }
+      for (const document of SharedDocument.getAll()) {
+        if (document.path.startsWith(oldPath + '/') && document.file) document.updateFileRef(document.file)
+      }
+      await saveSettingsNow(this.plugin.settings, this.plugin)
+      const active = this._importTask
+      await Promise.all(Array.from(this._pendingAdds.values()))
+      await active
+      if (!this._importStopped) {
+        this._importFailures.clear()
+        await this.importMissingDocuments()
+      }
+    }
   }
 
   async getOrCreateFile(relativePath: string) {
@@ -771,6 +1157,8 @@ export class SharedFolder extends SharedEntity {
         if (childStatus !== 'insync') {
           anyChildNotSynced = true
         }
+      } else {
+        anyChildNotSynced = true
       }
     }
 
@@ -789,7 +1177,8 @@ export class SharedFolder extends SharedEntity {
       return 'syncing'
     }
 
-    if (serverSyncing || anyChildSyncing) {
+    if (this._importFailures.size) return 'warning'
+    if (this._pendingAdds.size || serverSyncing || anyChildSyncing) {
       return 'syncing'
     }
     
@@ -890,10 +1279,15 @@ export class SharedFolder extends SharedEntity {
   }
 
   destroy() {
+    if (this._importStopped) return
+    this._importStopped = true
+    if (this._importProgressTimer) clearTimeout(this._importProgressTimer)
+    this._importNotice?.hide()
     this._syncable.destroy()
     this._binaryFileSync?.destroy()
     super.destroy()
-    SharedFolder._sharedEntites.splice(SharedFolder._sharedEntites.indexOf(this), 1)
+    const index = SharedFolder._sharedEntites.indexOf(this)
+    if (index >= 0) SharedFolder._sharedEntites.splice(index, 1)
   }
 
 }

@@ -164,6 +164,12 @@ export class FastRestartManager {
     return this.preparation
   }
 
+  /** A downloaded proof is usable only against the current subscribed checkpoint. */
+  matchesCheckpoint(id: string, proof: SyncProof): boolean {
+    return !this.stopped() && this.available && isSyncProof(proof) &&
+      this.checkpoints.get(id) === proof.checkpoint
+  }
+
   /** Return the existing sync checksum only when cache, file and server state all match. */
   async tryVerify(document: FastRestartDocument): Promise<string | null> {
     await this.preparation

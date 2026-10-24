@@ -6,11 +6,11 @@ import { SharedFolder } from "./sharedEntities/sharedFolder"
 
 
 export interface PermanentShareDocument {
-  path: string, persistenceId: string, shareId: string 
+  path: string, persistenceId: string, shareId: string, importedComplete?: boolean, importedFrom?: string
 }
 
 export interface PermanentShareFolder {
-  path: string, persistenceId: string, shareId: string 
+  path: string, persistenceId: string, shareId: string
 }
 
 export class PermanentShareStoreIndexedDB {

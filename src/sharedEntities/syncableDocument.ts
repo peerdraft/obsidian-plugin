@@ -94,6 +94,7 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
 
   private _indexedDBProvider?: IndexeddbPersistence
   private indexedDBSyncPromise?: Promise<void>
+  private readonly persistenceWaiters = new Set<(error: Error) => void>()
 
   private _deferredIndexedDBId?: string
   private _deferredIndexedDBHandler?: () => void
@@ -298,6 +299,7 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
   setShareId(id: string): void {
     if (this._shareId === id) return
     this.syncLifecycle++
+    this.cancelPersistenceWaiters(new Error('Document identity changed before persistence committed'))
     if (this._shareId) {
       this.registry.delete(this._shareId)
     }
@@ -341,6 +343,22 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
     const clear = (): void => { if (this.fastSyncPromise === task) this.fastSyncPromise = undefined }
     void task.then(clear, clear)
     return task
+  }
+
+  /**
+   * Complete initial sync only after the factory verified the complete imported
+   * state and established cache/file safety. The guard must still validate its
+   * socket, checkpoint, document identity and initialization lifecycle.
+   */
+  acceptServerSnapshot(checksum: SyncableHash, isCurrent: () => boolean): boolean {
+    if (this.destroyed || this._serverSyncing || !isCurrent() || this.calculateHash() !== checksum) return false
+    this._serverSyncing = false
+    this._setServerSynced(true)
+    this.emit('synced', [checksum])
+    this.logEvent('serverSynced', checksum)
+    this.emit('serverSynced', [checksum])
+    this.logger.log('synced ' + this._shareId)
+    return true
   }
 
   /** Changes arriving during a handshake require one fresh exchange afterward. */
@@ -508,7 +526,62 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
     return this.indexedDBSyncPromise ?? Promise.resolve()
   }
 
+  /** Commit a complete state snapshot, even if an earlier persistence write failed. */
+  whenPersistenceSettled(): Promise<void> {
+    const shareId = this._shareId
+    return new Promise<void>((resolve, reject) => {
+      let settled = false
+      let transaction: IDBTransaction | undefined
+      const finish = (error?: Error): void => {
+        if (settled) return
+        settled = true
+        this.persistenceWaiters.delete(cancel)
+        if (transaction) {
+          transaction.oncomplete = null
+          transaction.onerror = null
+          transaction.onabort = null
+        }
+        if (error) reject(error)
+        else resolve()
+      }
+      const cancel = (error: Error): void => {
+        finish(error)
+        try { transaction?.abort() } catch { /* A completed transaction needs no cancellation. */ }
+      }
+      this.persistenceWaiters.add(cancel)
+      void this.whenIndexedDBSynced().then(() => {
+        if (settled) return
+        const provider = this._indexedDBProvider
+        if (this.destroyed || this._shareId !== shareId || !this._indexedDBLoaded || !provider?.db) {
+          finish(new Error('Document persistence is not available'))
+          return
+        }
+        try {
+          // A read barrier cannot detect an earlier aborted seed transaction.
+          // Persist current complete state in our own transaction and require
+          // its actual commit before reporting a durable import.
+          transaction = provider.db.transaction('updates', 'readwrite')
+          transaction.oncomplete = () => {
+            if (this.destroyed || this._shareId !== shareId || this._indexedDBProvider !== provider || !this._indexedDBLoaded) {
+              finish(new Error('Document persistence changed before commit'))
+            } else finish()
+          }
+          transaction.onerror = () => cancel(transaction?.error ?? new Error('Document persistence commit failed'))
+          transaction.onabort = () => finish(transaction?.error ?? new Error('Document persistence commit aborted'))
+          transaction.objectStore('updates').add(Y.encodeStateAsUpdate(this.yDoc))
+        } catch (error) {
+          cancel(error instanceof Error ? error : new Error('Document persistence commit failed'))
+        }
+      }, error => finish(error instanceof Error ? error : new Error('Document persistence initialization failed')))
+    })
+  }
+
+  private cancelPersistenceWaiters(error: Error): void {
+    for (const cancel of Array.from(this.persistenceWaiters)) cancel(error)
+  }
+
   async stopIndexedDBSync(): Promise<void> {
+    this.cancelPersistenceWaiters(new Error('Document persistence stopped before commit'))
     this._cleanupDeferredIndexedDBCreation()
     if (this._indexedDBProvider) {
       await this._indexedDBProvider.destroy()
@@ -591,7 +664,7 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
    */
   reconcileWithFile(
     readEditorContent?: () => string | undefined,
-    options: { initialState?: 'cached' | 'server' } = {},
+    options: { initialState?: 'cached' | 'server' | 'imported' } = {},
   ): Promise<boolean> {
     const fileIO = this.fileIO
     if (!fileIO) return Promise.resolve(false)
@@ -603,16 +676,23 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
       if (!options.initialState && isSelfEcho) return true
       const fileContent = await fileIO.read()
       if (this.fileIO !== fileIO || fileIO.getMTime() !== previousMtime) return false
+      const previouslyRead = this.lastRead
       this.lastRead = { fileIO, content: fileContent, mtime: previousMtime }
       if (this.editorAttachedCount() > 0) return true
       const editorContent = readEditorContent?.()
       const dirtyEditor = editorContent !== undefined && editorContent !== fileContent
       if (options.initialState === 'server' && editorContent !== undefined && !dirtyEditor) return true
+      // A complete imported file unchanged since reconciliation is no longer a
+      // source of local edits. Preserve a newer remote update while the guard
+      // or cache initialization finishes; its text will be flushed afterward.
+      if (options.initialState === 'imported' && !dirtyEditor && previouslyRead?.fileIO === fileIO &&
+        previouslyRead.mtime === previousMtime && previouslyRead.content === fileContent) return true
       if (!dirtyEditor && isSelfEcho) return true
       await this.reconcileFileContentUnlocked(
         fileIO,
         dirtyEditor ? editorContent : fileContent,
         dirtyEditor,
+        options.initialState === 'imported',
       )
       return this.fileIO === fileIO
     })
@@ -632,12 +712,13 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
     fileIO: SyncableFileIO,
     fileContent: string,
     isEditorContent = false,
+    preserveEmptyFile = false,
   ): Promise<void> {
     const yDocContent = this.yDoc.getText('content').toString()
     if (yDocContent === fileContent) return
 
     // Empty disk files can be placeholders; an explicitly emptied editor is an edit.
-    if (!isEditorContent && fileContent === '' && yDocContent !== '') {
+    if (!isEditorContent && !preserveEmptyFile && fileContent === '' && yDocContent !== '') {
       const mtime = this.clock.now()
       await fileIO.modify(yDocContent, { mtime })
       this._lastUpdateTriggeredByDocChange = mtime
@@ -680,6 +761,7 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
 
   destroy(): void {
     this.destroyed = true
+    this.cancelPersistenceWaiters(new Error('Document destroyed before persistence committed'))
     this.syncLifecycle++
     this.fileIO = undefined
     if (this.contentObserver) {

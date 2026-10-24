@@ -7,6 +7,7 @@ import { showNotice } from '../ui'
 
 // Exercise the real directory creation helper; replace plugin UI, transport,
 // and unrelated entity integrations that are not needed for vault operations.
+jest.mock('../settings', () => ({ saveSettingsNow: jest.fn().mockResolvedValue(undefined) }))
 jest.mock('../main', () => ({ __esModule: true, default: class {} }))
 jest.mock('../permanentShareStoreFS', () => ({ getFolderByPath: jest.fn() }))
 jest.mock('../ui/enterText', () => ({}))

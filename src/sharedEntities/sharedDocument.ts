@@ -24,6 +24,7 @@ import { addCanvasToYDoc, applyDataChangesToDoc, diffCanvases, yDocToCanvasJSON 
 import { addCanvasExtension, type CanvasView, type Node } from 'src/ui/canvas';
 import JSONC from "tiny-jsonc"
 import { SyncableDocument, type SyncableFileIO, type SyncableClock } from './syncableDocument';
+import { canonicalStateUpdate, sha256 } from '../fastRestart';
 
 class VaultFileIO implements SyncableFileIO {
   constructor(private file: TFile, private plugin: PeerDraftPlugin) {}
@@ -60,6 +61,9 @@ export class SharedDocument extends SharedEntity {
   private _initializationGuardPassed = false
   private _destroyed = false
   private _initialCacheCheckComplete = false
+  private _initialImportPending = false
+  private _importedInitialFile = false
+  private _initialImportTask?: Promise<void>
   private _initializeFromLocal?: () => Promise<boolean>
   private _initializationRetryTimeout?: number
   private _initializationRetryDelayMs = 1000
@@ -69,9 +73,21 @@ export class SharedDocument extends SharedEntity {
   private _vaultModifyListenerRegistered = false
   private _catchUpIdleTimeout?: number
   private _catchUpUpdateListener?: (update: Uint8Array, origin: unknown) => void
+  private readonly _canvasMutex = new Mutex()
+  private _lastCanvasUpdateMtime = 0
+  private _cancelCanvasFileUpdate?: () => void
+  private _canvasObserver?: Parameters<Y.Map<unknown>['observeDeep']>[0]
 
   get initializationGuardPassed(): boolean {
     return this._initializationGuardPassed
+  }
+
+  get initialImportInProgress(): boolean {
+    return this._initialImportPending
+  }
+
+  get initialImportCompletion(): Promise<void> | undefined {
+    return this._initialImportTask
   }
 
   private statusBarEntry?: HTMLElement
@@ -124,6 +140,7 @@ export class SharedDocument extends SharedEntity {
     if (this.findById(pd.shareId)) return
     if (this.findByPath(pd.path)) return
     let file = plugin.app.vault.getAbstractFileByPath(normalizePath(pd.path))
+    const hadExistingFile = file instanceof TFile
     if (!file) {
       showNotice("File " + pd.path + " not found. Creating it now.")
       await SharedFolder.getOrCreatePath(path.dirname(pd.path), plugin)
@@ -137,6 +154,7 @@ export class SharedDocument extends SharedEntity {
     const doc = new SharedDocument({
       path: pd.path
     }, plugin)
+    doc._importedInitialFile = !!pd.importedComplete && hadExistingFile
     doc.setIsPermanentInternal(true)
     doc.setShareIdInternal(pd.shareId)
     doc.isCanvas = "canvas" === (file as TFile).extension
@@ -252,43 +270,178 @@ export class SharedDocument extends SharedEntity {
 
   }
 
-  static async fromIdAndPath(id: string, location: string, plugin: PeerDraftPlugin) {
+  static async fromIdAndPath(
+    id: string,
+    location: string,
+    plugin: PeerDraftPlugin,
+    options: {
+      quiet?: boolean
+      isCurrent?: () => boolean
+      allowExistingFile?: boolean
+      beforeCreate?: (content: string) => Promise<void>
+      afterCreate?: () => Promise<void>
+    } = {},
+  ): Promise<SharedDocument> {
     const normalizedPath = normalizePath(location)
+    const ensureCurrent = (): void => {
+      if (options.isCurrent && !options.isCurrent()) throw new Error('Shared folder entry changed during import')
+    }
+    ensureCurrent()
     const existingDoc = SharedDocument.findById(id)
     if (existingDoc) {
-      showNotice("This share is already active: " + existingDoc.path)
-      return
+      await existingDoc._initialImportTask
+      if (!options.quiet) showNotice("This share is already active: " + existingDoc.path)
+      return existingDoc
     }
-    await SharedFolder.getOrCreatePath(path.dirname(normalizedPath), plugin)
-    showNotice("Creating new synced file " + normalizedPath)
-    const ydoc = await plugin.serverSync.requestDocument(id)
-    const doc = new SharedDocument({
-      id, yDoc: ydoc
-    }, plugin)
-    if (ydoc.share.has("canvas")) {
-      doc.isCanvas = true
-      doc.setupFileSyncForCanvas()
-    } else {
-      doc.isCanvas = false
-      doc.setupFileSyncForContent()
+    const snapshot = await plugin.serverSync.requestDocumentSnapshot(id)
+    let doc: SharedDocument | undefined
+    try {
+      ensureCurrent()
+      const concurrent = SharedDocument.findById(id)
+      if (concurrent) {
+        snapshot.doc.destroy()
+        await concurrent._initialImportTask
+        return concurrent
+      }
+      const saved = getDocByPath(normalizedPath, plugin)
+      const existingFile = plugin.app.vault.getAbstractFileByPath(normalizedPath)
+      if ((saved && saved.shareId !== id) || (existingFile && (!(existingFile instanceof TFile) || (!saved && !options.allowExistingFile)))) {
+        throw new Error('Cannot import over an unrelated local file: ' + normalizedPath)
+      }
+      await SharedFolder.getOrCreatePath(path.dirname(normalizedPath), plugin)
+      ensureCurrent()
+      const registeredWhileCreatingPath = SharedDocument.findById(id)
+      if (registeredWhileCreatingPath) {
+        snapshot.doc.destroy()
+        await registeredWhileCreatingPath._initialImportTask
+        return registeredWhileCreatingPath
+      }
+      // Recheck immediately before materializing: directory creation may yield.
+      if (plugin.app.vault.getAbstractFileByPath(normalizedPath) !== existingFile) {
+        throw new Error('Local import path changed: ' + normalizedPath)
+      }
+      if (!options.quiet) showNotice("Creating new synced file " + normalizedPath)
+      doc = new SharedDocument({ id, yDoc: snapshot.doc }, plugin)
+      const imported = doc
+      imported._initialImportPending = true
+      imported._importedInitialFile = true
+      imported._path = normalizedPath
+      imported.isCanvas = snapshot.doc.share.has('canvas')
+      // Block file flushes and reconnect work until the factory protects disk text.
+      imported.setIsPermanentInternal(true)
+      const task = (async (): Promise<void> => {
+        ensureCurrent()
+        // A missing owned file may still have offline CRDT history. Load that
+        // persistence ID before choosing the complete text for its recreation.
+        if (saved && !existingFile) {
+          await imported.startIndexedDBSync()
+          ensureCurrent()
+        }
+        if (imported._destroyed || SharedDocument.findById(id) !== imported) throw new Error('Imported document lifecycle changed')
+        let file: TFile
+        if (existingFile instanceof TFile) file = existingFile
+        else {
+          const content = imported.getValue()
+          await options.beforeCreate?.(content)
+          ensureCurrent()
+          if (imported._destroyed || SharedDocument.findById(id) !== imported ||
+            plugin.app.vault.getAbstractFileByPath(normalizedPath)) {
+            throw new Error('Local import path changed before file creation')
+          }
+          file = await plugin.app.vault.create(normalizedPath, content)
+          imported._file = file
+          if (imported.isCanvas) imported.setupFileSyncForCanvas()
+          await options.afterCreate?.()
+        }
+        imported._file = file
+        // Canvas bindings own their JSON disk writes; the text adapter must
+        // not schedule content-fragment flushes over those writes.
+        imported._syncable.setFileIO(imported.isCanvas ? undefined : new VaultFileIO(file, plugin))
+        if (imported.isCanvas) imported.setupFileSyncForCanvas()
+        const current = (): boolean => !imported._destroyed && SharedDocument.findById(id) === imported &&
+          imported.path === normalizedPath && file.path === normalizedPath && imported.file === file &&
+          plugin.app.vault.getAbstractFileByPath(normalizedPath) === file && (!options.isCurrent || options.isCurrent())
+        if (!current()) throw new Error('Shared folder entry changed during materialization')
+        if (!saved) await add(imported, plugin)
+        if (!current()) throw new Error('Shared folder entry changed during persistence')
+        imported._setupInitializationGuard()
+        imported._setupStatusIndicatorSubscriptions()
+        void imported._updateStatusIndicator()
+        await imported.startIndexedDBSync()
+        if (!current()) throw new Error('Shared folder entry changed during cache initialization')
+        if (imported.isCanvas) {
+          if (!await imported._reconcileCanvasFile(current)) throw new Error('Canvas file changed during import initialization')
+        } else {
+          // This file was complete when created. A subsequent empty file is an
+          // edit, rather than an unfinished-download placeholder.
+          const reconciled = await imported._syncable.reconcileWithFile(
+            () => imported._readInitialEditorContent(), { initialState: 'imported' },
+          )
+          if (!reconciled || !current()) throw new Error('Local file changed during import initialization')
+        }
+        let accepted = false
+        const proof = snapshot.proof
+        if (!imported.isCanvas && proof && imported._syncable.isIndexedDBDeferred &&
+          imported._syncable.pendingUpdateCount === 0 && snapshot.isCurrent() &&
+          plugin.fastRestart?.matchesCheckpoint(id, proof)) {
+          let changed = false
+          const onUpdate = (): void => { changed = true }
+          imported.yDoc.on('update', onUpdate)
+          try {
+            const mtime = file.stat.mtime
+            const state = canonicalStateUpdate(imported.yDoc)
+            const content = await plugin.app.vault.read(file)
+            const stateHash = await sha256(state)
+            const verified = (): boolean => current() && snapshot.isCurrent() && !changed && file.stat.mtime === mtime &&
+              imported._syncable.pendingUpdateCount === 0 && content === imported.getValue() &&
+              plugin.fastRestart?.matchesCheckpoint(id, proof) === true && stateHash === proof.stateHash
+            accepted = imported._syncable.acceptServerSnapshot(snapshot.checksum, verified)
+          } finally { imported.yDoc.off('update', onUpdate) }
+        }
+        if (!accepted) {
+          // Cached/offline changes have already been reconciled before any upload.
+          await imported._initializeFromLocal?.()
+          if (!current()) throw new Error('Shared folder entry changed before synchronization')
+          await imported._syncable.syncWithServer(20000)
+        }
+        await imported._syncable.whenIndexedDBSynced()
+        if (!current()) throw new Error('Shared folder entry changed while persisting imported state')
+        if (!imported._syncable.indexedDBLoaded) throw new Error('Could not persist imported document cache')
+        await imported._initializeFromLocal?.()
+        if (!current()) throw new Error('Shared folder entry changed while reconciling local state')
+        if (!imported._initializationGuardPassed) throw new Error('Could not protect local imported file contents')
+        if (imported.isCanvas && !await imported._flushCanvasToFile(current, true)) {
+          throw new Error('Canvas file changed while completing import')
+        }
+        if (accepted && proof && snapshot.isCurrent() && plugin.fastRestart?.matchesCheckpoint(id, proof)) {
+          plugin.serverSync.receiveSyncProof(id, proof)
+          plugin.captureRestartProof?.(id)
+          await plugin.fastRestart.captureProof(id, proof)
+        }
+        if (!current()) throw new Error('Imported document lifecycle changed while recording proof')
+        await imported._syncable.whenPersistenceSettled()
+        if (!current()) throw new Error('Imported document lifecycle changed while committing persistence')
+        const completedEntry = getDocByPath(imported.path, plugin)
+        if (!completedEntry || completedEntry.shareId !== id) throw new Error('Imported document ownership changed')
+        completedEntry.importedComplete = true
+        imported._initialImportPending = false
+        plugin.activeStreamClient.add([id])
+        imported._syncable._setNewDocConfirmed(true)
+        await imported._updateStatusIndicator()
+        if (!current()) throw new Error('Imported document lifecycle changed before peer synchronization')
+        imported.startWebRTCSyncWithCatchUp()
+      })()
+      imported._initialImportTask = task
+      await task
+      return imported
+    } catch (error) {
+      if (doc) {
+        await doc.destroy()
+        doc.yDoc.destroy()
+      } else snapshot.doc.destroy()
+      throw error
     }
-    doc._path = normalizedPath
-    const existingFile = plugin.app.vault.getAbstractFileByPath(normalizedPath)
-    const file = existingFile instanceof TFile
-      ? existingFile
-      : await plugin.app.vault.create(normalizedPath, doc.getValue())
-    doc._file = file
-    doc._syncable.setFileIO(new VaultFileIO(file, plugin))
-
-    void doc.syncWithServer()
-    doc.startWebRTCSyncWithCatchUp()
-    await doc.setPermanent()
-    doc._setupInitializationGuard()
-    doc._setupStatusIndicatorSubscriptions()
-    void doc._updateStatusIndicator()
-    await doc.startIndexedDBSync()
   }
-
 
   static async fromTFile(file: TFile, opts: { permanent?: boolean, folder?: string }, plugin: PeerDraftPlugin) {
     const MAX_FILE_SIZE = 1 * 1024 * 1024; // 1MB in bytes
@@ -415,7 +568,7 @@ export class SharedDocument extends SharedEntity {
       clock,
       editorAttachedCount: () => this._extensions.size,
       canWriteFile: () => !this._destroyed && (this.isCanvas || !this.isPermanent || this._initializationGuardPassed),
-      canStartServerSync: () => !this._destroyed && (
+      canStartServerSync: () => !this._destroyed && !this._initialImportPending && (
         this.isCanvas || !this.isPermanent || this._initializationGuardPassed || (
           this._initialCacheCheckComplete && (!this._syncable.indexedDBLoaded || this._syncable.indexedDBWasEmpty)
         )
@@ -452,44 +605,59 @@ export class SharedDocument extends SharedEntity {
   }
 
 
+  private _reconcileCanvasFile(isCurrent: () => boolean = () => true): Promise<boolean> {
+    const file = this._file
+    return this._canvasMutex.runExclusive(async () => {
+      if (this._destroyed || !file || this._file !== file || !isCurrent()) return false
+      const mtime = file.stat.mtime
+      const location = file.path
+      const content = await this.plugin.app.vault.read(file)
+      if (this._destroyed || this._file !== file || file.path !== location || file.stat.mtime !== mtime || !isCurrent()) return false
+      applyDataChangesToDoc(JSONC.parse(content || '{}'), this.yDoc)
+      return true
+    })
+  }
+
+  private _flushCanvasToFile(
+    isCurrent: () => boolean = () => true,
+    allowImportPending = false,
+  ): Promise<boolean> {
+    const file = this._file
+    return this._canvasMutex.runExclusive(async () => {
+      if (this._destroyed || !file || this._file !== file || !isCurrent() ||
+        (this._initialImportPending && !allowImportPending)) return false
+      if (this._canvasExtenstions.size > 0) return true
+      const mtime = file.stat.mtime
+      const location = file.path
+      const fileContent = await this.plugin.app.vault.read(file)
+      if (this._destroyed || this._file !== file || file.path !== location || file.stat.mtime !== mtime || !isCurrent()) return false
+      const yCanvas = yDocToCanvasJSON(this.yDoc)
+      if (diffCanvases(JSONC.parse(fileContent || '{}'), yCanvas).length !== 0) {
+        this._lastCanvasUpdateMtime = Date.now()
+        await this.plugin.app.vault.modify(file, JSON.stringify(yCanvas), { mtime: this._lastCanvasUpdateMtime })
+      }
+      return !this._destroyed && isCurrent()
+    })
+  }
+
   setupFileSyncForCanvas() {
-    if (this._vaultModifyListenerRegistered) {
-      return
-    }
-
-    const canvasMutex = new Mutex()
-    let lastCanvasUpdateMtime = 0
-
+    if (this._destroyed || this._vaultModifyListenerRegistered) return
     const updateFile = debounce(() => {
-      void canvasMutex.runExclusive(async () => {
-        const yCanvas = yDocToCanvasJSON(this.yDoc)
-        const fileContent = await this.plugin.app.vault.read(this._file)
-        const fileCanvas = JSONC.parse(fileContent || '{}')
-        const diffs = diffCanvases(fileCanvas, yCanvas)
-        if (diffs.length != 0) {
-          lastCanvasUpdateMtime = new Date().valueOf()
-          await this.plugin.app.vault.modify(this._file, JSON.stringify(yCanvas), {
-            mtime: lastCanvasUpdateMtime
-          })
-        }
+      void this._flushCanvasToFile().catch((error: unknown) => {
+        if (!this._destroyed) console.error('[Peerdraft] Could not write shared Canvas', this.path, error)
       })
     }, 1000, true)
-
-    this.yDoc.getMap('canvas').observeDeep(async (events, tx) => {
-      if (this._file && !tx.local && this._canvasExtenstions.size === 0) {
-        updateFile()
-      }
-    })
-
+    this._cancelCanvasFileUpdate = () => updateFile.cancel?.()
+    this._canvasObserver = (_events, tx) => {
+      if (!this._destroyed && this._file && !tx.local && this._canvasExtenstions.size === 0) updateFile()
+    }
+    this.yDoc.getMap('canvas').observeDeep(this._canvasObserver)
     this.plugin.registerEvent(this.plugin.app.vault.on("modify", async (file) => {
-      if (this.file === file && this.file.stat.mtime != lastCanvasUpdateMtime && this._canvasExtenstions.size === 0) {
-        void canvasMutex.runExclusive(async () => {
-          const fileContent = await this.plugin.app.vault.read(this._file)
-          applyDataChangesToDoc(JSONC.parse(fileContent || '{}'), this.yDoc)
-        })
+      if (!this._destroyed && this.file === file && this.file.stat.mtime !== this._lastCanvasUpdateMtime &&
+        this._canvasExtenstions.size === 0) {
+        await this._reconcileCanvasFile()
       }
     }))
-
     this._vaultModifyListenerRegistered = true
   }
 
@@ -501,10 +669,19 @@ export class SharedDocument extends SharedEntity {
 
     this.plugin.registerEvent(this.plugin.app.vault.on("modify", async (file) => {
       if (this.file === file) {
-        await this._syncable.reconcileWithFile()
+        await this._syncable.reconcileWithFile(undefined, this._importedInitialFile ? { initialState: 'imported' } : {})
       }
     }))
     this._vaultModifyListenerRegistered = true
+  }
+
+  private _readInitialEditorContent(): string | undefined {
+    const leaves = this.plugin.app.workspace.getLeavesOfType('markdown')
+    const leaf = leaves.find(candidate => {
+      const view = candidate.view as MarkdownView
+      return !candidate.isDeferred && view.file?.path === this.path
+    })
+    return (leaf?.view as MarkdownView | undefined)?.editor.getValue()
   }
 
   private _checkInitializationGuard(): boolean {
@@ -569,16 +746,10 @@ export class SharedDocument extends SharedEntity {
           const initialState = this._syncable.indexedDBLoaded && !this._syncable.indexedDBWasEmpty && !this._syncable.serverSynced
             ? 'cached'
             : 'server'
-          const reconciled = await this._syncable.reconcileWithFile(() => {
-            // Workspace discovery can still be pending during cache replay.
-            // Only text differing from current disk content is an unsaved edit.
-            const leaves = this.plugin.app.workspace.getLeavesOfType('markdown')
-            const leaf = leaves.find((candidate) => {
-              const view = candidate.view as MarkdownView
-              return !candidate.isDeferred && view.file?.path === this.path
-            })
-            return (leaf?.view as MarkdownView | undefined)?.editor.getValue()
-          }, { initialState })
+          const reconciled = await this._syncable.reconcileWithFile(
+            () => this._readInitialEditorContent(),
+            { initialState: this._importedInitialFile ? 'imported' : initialState },
+          )
           if (this._destroyed) return false
           if (!reconciled) {
             scheduleRetry()
@@ -872,6 +1043,8 @@ export class SharedDocument extends SharedEntity {
       return 'offline'
     }
 
+    if (this._initialImportPending && this.isPermanent) return 'syncing'
+
     if (!this._initializationGuardPassed) {
       return 'syncing'
     }
@@ -1158,7 +1331,14 @@ export class SharedDocument extends SharedEntity {
 
 
   async destroy() {
+    if (this._destroyed) return
     this._destroyed = true
+    this._cancelCanvasFileUpdate?.()
+    this._cancelCanvasFileUpdate = undefined
+    if (this._canvasObserver) {
+      this.yDoc.getMap('canvas').unobserveDeep(this._canvasObserver)
+      this._canvasObserver = undefined
+    }
     // Invalidate status paints already waiting for deferred explorers.
     void removeStatusClass(this.path, this.plugin)
     this._pendingInitialServerSync = undefined
@@ -1178,6 +1358,7 @@ export class SharedDocument extends SharedEntity {
 
     this._initializationGuardPassed = false
     this._vaultModifyListenerRegistered = false
-    SharedDocument._sharedEntites.splice(SharedDocument._sharedEntites.indexOf(this), 1)
+    const index = SharedDocument._sharedEntites.indexOf(this)
+    if (index >= 0) SharedDocument._sharedEntites.splice(index, 1)
   }
 }
