@@ -62,6 +62,8 @@ export class SharedDocument extends SharedEntity {
   private _initialCacheCheckComplete = false
   private _initializeFromLocal?: () => Promise<boolean>
   private _initializationRetryTimeout?: number
+  private _initializationRetryDelayMs = 1000
+  private _initializationError?: string
   private _pendingInitialServerSync?: () => void
   private _initializationGuardMutex = new Mutex()
   private _vaultModifyListenerRegistered = false
@@ -520,77 +522,105 @@ export class SharedDocument extends SharedEntity {
   }
 
   private _setupInitializationGuard() {
-    const scheduleRetry = () => {
-      if (this._destroyed || this.isCanvas || this._initializationRetryTimeout !== undefined) return
-      this._initializationRetryTimeout = window.setTimeout(() => {
-        this._initializationRetryTimeout = undefined
-        void handleGuardConditionMet()
-      }, 1000)
-    }
-    const handleGuardConditionMet = (): Promise<boolean> => this._initializationGuardMutex.runExclusive(async () => {
-      if (this._destroyed) return false
-      if (this._initializationGuardPassed) return true
-      if (!this._checkInitializationGuard()) return false
-
-      if (this.isCanvas) {
-        // Canvas JSON has its own observers and reconciliation path.
-        this._initializationGuardPassed = true
-        this.setupFileSyncForCanvas()
-        const leafIds = getLeafIdsByPath(this.path, this.plugin.pws.markdown)
-        if (leafIds.length > 0) {
-          for (const id of leafIds) {
-            this.addExtensionToLeaf(id)
-          }
-        } else {
-          const fileContent = await this.plugin.app.vault.read(this._file)
-          await this._syncable.reconcileWithFileContent(fileContent)
-        }
-      } else {
-        const initialState = this._syncable.indexedDBLoaded && !this._syncable.indexedDBWasEmpty && !this._syncable.serverSynced
-          ? 'cached'
-          : 'server'
-        const reconciled = await this._syncable.reconcileWithFile(() => {
-          // Workspace discovery can still be pending during cache replay.
-          // Only text differing from current disk content is an unsaved edit.
-          const leaves = this.plugin.app.workspace.getLeavesOfType('markdown')
-          const leaf = leaves.find((candidate) => {
-            const view = candidate.view as MarkdownView
-            return !candidate.isDeferred && view.file?.path === this.path
-          })
-          return (leaf?.view as MarkdownView | undefined)?.editor.getValue()
-        }, { initialState })
-        if (this._destroyed) return false
-        if (!reconciled) {
-          scheduleRetry()
-          return false
-        }
-        this.setupFileSyncForContent()
-        this._initializationGuardPassed = true
-        for (const id of getLeafIdsByPath(this.path, this.plugin.pws.markdown)) {
-          this.addExtensionToLeaf(id)
-        }
-        // A pre-readiness debounce may already have expired; persist any
-        // remaining document changes now that local text is protected.
-        if (this._extensions.size === 0) {
-          void this._syncable.flushToFile().catch((error: unknown) => {
-            console.error('[Peerdraft] Could not write initialized shared text', this.path, error)
-          })
-        }
-      }
-
+    const clearRetry = () => {
       if (this._initializationRetryTimeout !== undefined) {
         window.clearTimeout(this._initializationRetryTimeout)
         this._initializationRetryTimeout = undefined
       }
-      const pendingInitialServerSync = this._pendingInitialServerSync
-      this._pendingInitialServerSync = undefined
-      pendingInitialServerSync?.()
-      if (this.isPermanent) void this._updateStatusIndicator()
-      return true
-    }).catch((error: unknown) => {
-      console.error('[Peerdraft] Could not initialize shared text', this.path, error)
-      scheduleRetry()
-      return false
+      this._initializationRetryDelayMs = 1000
+      this._initializationError = undefined
+    }
+    const scheduleRetry = () => {
+      if (this._destroyed || this.isCanvas || this._initializationGuardPassed || this._initializationRetryTimeout !== undefined) return
+      const delay = this._initializationRetryDelayMs
+      this._initializationRetryDelayMs = Math.min(delay * 2, 30000)
+      this._initializationRetryTimeout = window.setTimeout(() => {
+        this._initializationRetryTimeout = undefined
+        void handleGuardConditionMet()
+      }, delay)
+    }
+    const handleGuardConditionMet = (): Promise<boolean> => this._initializationGuardMutex.runExclusive(async () => {
+      if (this._destroyed) return false
+      if (this._initializationGuardPassed) return true
+      // Readiness notifications must not bypass an already scheduled retry.
+      if (this._initializationRetryTimeout !== undefined) return false
+      if (!this._checkInitializationGuard()) return false
+
+      try {
+        if (this.isCanvas) {
+          // Canvas JSON has its own observers and reconciliation path.
+          this._initializationGuardPassed = true
+          this.setupFileSyncForCanvas()
+          const leafIds = getLeafIdsByPath(this.path, this.plugin.pws.markdown)
+          if (leafIds.length > 0) {
+            for (const id of leafIds) {
+              this.addExtensionToLeaf(id)
+            }
+          } else {
+            const fileContent = await this.plugin.app.vault.read(this._file)
+            await this._syncable.reconcileWithFileContent(fileContent)
+          }
+        } else {
+          const initialState = this._syncable.indexedDBLoaded && !this._syncable.indexedDBWasEmpty && !this._syncable.serverSynced
+            ? 'cached'
+            : 'server'
+          const reconciled = await this._syncable.reconcileWithFile(() => {
+            // Workspace discovery can still be pending during cache replay.
+            // Only text differing from current disk content is an unsaved edit.
+            const leaves = this.plugin.app.workspace.getLeavesOfType('markdown')
+            const leaf = leaves.find((candidate) => {
+              const view = candidate.view as MarkdownView
+              return !candidate.isDeferred && view.file?.path === this.path
+            })
+            return (leaf?.view as MarkdownView | undefined)?.editor.getValue()
+          }, { initialState })
+          if (this._destroyed) return false
+          if (!reconciled) {
+            scheduleRetry()
+            return false
+          }
+          this.setupFileSyncForContent()
+          this._initializationGuardPassed = true
+          // Initialization recovered even if a later editor attachment fails.
+          clearRetry()
+          for (const id of getLeafIdsByPath(this.path, this.plugin.pws.markdown)) {
+            this.addExtensionToLeaf(id)
+          }
+          // A pre-readiness debounce may already have expired; persist any
+          // remaining document changes now that local text is protected.
+          if (this._extensions.size === 0) {
+            void this._syncable.flushToFile().catch((error: unknown) => {
+              console.error('[Peerdraft] Could not write initialized shared text', this.path, error)
+            })
+          }
+        }
+
+        clearRetry()
+        const pendingInitialServerSync = this._pendingInitialServerSync
+        this._pendingInitialServerSync = undefined
+        pendingInitialServerSync?.()
+        if (this.isPermanent) void this._updateStatusIndicator()
+        return true
+      } catch (error: unknown) {
+        if (this._destroyed) return false
+        // Canvas setup and failures after the guard passed are not retried.
+        // Keep their existing diagnostic without claiming automatic recovery.
+        if (this.isCanvas || this._initializationGuardPassed) {
+          console.error('[Peerdraft] Could not initialize shared text', this.path, error)
+          if (this.isPermanent) void this._updateStatusIndicator()
+          return false
+        }
+        const diagnostic = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+        if (this._initializationError !== diagnostic) {
+          console.error('[Peerdraft] Could not initialize shared text', this.path, error)
+        }
+        this._initializationError = diagnostic
+        // Record failure and schedule while still holding the guard mutex, so
+        // queued state notifications cannot start another immediate attempt.
+        scheduleRetry()
+        if (this.isPermanent) void this._updateStatusIndicator()
+        return false
+      }
     })
     this._initializeFromLocal = handleGuardConditionMet
 
@@ -633,8 +663,12 @@ export class SharedDocument extends SharedEntity {
   }
 
   private async _updateStatusIndicator() {
+    if (this._destroyed) return
     const status = this.getSyncStatus()
-    await setStatusClass(this.path, this.plugin, status)
+    const tooltip = this._initializationError === undefined
+      ? undefined
+      : 'Could not initialize this share. Retrying automatically.'
+    await setStatusClass(this.path, this.plugin, status, tooltip)
   }
 
   private async _updateWebRTCStatusIndicator() {
@@ -811,6 +845,7 @@ export class SharedDocument extends SharedEntity {
   }
 
   getSyncStatus(): 'offline' | 'syncing' | 'insync' | 'warning' | 'not-initialized' {
+    if (this._initializationError !== undefined) return 'warning'
     const wsconnected = this.plugin.serverSync.wsconnected
     const serverSyncing = this._syncable.serverSyncing
     const serverSynced = this._syncable.serverSynced
@@ -1119,7 +1154,11 @@ export class SharedDocument extends SharedEntity {
 
   async destroy() {
     this._destroyed = true
+    // Invalidate status paints already waiting for deferred explorers.
+    void removeStatusClass(this.path, this.plugin)
     this._pendingInitialServerSync = undefined
+    this._initializationRetryDelayMs = 1000
+    this._initializationError = undefined
     if (this._initializationRetryTimeout !== undefined) {
       window.clearTimeout(this._initializationRetryTimeout)
       this._initializationRetryTimeout = undefined

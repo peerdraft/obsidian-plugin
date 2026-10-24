@@ -6,6 +6,7 @@ import * as Y from 'yjs'
 import type PeerdraftPlugin from '../peerdraftPlugin'
 import { SharedDocument } from '../sharedEntities/sharedDocument'
 import { PeerdraftRecord } from '../utils/peerdraftRecord'
+import { removeStatusClass, setStatusClass } from '../workspace/explorerView'
 
 jest.mock('../main', () => ({ __esModule: true, default: class {} }))
 jest.mock('../sharedEntities/sharedFolder', () => ({ SharedFolder: class {} }))
@@ -116,8 +117,8 @@ async function restoredFixture(editorContent?: string, beforeRestore?: (context:
   if (doc.getContentFragment().length === 0) {
     doc.yDoc.transact(() => doc.getContentFragment().insert(0, 'Cached old text'), 'cache')
   }
-  return { doc, read, modify, editor, cleanup: async () => {
-    await doc.destroy()
+  return { doc, read, modify, editor, plugin, cleanup: async (alreadyDestroyed = false) => {
+    if (!alreadyDestroyed) await doc.destroy()
     doc.yDoc.destroy()
     jest.mocked(getLeafIdsByPath).mockReturnValue([])
     jest.restoreAllMocks()
@@ -234,6 +235,276 @@ describe('restored text-document readiness', () => {
       expect(f.doc.getContentFragment().toString()).toBe('Offline local edit')
       expect(f.modify).not.toHaveBeenCalled()
       expect(log).toHaveBeenCalled()
+    } finally {
+      await f.cleanup()
+      jest.useRealTimers()
+    }
+  })
+
+  test('persistent read failures back off to thirty seconds while preserving protected cached state', async () => {
+    jest.useFakeTimers()
+    loadCachedState()
+    const log = jest.spyOn(console, 'error').mockImplementation(() => {})
+    const f = await restoredFixture(undefined, ({ read }) => {
+      read.mockImplementation(async () => { throw new Error('Storage unavailable') })
+    })
+    try {
+      expect(f.read).toHaveBeenCalledTimes(1)
+      let attempts = 1
+      for (const delay of [1000, 2000, 4000, 8000, 16000, 30000, 30000]) {
+        await jest.advanceTimersByTimeAsync(delay - 1)
+        expect(f.read).toHaveBeenCalledTimes(attempts)
+        await jest.advanceTimersByTimeAsync(1)
+        expect(f.read).toHaveBeenCalledTimes(++attempts)
+      }
+      expect(log).toHaveBeenCalledTimes(1)
+      expect(f.doc.getSyncStatus()).toBe('warning')
+      expect(setStatusClass).toHaveBeenLastCalledWith('note.md', f.plugin, 'warning', 'Could not initialize this share. Retrying automatically.')
+      expect(f.doc.initializationGuardPassed).toBe(false)
+      expect(f.doc.syncable.canStartServerSync).toBe(false)
+      expect(f.doc.getContentFragment().toString()).toBe('Cached old text')
+      expect(f.modify).not.toHaveBeenCalled()
+      expect(f.editor.setValue).not.toHaveBeenCalled()
+      expect(f.plugin.serverSync.sendSyncStep1).not.toHaveBeenCalled()
+      expect(f.plugin.activeStreamClient.add).not.toHaveBeenCalled()
+    } finally {
+      await f.cleanup()
+      jest.useRealTimers()
+    }
+  })
+
+  test('queued and later readiness notifications cannot bypass a failed attempt backoff', async () => {
+    jest.useFakeTimers()
+    loadCachedState()
+    const log = jest.spyOn(console, 'error').mockImplementation(() => {})
+    let rejectRead: (error: Error) => void = () => {}
+    const restoring = restoredFixture(undefined, ({ read }) => {
+      read.mockReturnValue(new Promise<string>((_, reject) => { rejectRead = reject }))
+    })
+    await flushStartup()
+    const doc = SharedDocument.findById('restored-share')!
+    const notify = (): void => {
+      doc.syncable.emit('indexedDBLoaded', [{ wasEmpty: false }])
+      doc.syncable.emit('serverSynced', ['server-hash'])
+      doc.syncable.emit('syncStateChanged', [{ indexedDBLoaded: true, indexedDBWasEmpty: false, serverSyncing: false, serverSynced: false }])
+    }
+    notify()
+    rejectRead(new Error('Storage unavailable'))
+    const f = await restoring
+    try {
+      notify()
+      notify()
+      await jest.advanceTimersByTimeAsync(0)
+      expect(f.read).toHaveBeenCalledTimes(1)
+      expect(f.doc.initializationGuardPassed).toBe(false)
+      expect(f.doc.getSyncStatus()).toBe('warning')
+      expect(log).toHaveBeenCalledTimes(1)
+      f.read.mockRejectedValue(new Error('Storage unavailable'))
+      await jest.advanceTimersByTimeAsync(999)
+      expect(f.read).toHaveBeenCalledTimes(1)
+      await jest.advanceTimersByTimeAsync(1)
+      expect(f.read).toHaveBeenCalledTimes(2)
+      expect(log).toHaveBeenCalledTimes(1)
+    } finally {
+      await f.cleanup()
+      jest.useRealTimers()
+    }
+  })
+
+  test('changed failure reasons are diagnosed and recovery clears the warning and retry work', async () => {
+    jest.useFakeTimers()
+    loadCachedState()
+    const log = jest.spyOn(console, 'error').mockImplementation(() => {})
+    const f = await restoredFixture(undefined, ({ read }) => { read.mockRejectedValue(new Error('Storage unavailable')) })
+    try {
+      f.read.mockRejectedValue(new TypeError('Storage unavailable'))
+      await jest.advanceTimersByTimeAsync(1000)
+      expect(log).toHaveBeenCalledTimes(2)
+      expect(f.doc.getSyncStatus()).toBe('warning')
+      f.read.mockResolvedValue('Offline local edit')
+      await jest.advanceTimersByTimeAsync(2000)
+      expect(f.doc.initializationGuardPassed).toBe(true)
+      expect(f.doc.syncable.canStartServerSync).toBe(true)
+      expect(f.doc.getContentFragment().toString()).toBe('Offline local edit')
+      expect(f.doc.getSyncStatus()).not.toBe('warning')
+      expect(jest.mocked(setStatusClass).mock.calls.at(-1)?.[3]).toBeUndefined()
+      expect(f.plugin.serverSync.sendSyncStep1).toHaveBeenCalledTimes(1)
+      expect(f.plugin.activeStreamClient.add).toHaveBeenCalledTimes(1)
+      expect(f.modify).not.toHaveBeenCalled()
+      const readsAfterRecovery = f.read.mock.calls.length
+      await jest.advanceTimersByTimeAsync(60000)
+      expect(f.read).toHaveBeenCalledTimes(readsAfterRecovery)
+      expect(log).toHaveBeenCalledTimes(2)
+    } finally {
+      await f.cleanup()
+      jest.useRealTimers()
+    }
+  })
+
+  test('an incomplete changing-file read retries without an exception warning', async () => {
+    jest.useFakeTimers()
+    loadCachedState()
+    const log = jest.spyOn(console, 'error').mockImplementation(() => {})
+    const f = await restoredFixture(undefined, ({ read, plugin }) => {
+      const file = plugin.app.vault.getAbstractFileByPath('note.md') as TFile
+      read.mockImplementation(async () => {
+        file.stat.mtime++
+        return 'Offline local edit'
+      })
+    })
+    try {
+      expect(f.doc.initializationGuardPassed).toBe(false)
+      expect(f.doc.getSyncStatus()).toBe('syncing')
+      expect(log).not.toHaveBeenCalled()
+      await jest.advanceTimersByTimeAsync(1000)
+      expect(f.read).toHaveBeenCalledTimes(2)
+      expect(f.modify).not.toHaveBeenCalled()
+      f.read.mockResolvedValue('Offline local edit')
+      await jest.advanceTimersByTimeAsync(2000)
+      expect(f.doc.initializationGuardPassed).toBe(true)
+      expect(f.doc.getContentFragment().toString()).toBe('Offline local edit')
+      expect(f.doc.getSyncStatus()).not.toBe('warning')
+      expect(log).not.toHaveBeenCalled()
+    } finally {
+      await f.cleanup()
+      jest.useRealTimers()
+    }
+  })
+
+  test('destroy cancels a scheduled retry and prevents further file or indicator work', async () => {
+    jest.useFakeTimers()
+    loadCachedState()
+    const log = jest.spyOn(console, 'error').mockImplementation(() => {})
+    const f = await restoredFixture(undefined, ({ read }) => { read.mockRejectedValue(new Error('Storage unavailable')) })
+    await f.doc.destroy()
+    jest.mocked(setStatusClass).mockClear()
+    log.mockClear()
+    try {
+      await jest.advanceTimersByTimeAsync(60000)
+      expect(f.read).toHaveBeenCalledTimes(1)
+      expect(f.modify).not.toHaveBeenCalled()
+      expect(f.plugin.serverSync.sendSyncStep1).not.toHaveBeenCalled()
+      expect(setStatusClass).not.toHaveBeenCalled()
+      expect(log).not.toHaveBeenCalled()
+    } finally {
+      await f.cleanup(true)
+      jest.useRealTimers()
+    }
+  })
+
+  test('a read failure settling after destruction produces no retry or late warning', async () => {
+    jest.useFakeTimers()
+    loadCachedState()
+    const log = jest.spyOn(console, 'error').mockImplementation(() => {})
+    const f = await restoredFixture(undefined, ({ read }) => { read.mockRejectedValue(new Error('Storage unavailable')) })
+    let rejectRead: (error: Error) => void = () => {}
+    f.read.mockReturnValue(new Promise<string>((_, reject) => { rejectRead = reject }))
+    await jest.advanceTimersByTimeAsync(1000)
+    await f.doc.destroy()
+    jest.mocked(setStatusClass).mockClear()
+    log.mockClear()
+    try {
+      rejectRead(new Error('File no longer exists'))
+      await flushStartup()
+      await jest.advanceTimersByTimeAsync(60000)
+      expect(f.read).toHaveBeenCalledTimes(2)
+      expect(f.modify).not.toHaveBeenCalled()
+      expect(f.plugin.serverSync.sendSyncStep1).not.toHaveBeenCalled()
+      expect(setStatusClass).not.toHaveBeenCalled()
+      expect(log).not.toHaveBeenCalled()
+    } finally {
+      await f.cleanup(true)
+      jest.useRealTimers()
+    }
+  })
+
+  test('destroy invalidates a retry warning waiting for a deferred explorer', async () => {
+    jest.useFakeTimers()
+    loadCachedState()
+    jest.spyOn(console, 'error').mockImplementation(() => {})
+    const explorer = jest.requireActual<typeof import('../workspace/explorerView')>('../workspace/explorerView')
+    jest.mocked(setStatusClass).mockImplementation(explorer.setStatusClass)
+    jest.mocked(removeStatusClass).mockImplementation(explorer.removeStatusClass)
+    const item = document.createElement('div')
+    item.addClass = (...names: string[]): void => { item.classList.add(...names) }
+    item.removeClass = (...names: string[]): void => { item.classList.remove(...names) }
+    let finishLoading: () => void = () => {}
+    const loading = new Promise<void>(resolve => { finishLoading = resolve })
+    const leaf = {
+      view: { getViewType: () => 'file-explorer', fileItems: { 'note.md': { innerEl: item } } },
+      loadIfDeferred: () => loading,
+    }
+    const f = await restoredFixture(undefined, ({ read, plugin }) => {
+      read.mockRejectedValue(new Error('Storage unavailable'))
+      plugin.app.workspace.iterateAllLeaves = callback => callback(leaf as unknown as Parameters<typeof callback>[0])
+    })
+    try {
+      expect(f.doc.getSyncStatus()).toBe('warning')
+      expect(item.classList.contains('pd-status-warning')).toBe(false)
+      await f.doc.destroy()
+      finishLoading()
+      await flushStartup()
+      expect(item.classList.contains('pd-status-warning')).toBe(false)
+      expect(item.hasAttribute('title')).toBe(false)
+    } finally {
+      finishLoading()
+      await f.cleanup(true)
+      jest.mocked(setStatusClass).mockReset().mockResolvedValue(undefined)
+      jest.mocked(removeStatusClass).mockReset().mockResolvedValue(undefined)
+      jest.useRealTimers()
+    }
+  })
+
+  test('listener registration failures keep backing off even when file reconciliation succeeds', async () => {
+    jest.useFakeTimers()
+    loadCachedState()
+    const log = jest.spyOn(console, 'error').mockImplementation(() => {})
+    const f = await restoredFixture(undefined, ({ plugin }) => {
+      jest.mocked(plugin.registerEvent).mockImplementation(() => { throw new Error('Listener registration unavailable') })
+    })
+    try {
+      expect(f.read).toHaveBeenCalledTimes(1)
+      expect(f.doc.initializationGuardPassed).toBe(false)
+      expect(f.doc.getSyncStatus()).toBe('warning')
+      await jest.advanceTimersByTimeAsync(1000)
+      expect(f.read).toHaveBeenCalledTimes(2)
+      await jest.advanceTimersByTimeAsync(1999)
+      expect(f.read).toHaveBeenCalledTimes(2)
+      await jest.advanceTimersByTimeAsync(1)
+      expect(f.read).toHaveBeenCalledTimes(3)
+      expect(f.doc.getContentFragment().toString()).toBe('Offline local edit')
+      expect(f.doc.initializationGuardPassed).toBe(false)
+      expect(f.modify).not.toHaveBeenCalled()
+      expect(f.plugin.serverSync.sendSyncStep1).not.toHaveBeenCalled()
+      expect(log).toHaveBeenCalledTimes(1)
+    } finally {
+      await f.cleanup()
+      jest.useRealTimers()
+    }
+  })
+
+  test('a recovered read cannot leave a stale retry warning after editor attachment fails', async () => {
+    jest.useFakeTimers()
+    loadCachedState()
+    const log = jest.spyOn(console, 'error').mockImplementation(() => {})
+    const f = await restoredFixture('Offline local edit', ({ read }) => { read.mockRejectedValue(new Error('Storage unavailable')) })
+    jest.mocked(getLeafIdsByPath).mockReturnValue(['leaf'])
+    f.editor.cm.dispatch.mockImplementation(() => { throw new Error('Editor attachment unavailable') })
+    try {
+      expect(f.doc.getSyncStatus()).toBe('warning')
+      f.read.mockResolvedValue('Offline local edit')
+      await jest.advanceTimersByTimeAsync(1000)
+      expect(f.doc.initializationGuardPassed).toBe(true)
+      expect(f.doc.getContentFragment().toString()).toBe('Offline local edit')
+      expect(f.doc.getSyncStatus()).not.toBe('warning')
+      expect(jest.mocked(setStatusClass).mock.calls.at(-1)?.[3]).toBeUndefined()
+      // A failed attachment leaves the ordinary queued file flush available;
+      // it may read once, but initialization must not keep retrying afterward.
+      await jest.advanceTimersByTimeAsync(1000)
+      const readsAfterRecovery = f.read.mock.calls.length
+      await jest.advanceTimersByTimeAsync(60000)
+      expect(f.read).toHaveBeenCalledTimes(readsAfterRecovery)
+      expect(log).toHaveBeenCalledTimes(2)
     } finally {
       await f.cleanup()
       jest.useRealTimers()
