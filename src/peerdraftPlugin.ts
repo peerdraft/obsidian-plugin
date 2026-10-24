@@ -4,6 +4,8 @@ import { ActiveStreamClient } from "./activeStreamClient"
 import { prepareCommunication } from "./cookie"
 import { getJWT } from "./login"
 import { PeerdraftWebsocketProvider } from "./peerdraftWebSocketProvider"
+import { FastRestartManager, type FastRestartDocument, type SyncProof } from "./fastRestart"
+import { RestartResyncQueue } from "./restartResyncQueue"
 import { ServerAPI } from "./serverAPI"
 import { installSignalingSocketGuard } from "./signalingSocketGuard"
 import { type Settings, createSettingsTab, migrateSettings, saveSettings, saveSettingsNow } from "./settings"
@@ -34,6 +36,8 @@ export default class PeerdraftPlugin extends Plugin {
   serverAPI: ServerAPI
   activeStreamClient: ActiveStreamClient
   serverSync: PeerdraftWebsocketProvider
+  fastRestart?: FastRestartManager
+  private readonly restartProofs = new Map<string, SyncProof>()
 
   async onload() {
     const plugin = this
@@ -136,6 +140,43 @@ export default class PeerdraftPlugin extends Plugin {
       async () => {
         if (stopped) return
         this.serverSync = new PeerdraftWebsocketProvider(this.settings.sync, { jwt: getJWT(plugin.settings.oid) ?? undefined, version: plugin.manifest.version, connect: false })
+        const savedDocumentIds = (): string[] => Array.from(plugin.settings.serverShares.files.values(), data => data.shareId)
+        const restartResync = new RestartResyncQueue(
+          id => SharedDocument.findById(id),
+          () => stopped,
+          (id, error) => console.error('[Peerdraft] Could not resynchronize changed document', id, error),
+        )
+        plugin.register(() => restartResync.destroy())
+        this.fastRestart = new FastRestartManager({
+          scope: JSON.stringify([plugin.settings.sync, plugin.settings.oid, plugin.settings.oidVaultPath ?? '']),
+          records: plugin.settings.restartCheckpoints ?? {},
+          transport: { requestCheckpoints: ids => this.serverSync.requestCheckpoints(ids) },
+          getDocument: id => this.getFastRestartDocument(id),
+          persist: async records => {
+            if (stopped) return
+            plugin.settings.restartCheckpoints = records
+            await saveSettingsNow(plugin.settings, plugin)
+          },
+          requestResync: id => restartResync.request(id),
+          isStopped: () => stopped,
+        })
+        this.serverSync.on('sync-proof', (id, proof) => {
+          this.restartProofs.set(id, proof)
+          this.captureRestartProof(id)
+        })
+        this.serverSync.on('checkpoint-changed', (id, checkpoint) => {
+          this.restartProofs.delete(id)
+          this.fastRestart?.invalidate(id, checkpoint)
+        })
+        let connectedOnce = false
+        this.serverSync.on('connected', () => {
+          if (connectedOnce && !stopped) void this.fastRestart?.prepare(savedDocumentIds())
+          connectedOnce = true
+        })
+        const checkpointRefresh = window.setInterval(() => {
+          if (!stopped && this.serverSync.wsconnected) void this.fastRestart?.prepare(savedDocumentIds())
+        }, 30000)
+        plugin.register(() => window.clearInterval(checkpointRefresh))
 
         const failedPaths = new Set<string>()
         const pendingPaths = (): string[] => [
@@ -144,6 +185,8 @@ export default class PeerdraftPlugin extends Plugin {
         ].filter(path => !failedPaths.has(path))
 
         this.serverSync.on('connection-close', () => {
+          this.restartProofs.clear()
+          this.fastRestart?.resetConnection()
           if (!stopped) void setStatusClasses(pendingPaths(), plugin, 'offline')
         })
         this.serverSync.on('status', ({ status }) => {
@@ -179,7 +222,10 @@ export default class PeerdraftPlugin extends Plugin {
           showPendingShares: () => setStatusClasses(pendingPaths(), plugin, 'syncing'),
           isStopped: () => stopped,
           connect: () => this.serverSync.connect(),
-          connected: () => this.serverSync.connected(),
+          connected: async () => {
+            await this.serverSync.connected()
+            if (!stopped) await this.fastRestart?.prepare(savedDocumentIds())
+          },
           restoreFiles: () => restoreSharesInParallel(
             plugin.settings.serverShares.files.entries(),
             async ([path, data]) => {
@@ -395,6 +441,8 @@ export default class PeerdraftPlugin extends Plugin {
     // Handle file modification
     plugin.registerEvent(plugin.app.vault.on('modify', async (file) => {
       if (!(file instanceof TFile)) return
+      const document = SharedDocument.findByPath(file.path)
+      if (document) this.fastRestart?.invalidateLocal(document.shareId)
 
       const folder = SharedFolder.getSharedFolderForSubPath(file.path)
       if (!folder) return
@@ -485,6 +533,8 @@ export default class PeerdraftPlugin extends Plugin {
   }
 
   onunload() {
+    this.fastRestart?.destroy()
+    this.restartProofs.clear()
     SharedDocument.getAll().forEach((doc) => {
       void doc.destroy()
     })
@@ -493,6 +543,31 @@ export default class PeerdraftPlugin extends Plugin {
     })
     this.activeStreamClient?.destroy()
     this.serverSync?.destroy()
+  }
+
+  /** Adapt a restored text document without making verification responsible for its lifecycle. */
+  getFastRestartDocument(id: string): FastRestartDocument | undefined {
+    const doc = SharedDocument.findById(id)
+    if (!doc || !doc.isPermanent || doc.isCanvas) return undefined
+    const saved = this.settings.serverShares.files.get(doc.path)
+    if (!saved || saved.shareId !== id) return undefined
+    return {
+      shareId: id,
+      persistenceId: saved.persistenceId,
+      yDoc: doc.yDoc,
+      readFile: () => this.app.vault.read(doc.file),
+      getMTime: () => doc.file.stat.mtime,
+      content: () => doc.getContentFragment().toString(),
+      checksum: () => doc.calculateHash(),
+      isEligible: () => this.serverSync.wsconnected && doc.initializationGuardPassed &&
+        doc.syncable.indexedDBLoaded && !doc.syncable.isIndexedDBDeferred && doc.syncable.pendingUpdateCount === 0,
+    }
+  }
+
+  /** Retry proof capture after a remote write has reached disk. */
+  captureRestartProof(id: string): void {
+    const proof = this.restartProofs.get(id)
+    if (proof && this.fastRestart) void this.fastRestart.captureProof(id, proof)
   }
 
   log(message: string) {

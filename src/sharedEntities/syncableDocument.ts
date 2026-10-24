@@ -57,6 +57,8 @@ export interface SyncableDocumentOptions {
   canWriteFile?: () => boolean
   // Reconnects must not interrupt the factory's initial local reconciliation.
   canStartServerSync?: () => boolean
+  // Optional verified restart shortcut; null keeps the ordinary handshake.
+  tryFastRestart?: (document: SyncableDocument) => Promise<SyncableHash | null>
   // Default 1000 ms. Debounce for yDoc → file flushes.
   fileFlushIntervalMs?: number
   // Optional custom registry for this syncable. Used by test harnesses.
@@ -135,10 +137,17 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
   private readonly editorAttachedCount: () => number
   private readonly canWriteFile: () => boolean
   private readonly serverSyncReady: () => boolean
+  private readonly tryFastRestart?: (document: SyncableDocument) => Promise<SyncableHash | null>
+  private fastSyncPromise?: Promise<SyncableHash>
+  private syncLifecycle = 0
+  private destroyed = false
+  private resyncPromise?: Promise<SyncableHash>
+  private resyncRequested = false
   private readonly fileFlushIntervalMs: number
   private fileFlushTimer: ReturnType<typeof setTimeout> | null = null
   private readonly fileMutex = new Mutex()
   private contentObserver?: () => void
+  private lastRead?: { fileIO: SyncableFileIO; content: string; mtime: number }
 
   private readonly registry: Map<string, SyncableDocument>
 
@@ -174,6 +183,7 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
     this.editorAttachedCount = opts.editorAttachedCount ?? (() => 0)
     this.canWriteFile = opts.canWriteFile ?? (() => true)
     this.serverSyncReady = opts.canStartServerSync ?? (() => true)
+    this.tryFastRestart = opts.tryFastRestart
     this.fileFlushIntervalMs = opts.fileFlushIntervalMs ?? 1000
     this.registry = opts.registry ?? SyncableDocument._registry
 
@@ -287,6 +297,7 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
 
   setShareId(id: string): void {
     if (this._shareId === id) return
+    this.syncLifecycle++
     if (this._shareId) {
       this.registry.delete(this._shareId)
     }
@@ -309,12 +320,73 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
   }
 
   syncWithServer(timeoutMs?: number): Promise<SyncableHash> {
+    if (!this.tryFastRestart) return this.syncNormally(timeoutMs)
+    if (this.fastSyncPromise) return this.fastSyncPromise
+    const lifecycle = this.syncLifecycle
+    this._serverSyncing = true
+    this.emit('serverSyncing', [])
+    this.emit('syncStateChanged', [this.getStateSnapshot()])
+    const task = (async (): Promise<SyncableHash> => {
+      let verified: SyncableHash | null = null
+      try { verified = await this.tryFastRestart!(this) } catch { /* Verification is optional. */ }
+      if (this.destroyed || lifecycle !== this.syncLifecycle) return this.calculateHash()
+      if (verified === null) return this.syncNormally(timeoutMs)
+      this._serverSyncing = false
+      this._setServerSynced(true)
+      this.emit('synced', [verified])
+      this.emit('serverSynced', [verified])
+      return verified
+    })()
+    this.fastSyncPromise = task
+    const clear = (): void => { if (this.fastSyncPromise === task) this.fastSyncPromise = undefined }
+    void task.then(clear, clear)
+    return task
+  }
+
+  /** Changes arriving during a handshake require one fresh exchange afterward. */
+  resyncAfterCurrent(): Promise<SyncableHash> {
+    this.resyncRequested = true
+    if (this.resyncPromise) return this.resyncPromise
+    const task = (async (): Promise<SyncableHash> => {
+      let result = this.calculateHash()
+      while (this.resyncRequested && !this.destroyed) {
+        const current = this.fastSyncPromise
+        if (current) {
+          try { await current } catch { /* A fresh exchange can recover. */ }
+        }
+        if (this.destroyed) break
+        // Consume all invalidations preceding this fresh request; an invalidation
+        // during the new request sets the flag again and requires another pass.
+        this.resyncRequested = false
+        result = await this.syncWithServer()
+      }
+      return result
+    })()
+    this.resyncPromise = task
+    const clear = (): void => { if (this.resyncPromise === task) this.resyncPromise = undefined }
+    void task.then(clear, clear)
+    return task
+  }
+
+  /** A lost socket must permit reconnect to send a fresh request rather than join a lost flight. */
+  resetServerSyncFlight(): void {
+    this.syncLifecycle++
+    this.fastSyncPromise = undefined
+    this._serverSyncing = false
+  }
+
+  private syncNormally(timeoutMs?: number): Promise<SyncableHash> {
+    const lifecycle = this.syncLifecycle
     return new Promise<SyncableHash>((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | null = null
       const handler = (id: string, hash: string) => {
         if (id !== this._shareId) return
         this.serverSync.off('synced', handler)
         if (timer) clearTimeout(timer)
+        if (this.destroyed || lifecycle !== this.syncLifecycle) {
+          resolve(hash)
+          return
+        }
 
         this._serverSyncing = false
         this._setServerSynced(true)
@@ -327,6 +399,10 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
       if (timeoutMs && timeoutMs > 0) {
         timer = setTimeout(() => {
           this.serverSync.off('synced', handler)
+          if (this.destroyed || lifecycle !== this.syncLifecycle) {
+            resolve(this.calculateHash())
+            return
+          }
 
           this._serverSyncing = false
           const error = new Error(
@@ -483,12 +559,17 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
     await this.fileMutex.runExclusive(async () => {
       if (this.fileIO !== fileIO || !this.canWriteFile() || this.editorAttachedCount() > 0) return
       const previousMtime = fileIO.getMTime()
+      // Reconciliation just read this exact text. If the document has not
+      // changed, no write is needed; skipping preserves even a concurrent edit.
+      if (this.lastRead?.fileIO === fileIO && this.lastRead.mtime === previousMtime &&
+        this.lastRead.content === this.yDoc.getText('content').toString()) return
       const fileContent = await fileIO.read()
       if (this.fileIO !== fileIO || !this.canWriteFile() || this.editorAttachedCount() > 0) return
       if (fileIO.getMTime() !== previousMtime) {
         reconcileLocalChange = true
         return
       }
+      this.lastRead = { fileIO, content: fileContent, mtime: previousMtime }
       // Read the latest document after disk I/O; cache replay or a remote
       // update need not touch the file when its text already matches.
       const content = this.yDoc.getText('content').toString()
@@ -496,6 +577,7 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
       const mtime = this.clock.now()
       await fileIO.modify(content, { mtime })
       this._lastUpdateTriggeredByDocChange = mtime
+      this.lastRead = { fileIO, content, mtime }
       this.emit('file-flushed', [mtime])
     })
     // A vault edit observed during the read takes priority over this flush.
@@ -521,6 +603,7 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
       if (!options.initialState && isSelfEcho) return true
       const fileContent = await fileIO.read()
       if (this.fileIO !== fileIO || fileIO.getMTime() !== previousMtime) return false
+      this.lastRead = { fileIO, content: fileContent, mtime: previousMtime }
       if (this.editorAttachedCount() > 0) return true
       const editorContent = readEditorContent?.()
       const dirtyEditor = editorContent !== undefined && editorContent !== fileContent
@@ -596,6 +679,8 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
   }
 
   destroy(): void {
+    this.destroyed = true
+    this.syncLifecycle++
     this.fileIO = undefined
     if (this.contentObserver) {
       this.yDoc.getText('content').unobserve(this.contentObserver)

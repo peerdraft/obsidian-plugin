@@ -2,6 +2,7 @@ import { TFile, TFolder } from 'obsidian'
 import type PeerdraftPlugin from '../peerdraftPlugin'
 import { BinaryFileSync } from '../sharedEntities/binaryFileSync'
 import { SharedFolder } from '../sharedEntities/sharedFolder'
+import { SharedDocument } from '../sharedEntities/sharedDocument'
 import { showNotice } from '../ui'
 
 // Exercise the real directory creation helper; replace plugin UI, transport,
@@ -20,7 +21,10 @@ jest.mock('../sharedEntities/binaryFileSync', () => ({
     destroy(): void {}
   },
 }))
-jest.mock('../sharedEntities/sharedDocument', () => ({ SharedDocument: class {} }))
+jest.mock('../sharedEntities/sharedDocument', () => {
+  class MockSharedDocument { static getAll = jest.fn(() => []) }
+  return { SharedDocument: MockSharedDocument }
+})
 jest.mock('y-webrtc', () => ({ WebrtcProvider: class {} }))
 
 function createFolder(path: string): TFolder {
@@ -189,5 +193,39 @@ describe('startup attachment catch-up', () => {
 
     expect(reportError).not.toHaveBeenCalled()
     expect(showNotice).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('large-folder status aggregation', () => {
+  test('reflects all 1000 child states using the current document registry', async () => {
+    const { files, plugin } = createVault()
+    files.set('Shared', createFolder('Shared'))
+    const folder = await SharedFolder.fromPermanentShareFolder({
+      path: 'Shared', persistenceId: 'folder-cache', shareId: 'large-folder',
+    }, plugin)
+    if (!folder) throw new Error('Could not create status fixture')
+    let changedChild: 'insync' | 'syncing' | 'offline' = 'insync'
+    const documents = Array.from({ length: 1000 }, (_, index) => ({
+      shareId: `child-${index}`,
+      getSyncStatus: () => index === 999 ? changedChild : 'insync',
+      syncable: { on: jest.fn() },
+    })) as unknown as SharedDocument[]
+    jest.mocked(SharedDocument.getAll).mockReturnValue(documents)
+    const runtime = folder as unknown as { _initializationGuardPassed: boolean; _syncable: { serverSynced: boolean; serverSyncing: boolean } }
+    runtime._initializationGuardPassed = true
+    jest.spyOn(runtime._syncable, 'serverSynced', 'get').mockReturnValue(true)
+    jest.spyOn(runtime._syncable, 'serverSyncing', 'get').mockReturnValue(false)
+    folder.yDoc.transact(() => {
+      for (let i = 0; i < 1000; i++) folder.getDocsFragment().set(`child-${i}`, `note-${i}.md`)
+    })
+
+    expect(folder.getSyncStatus()).toBe('insync')
+    changedChild = 'syncing'
+    expect(folder.getSyncStatus()).toBe('syncing')
+    changedChild = 'offline'
+    expect(folder.getSyncStatus()).toBe('syncing')
+    changedChild = 'insync'
+    expect(folder.getSyncStatus()).toBe('insync')
   })
 })

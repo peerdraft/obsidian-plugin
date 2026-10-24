@@ -445,6 +445,28 @@ describe('SyncableDocument State Tracking', () => {
       expect(fileFlushed).not.toHaveBeenCalled()
     })
 
+    test('does not reread an unchanged file immediately after local reconciliation', async () => {
+      ;(mockFileIO.read as jest.Mock).mockResolvedValue('Already on disk')
+      yDoc.getText('content').insert(0, 'Already on disk')
+      await syncable.reconcileWithFile()
+      expect(mockFileIO.read).toHaveBeenCalledTimes(1)
+
+      await syncable.flushToFile()
+      expect(mockFileIO.read).toHaveBeenCalledTimes(1)
+      expect(mockFileIO.modify).not.toHaveBeenCalled()
+    })
+
+    test('still reads and writes a remote edit arriving after reconciliation', async () => {
+      ;(mockFileIO.read as jest.Mock).mockResolvedValue('Already on disk')
+      yDoc.getText('content').insert(0, 'Already on disk')
+      await syncable.reconcileWithFile()
+      yDoc.getText('content').insert(yDoc.getText('content').length, ' plus remote edit')
+
+      await syncable.flushToFile()
+      expect(mockFileIO.read).toHaveBeenCalledTimes(2)
+      expect(mockFileIO.modify).toHaveBeenCalledWith('Already on disk plus remote edit', expect.anything())
+    })
+
     test('writes changed remote content once, then skips an equal repeated flush', async () => {
       let diskContent = 'Old content'
       let mtime = 123

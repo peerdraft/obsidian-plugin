@@ -30,18 +30,38 @@ export const serialize = (obj: any): string => {
   return `${JSON.stringify(obj)}`
 }
 
+const inFlightDatabaseNames = new WeakMap<IDBFactory, Promise<Set<string>>>()
+
+/** Share only an in-flight enumeration; never retain a potentially stale database list. */
+const currentDatabaseNames = (factory: IDBFactory): Promise<Set<string>> => {
+  const existing = inFlightDatabaseNames.get(factory)
+  if (existing) return existing
+  const pending = Promise.resolve().then(() => factory.databases()).then(databases => {
+    const names = new Set<string>()
+    for (const database of databases) if (database.name !== undefined) names.add(database.name)
+    return names
+  })
+  inFlightDatabaseNames.set(factory, pending)
+  const clear = (): void => {
+    if (inFlightDatabaseNames.get(factory) === pending) inFlightDatabaseNames.delete(factory)
+  }
+  void pending.then(clear, clear)
+  return pending
+}
+
 export const checkIndexedDBAlreadyExists = async (dbName: string): Promise<boolean> => {
-  if (typeof indexedDB?.databases === 'function') {
+  const factory = globalThis.indexedDB
+  if (!factory) return false
+  if (typeof factory.databases === 'function') {
     try {
-      const dbs = await indexedDB.databases()
-      return dbs.some(db => db.name === dbName)
+      return (await currentDatabaseNames(factory)).has(dbName)
     } catch (error) {
     }
   }
 
   return new Promise((resolve) => {
     let existed = true
-    const request = indexedDB.open(dbName)
+    const request = factory.open(dbName)
     request.onupgradeneeded = () => {
       existed = false
     }
@@ -49,7 +69,7 @@ export const checkIndexedDBAlreadyExists = async (dbName: string): Promise<boole
       const db = request.result
       db.close()
       if (!existed) {
-        indexedDB.deleteDatabase(dbName)
+        factory.deleteDatabase(dbName)
       }
       resolve(existed)
     }

@@ -420,10 +420,15 @@ export class SharedDocument extends SharedEntity {
           this._initialCacheCheckComplete && (!this._syncable.indexedDBLoaded || this._syncable.indexedDBWasEmpty)
         )
       ),
+      tryFastRestart: plugin.fastRestart ? async () => {
+        const document = plugin.getFastRestartDocument(this.shareId)
+        return document ? plugin.fastRestart!.tryVerify(document) : null
+      } : undefined,
       logger: { log: (...args: unknown[]) => plugin.log(args.map((a) => String(a)).join(' ')) }
     })
 
     SharedDocument._sharedEntites.push(this)
+    this._syncable.on('file-flushed', () => plugin.captureRestartProof?.(this.shareId))
 
     this._extensions = new PeerdraftRecord<Compartment>()
     this._extensions.on("delete", () => {

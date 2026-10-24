@@ -751,12 +751,18 @@ export class SharedFolder extends SharedEntity {
     const serverSynced = this._syncable.serverSynced
     const indexedDBWasEmpty = this._syncable.indexedDBWasEmpty
 
-    this._ensureChildSubscriptions()
+    // Build one lookup for this status pass instead of scanning every document
+    // again for each child in large shares. Preserve the first registered match.
+    const documents = new Map<string, SharedDocument>()
+    for (const document of SharedDocument.getAll()) {
+      if (!documents.has(document.shareId)) documents.set(document.shareId, document)
+    }
+    this._ensureChildSubscriptions(documents)
     const docsMap = this.getDocsFragment()
     let anyChildSyncing = false
     let anyChildNotSynced = false
     for (const [shareId, relativePath] of docsMap.entries()) {
-      const doc = SharedDocument.findById(shareId)
+      const doc = documents.get(shareId)
       if (doc) {
         const childStatus = doc.getSyncStatus()
         if (childStatus === 'syncing') {
@@ -820,11 +826,11 @@ export class SharedFolder extends SharedEntity {
     })
   }
 
-  private _ensureChildSubscriptions() {
+  private _ensureChildSubscriptions(documents: ReadonlyMap<string, SharedDocument>) {
     const docsMap = this.getDocsFragment()
     for (const [shareId, relativePath] of docsMap.entries()) {
       if (!this._subscribedChildDocs.has(shareId)) {
-        const doc = SharedDocument.findById(shareId)
+        const doc = documents.get(shareId)
         if (doc) {
           this._subscribedChildDocs.add(shareId)
           doc.syncable.on('syncStateChanged', () => {

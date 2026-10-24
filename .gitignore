@@ -20,21 +20,3 @@ developer-notes/
 # Local Git worktrees
 /.worktrees/
 /.worktree/
-
-# Internal development material is local only in this public plugin repository.
-/benchmarks/
-/docs/
-/design/
-/architecture/
-/features/
-/_bmad/
-/_bmad-output/
-/.agents/
-/.claude/
-/.codex/
-/AGENTS.md
-/CLAUDE.md
-*.md
-*.MD
-*.mdx
-!/README.md

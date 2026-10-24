@@ -21,5 +21,6 @@
   },
   "include": [
     "**/*.ts", "**/*.svelte"
-  ]
+  ],
+  "exclude": ["node_modules", "benchmarks"]
 }

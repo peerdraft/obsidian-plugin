@@ -21,10 +21,12 @@ export const resetVaultIdentity = (
   settings: {
     oid: string
     serverShares: { files: Map<string, unknown>; folders: Map<string, unknown> }
+    restartCheckpoints?: unknown
   },
   newOid: string
 ): void => {
   settings.oid = newOid
   settings.serverShares.files.clear()
   settings.serverShares.folders.clear()
+  delete settings.restartCheckpoints
 }

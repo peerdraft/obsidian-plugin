@@ -8,6 +8,7 @@ import { SyncableDocument, type SyncableEntity } from './sharedEntities/syncable
 import { SyncableFolder } from './sharedEntities/syncableFolder'
 import { calculateHash, createRandomId, serialize } from './tools'
 import { PendingMessageQueue } from './pendingMessageQueue'
+import { canonicalStateUpdate, isSyncProof, sha256, type CheckpointManifest, type SyncProof } from './fastRestart'
 
 export const MESSAGE_SYNC = 0
 export const MESSAGE_QUERY_AWARENESS = 3
@@ -30,6 +31,9 @@ export const STOP_SESSION = 10
 export const STOP_SESSION_CONFIRMED = 11
 export const BINARY_PRESIGN_UPLOAD = 12
 export const STOP_SESSION_FAILED = 13
+export const CHECKPOINTS_REQUEST = 14
+export const CHECKPOINTS_RESPONSE = 15
+export const CHECKPOINT_CHANGED = 16
 
 export type StopSessionFailureReason = 'unauthenticated' | 'not_found' | 'not_permitted' | 'internal'
 
@@ -84,9 +88,7 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
             const vector = decoding.readVarUint8Array(decoder)
             const hash = decoding.readVarString(decoder)
             const doc = SyncableDocument.findById(id) ?? SyncableFolder.findById(id)
-            if (doc && hash != doc.calculateHash()) {
-              provider.sendSyncStep2(doc, vector)
-            }
+            if (doc) provider.handleSyncStep1(doc, vector, hash)
           } break;
           case SYNC_STEP_2: {
             const id = decoding.readVarString(decoder)
@@ -96,6 +98,12 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
             if (doc) {
               Y.applyUpdate(doc.yDoc, update, provider)
               provider.emit('synced', [id, hash])
+              if (decoding.hasContent(decoder)) {
+                try {
+                  const proof: unknown = JSON.parse(decoding.readVarString(decoder))
+                  if (isSyncProof(proof)) provider.receiveSyncProof(id, proof)
+                } catch { /* Optional proof never prevents ordinary synchronization. */ }
+              }
             }
           }
             break;
@@ -122,6 +130,18 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
             provider.emit("stop-session-failed", [id, reason])
             break;
           }
+          case CHECKPOINTS_RESPONSE: {
+            const requestId = decoding.readVarString(decoder)
+            const payload = decoding.readVarString(decoder)
+            provider.receiveCheckpointManifest(requestId, payload)
+            break;
+          }
+          case CHECKPOINT_CHANGED: {
+            const id = decoding.readVarString(decoder)
+            const checkpoint = decoding.readVarString(decoder)
+            provider.receiveCheckpointChange(id, checkpoint || null)
+            break;
+          }
           default:
             break;
         }
@@ -142,6 +162,8 @@ const setupWS = (provider: PeerdraftWebsocketProvider) => {
     }
 
     websocket.onclose = (event) => {
+      provider.clearCheckpointRequests()
+      for (const document of SyncableDocument.getAll()) document.resetServerSyncFlight()
       provider.emit('connection-close', [event, provider])
       if (provider.authenticated) {
         provider.authenticated = false
@@ -230,6 +252,8 @@ type Events = {
   'stop-session-failed': (id: string, reason: string) => void
   'authenticated': (data: AuthResponseData) => void
   'showMessage': (title: string, content: string) => void
+  'sync-proof': (id: string, proof: SyncProof) => void
+  'checkpoint-changed': (id: string, checkpoint: string | null) => void
 }
 
 export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
@@ -253,6 +277,13 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
   version: string
   registry?: Map<string, import('./sharedEntities/syncableDocument').SyncableDocument>
   private pendingMessages = new PendingMessageQueue()
+  private readonly checkpointRequests = new Map<string, {
+    ids: string[]; resolve: (manifest: CheckpointManifest) => void;
+    reject: (error: Error) => void; timer: ReturnType<typeof setTimeout>
+  }>()
+  private readonly checkpointSubscriptions = new Set<string>()
+  private readonly proofEnabledSubscriptions = new Set<string>()
+  private readonly syncProofs = new Map<string, SyncProof>()
 
   constructor(serverUrl: string, {
     connect = true,
@@ -291,6 +322,118 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
     if (connect) {
       this.connect()
     }
+  }
+
+  /** Request a bounded manifest on the already-open sync socket. */
+  requestCheckpoints(ids: string[], timeoutMs = 5000): Promise<CheckpointManifest> {
+    const unique = Array.from(new Set(ids))
+    if (unique.length > 2000 || unique.some(id => typeof id !== 'string' || !id || id.length > 256)) {
+      return Promise.reject(new Error('Invalid checkpoint request'))
+    }
+    if (unique.length === 0) return Promise.resolve({ supported: true, checkpoints: {} })
+    if (!this.wsconnected) return Promise.reject(new Error('Sync socket is not connected'))
+    const requestId = createRandomId()
+    return new Promise<CheckpointManifest>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.checkpointRequests.delete(requestId)
+        reject(new Error('Checkpoint request timed out'))
+      }, timeoutMs)
+      this.checkpointRequests.set(requestId, { ids: unique, resolve, reject, timer })
+      for (const id of unique) this.checkpointSubscriptions.add(id)
+      const encoder = encoding.createEncoder()
+      encoding.writeVarUint(encoder, MESSAGE_MULTIPLEX_SYNC)
+      encoding.writeVarUint(encoder, CHECKPOINTS_REQUEST)
+      encoding.writeVarString(encoder, requestId)
+      encoding.writeVarString(encoder, JSON.stringify(unique))
+      try { this.sendMessage(encoding.toUint8Array(encoder)) } catch (error) {
+        clearTimeout(timer)
+        this.checkpointRequests.delete(requestId)
+        reject(error)
+      }
+    })
+  }
+
+  receiveCheckpointManifest(requestId: string, payload: string): void {
+    const pending = this.checkpointRequests.get(requestId)
+    if (!pending) return
+    this.checkpointRequests.delete(requestId)
+    clearTimeout(pending.timer)
+    try {
+      const value: unknown = JSON.parse(payload)
+      if (!value || typeof value !== 'object') throw new Error('Invalid checkpoint manifest')
+      const result = value as Partial<CheckpointManifest>
+      if (typeof result.supported !== 'boolean' || !result.checkpoints || typeof result.checkpoints !== 'object' || Array.isArray(result.checkpoints)) {
+        throw new Error('Invalid checkpoint manifest')
+      }
+      const checkpoints: Record<string, string | null> = Object.create(null)
+      for (const id of pending.ids) {
+        const checkpoint = result.checkpoints[id] ?? null
+        if (checkpoint !== null && (typeof checkpoint !== 'string' || !checkpoint || checkpoint.length > 256)) {
+          throw new Error('Invalid checkpoint token')
+        }
+        checkpoints[id] = checkpoint
+      }
+      for (const id of pending.ids) {
+        const checkpoint = checkpoints[id]
+        if (result.supported && checkpoint) this.proofEnabledSubscriptions.add(id)
+        else this.proofEnabledSubscriptions.delete(id)
+      }
+      pending.resolve({ supported: result.supported, checkpoints })
+    } catch (error) {
+      pending.reject(error instanceof Error ? error : new Error('Invalid checkpoint manifest'))
+    }
+  }
+
+  receiveCheckpointChange(id: string, checkpoint: string | null): void {
+    if (!this.checkpointSubscriptions.has(id) || (checkpoint !== null && (!checkpoint || checkpoint.length > 256))) return
+    this.syncProofs.delete(id)
+    this.emit('checkpoint-changed', [id, checkpoint])
+  }
+
+  receiveSyncProof(id: string, proof: SyncProof): void {
+    if (!isSyncProof(proof)) return
+    this.syncProofs.set(id, proof)
+    this.emit('sync-proof', [id, proof])
+  }
+
+  /** Text equality alone cannot suppress metadata/deletion-history synchronization. */
+  handleSyncStep1(doc: SyncableEntity, vector: Uint8Array, hash: string): void | Promise<void> {
+    if (!this.proofEnabledSubscriptions.has(doc.shareId)) {
+      if (hash !== doc.calculateHash()) this.sendSyncStep2(doc, vector)
+      return
+    }
+    const proof = this.syncProofs.get(doc.shareId)
+    if (!proof) {
+      this.sendSyncStep2(doc, vector)
+      return
+    }
+    const socket = this.ws
+    let changed = false
+    const onUpdate = (): void => { changed = true }
+    doc.yDoc.on('update', onUpdate)
+    let state: Uint8Array
+    try { state = canonicalStateUpdate(doc.yDoc) } catch {
+      doc.yDoc.off('update', onUpdate)
+      this.sendSyncStep2(doc, vector)
+      return
+    }
+    return sha256(state).then(stateHash => {
+      if (!this.wsconnected || this.ws !== socket || this.syncProofs.get(doc.shareId) !== proof) return
+      if (changed || stateHash !== proof.stateHash) this.sendSyncStep2(doc, vector)
+    }).catch(() => {
+      if (this.wsconnected && this.ws === socket) this.sendSyncStep2(doc, vector)
+    }).finally(() => { doc.yDoc.off('update', onUpdate) })
+  }
+
+  clearCheckpointRequests(): void {
+    for (const pending of this.checkpointRequests.values()) {
+      clearTimeout(pending.timer)
+      pending.reject(new Error('Sync socket disconnected'))
+    }
+    this.checkpointRequests.clear()
+    this.checkpointSubscriptions.clear()
+    this.proofEnabledSubscriptions.clear()
+    this.syncProofs.clear()
   }
 
   sendSyncStep1(doc: SyncableEntity) {
@@ -527,6 +670,7 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
   }
 
   disconnect() {
+    this.clearCheckpointRequests()
     this.shouldConnect = false
     if (this.ws !== null) {
       this.ws.close()

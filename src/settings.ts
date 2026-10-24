@@ -8,6 +8,7 @@ import { openLoginModal } from "./ui/login";
 import { createRandomId } from "./tools";
 import { assessVaultIdentity, resetVaultIdentity } from "./vaultIdentity";
 import { confirmVaultCopied } from "./ui/confirmVaultIdentity";
+import type { RestartRecord } from "./fastRestart";
 
 interface ShareUsageResponse {
   currentCount: number;
@@ -85,6 +86,8 @@ export interface Settings {
   /** Vault base path the `oid`/`serverShares` identity belongs to —
    *  detects data.json traveling with a copied `.obsidian` folder. */
   oidVaultPath?: string
+  /** Verified local-cache/server state, scoped to the current vault and endpoint. */
+  restartCheckpoints?: Record<string, RestartRecord>
 }
 
 const DEFAULT_SETTINGS: Omit<Settings, "oid"> = {
