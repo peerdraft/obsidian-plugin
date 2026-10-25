@@ -120,6 +120,49 @@ describe('checkpoint wire protocol', () => {
     expect(socket.sent).toHaveLength(before)
   })
 
+  test('ordinary sync repairs cached causal state even when the content checksum matches', async () => {
+    const server = new Y.Doc()
+    server.getText('content').insert(0, 'Unchanged text')
+    const local = new Y.Doc()
+    Y.applyUpdate(local, Y.encodeStateAsUpdate(server))
+    local.getArray('fileExtensions').push(['md', 'png'])
+    const entity = new SyncableDocument({ yDoc: local, shareId: 'doc', isPermanent: true, serverSync: provider })
+    entities.push(entity)
+
+    try {
+      const before = socket.sent.length
+      await provider.handleSyncStep1(entity, Y.encodeStateVector(server), entity.calculateHash())
+      expect(socket.sent).toHaveLength(before + 1)
+      const decoder = decoding.createDecoder(socket.sent[before])
+      expect(decoding.readVarUint(decoder)).toBe(MESSAGE_MULTIPLEX_SYNC)
+      expect(decoding.readVarUint(decoder)).toBe(SYNC_STEP_2)
+      expect(decoding.readVarString(decoder)).toBe('doc')
+      Y.applyUpdate(server, decoding.readVarUint8Array(decoder))
+
+      // Later deltas depend on the earlier metadata clocks, even though that
+      // metadata did not affect the content checksum used by the handshake.
+      const vector = Y.encodeStateVector(server)
+      local.getMap('documents').set('new', 'New.md')
+      Y.applyUpdate(server, Y.encodeStateAsUpdate(local, vector))
+      expect(server.getArray('fileExtensions').toArray()).toEqual(['md', 'png'])
+      expect(server.getMap('documents').get('new')).toBe('New.md')
+    } finally { server.destroy() }
+  })
+
+  test('ordinary sync still replies with an empty update to repair a stale remote checksum', async () => {
+    const entity = new SyncableDocument({ yDoc: new Y.Doc(), shareId: 'doc', isPermanent: true, serverSync: provider })
+    entities.push(entity)
+    const before = socket.sent.length
+    await provider.handleSyncStep1(entity, Y.encodeStateVector(entity.yDoc), 'stale-checksum')
+    expect(socket.sent).toHaveLength(before + 1)
+    const decoder = decoding.createDecoder(socket.sent[before])
+    decoding.readVarUint(decoder)
+    decoding.readVarUint(decoder)
+    decoding.readVarString(decoder)
+    expect(Array.from(decoding.readVarUint8Array(decoder))).toEqual([0, 0])
+    expect(decoding.readVarString(decoder)).toBe(entity.calculateHash())
+  })
+
   test('proof-capable sync transmits metadata changes even when visible text hashes match', async () => {
     const serverDoc = new Y.Doc()
     serverDoc.getText('content').insert(0, 'Unchanged text')

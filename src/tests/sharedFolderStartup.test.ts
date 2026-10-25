@@ -1,4 +1,5 @@
 import { TFile, TFolder } from 'obsidian'
+import * as Y from 'yjs'
 import type PeerdraftPlugin from '../peerdraftPlugin'
 import { BinaryFileSync } from '../sharedEntities/binaryFileSync'
 import { SharedFolder } from '../sharedEntities/sharedFolder'
@@ -117,6 +118,38 @@ describe('startup directory creation', () => {
 })
 
 describe('startup attachment catch-up', () => {
+  test('publishes newly added folder members after restoring matching server content', async () => {
+    const { files, plugin } = createVault()
+    files.set('Shared', createFolder('Shared'))
+    const server = new Y.Doc()
+    server.getArray<string>('fileExtensions').push(['md', 'png'])
+    server.getMap<string>('documents').set('existing', 'Existing.md')
+    const cachedState = Y.encodeStateAsUpdate(server)
+    jest.spyOn(SharedFolder.prototype, 'startIndexedDBSync').mockImplementation(async function () {
+      Y.applyUpdate(this.yDoc, cachedState)
+      return undefined
+    })
+    jest.mocked(plugin.serverSync.sendUpdate).mockImplementation((_folder, update) => {
+      Y.applyUpdate(server, update)
+    })
+
+    try {
+      const folder = await SharedFolder.fromPermanentShareFolder({
+        path: 'Shared', persistenceId: 'folder-cache', shareId: 'folder-share',
+      }, plugin)
+      if (!folder) throw new Error('Could not restore folder fixture')
+      // An unchanged-content startup can omit a full client-to-server state
+      // transfer. The next ordinary update must be usable on its own.
+      expect(folder.getDocsFragment().toJSON()).toEqual(server.getMap('documents').toJSON())
+      folder.addDocument({ shareId: 'new', path: 'Shared/New.md' } as SharedDocument)
+
+      expect(server.getMap('documents').get('new')).toBe('New.md')
+      expect(folder.yDoc.getArray('fileExtensions').toArray()).toEqual(['md', 'png'])
+    } finally {
+      server.destroy()
+    }
+  })
+
   test('returns the restored folder while attachment initialization is still pending', async () => {
     const { files, plugin } = createVault()
     files.set('Shared', createFolder('Shared'))

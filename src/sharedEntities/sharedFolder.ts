@@ -229,6 +229,7 @@ export class SharedFolder extends SharedEntity {
   static async fromTFolder(root: TFolder, plugin: PeerDraftPlugin) {
     showNotice(`Inititializing share for ${root.path}.`)
     const sharedFolder = new this(root, plugin)
+    sharedFolder.initializeYDoc()
     const files = sharedFolder.getFilesInFolder(root)
 
     for (const file of files) {
@@ -482,7 +483,8 @@ export class SharedFolder extends SharedEntity {
     this._path = root.path
     this.yDoc = ydoc ?? new Y.Doc()
 
-    this.initializeYDoc()
+    // Restored folders must hydrate without allocating local clocks first.
+    // New shares initialize their defaults explicitly in fromTFolder instead.
 
     this.getDocsFragment().observe((ev, tx) => {
       handleUpdate(ev, tx, this, plugin)

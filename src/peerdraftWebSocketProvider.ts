@@ -420,7 +420,7 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
   /** Text equality alone cannot suppress metadata/deletion-history synchronization. */
   handleSyncStep1(doc: SyncableEntity, vector: Uint8Array, hash: string): void | Promise<void> {
     if (!this.proofEnabledSubscriptions.has(doc.shareId)) {
-      if (hash !== doc.calculateHash()) this.sendSyncStep2(doc, vector)
+      this.sendSyncStep2(doc, vector, { remoteChecksum: hash })
       return
     }
     const proof = this.syncProofs.get(doc.shareId)
@@ -467,13 +467,18 @@ export class PeerdraftWebsocketProvider extends ObservableV2<Events> {
     this.sendMessage(encoding.toUint8Array(encoder))
   }
 
-  sendSyncStep2(doc: SyncableEntity, vector?: Uint8Array) {
+  sendSyncStep2(doc: SyncableEntity, vector?: Uint8Array, options: { remoteChecksum?: string } = {}) {
+    const update = Y.encodeStateAsUpdate(doc.yDoc, vector)
+    const checksum = doc.calculateHash()
+    // Equal visible content can still hide missing causal state. Only skip a
+    // truly empty diff when the remote checksum already matches as well.
+    if (update.length === 2 && update[0] === 0 && update[1] === 0 && options.remoteChecksum === checksum) return
     const encoder = encoding.createEncoder()
     encoding.writeVarUint(encoder, MESSAGE_MULTIPLEX_SYNC)
     encoding.writeVarUint(encoder, SYNC_STEP_2)
     encoding.writeVarString(encoder, doc.shareId)
-    encoding.writeVarUint8Array(encoder, Y.encodeStateAsUpdate(doc.yDoc, vector))
-    encoding.writeVarString(encoder, doc.calculateHash())
+    encoding.writeVarUint8Array(encoder, update)
+    encoding.writeVarString(encoder, checksum)
     this.sendMessage(encoding.toUint8Array(encoder))
   }
 
