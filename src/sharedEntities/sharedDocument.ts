@@ -303,6 +303,12 @@ export class SharedDocument extends SharedEntity {
         await concurrent._initialImportTask
         return concurrent
       }
+      // A stale folder member can refer to an unavailable/stopped document.
+      // The server currently replies with an empty update and no checksum in
+      // that case. Do not turn that reply into a new empty local/remote share.
+      if (!snapshot.checksum && Y.encodeStateAsUpdate(snapshot.doc).length === 2) {
+        throw new Error('Server returned no saved state for ' + normalizedPath + '; the shared folder may reference an unavailable document')
+      }
       const saved = getDocByPath(normalizedPath, plugin)
       const existingFile = plugin.app.vault.getAbstractFileByPath(normalizedPath)
       if ((saved && saved.shareId !== id) || (existingFile && (!(existingFile instanceof TFile) || (!saved && !options.allowExistingFile)))) {

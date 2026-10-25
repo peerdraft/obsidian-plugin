@@ -7,6 +7,7 @@ import { importedFilePath, folderImportQueue, importFileOperationActive, withImp
 import { textSha256 } from '../fastRestart'
 import { SharedFolder } from '../sharedEntities/sharedFolder'
 import { SharedDocument } from '../sharedEntities/sharedDocument'
+import { showNotice } from '../ui'
 
 jest.mock('../main', () => ({ __esModule: true, default: class {} }))
 jest.mock('../permanentShareStoreFS', () => ({ getFolderByPath: jest.fn(), moveFolder: jest.fn(async () => {}) }))
@@ -234,7 +235,7 @@ it('resumes an unchanged cached manifest without requiring new Y.Map add events'
   await resume(folder)
   expect(changes).toEqual([])
   expect(f.contents.get('Shared/note.md')).toBe('Remote content for child')
-  expect(f.settings.folderImports.folder).toBeUndefined()
+  expect(f.settings.folderImports?.folder).toBeUndefined()
   expect(f.snapshots.at(-1)?.folderImports?.folder).toBeUndefined()
   expect(f.plugin.fastRestart?.prepare).toHaveBeenCalledWith(['folder', 'child'])
   f.cleanup()
@@ -371,7 +372,7 @@ it('reconciles a cached manifest rename with the owned registered model and save
   expect(file.path).toBe('Shared/new.md')
   expect(f.contents.has('Shared/old.md')).toBe(false)
   expect(f.contents.get('Shared/new.md')).toBe('Owned offline edits')
-  expect(f.settings.serverShares.files.get('Shared/new.md')).toEqual({ shareId: 'child', persistenceId: 'child-db' })
+  expect(f.settings.serverShares.files.get('Shared/new.md')).toEqual({ shareId: 'child', persistenceId: 'child-db', importedFrom: 'folder' })
   expect(f.settings.serverShares.files.has('Shared/old.md')).toBe(false)
   expect(f.settings.folderImports?.folder).toBeUndefined()
   expect(f.plugin.serverSync.requestDocumentSnapshot).not.toHaveBeenCalled()
@@ -408,9 +409,98 @@ it('preserves a separately active same-ID document when resuming a new folder im
     expect(folder.getSyncStatus()).toBe('warning')
     jest.advanceTimersByTime(100)
     const notice = Reflect.get(folder, '_importNotice') as { setMessage: jest.Mock }
-    expect(notice.setMessage).toHaveBeenCalledWith(expect.stringContaining('some files need retry'))
+    expect(notice.setMessage).toHaveBeenCalledWith(expect.stringContaining('local file conflicts'))
+    const attempts = f.started.length
+    await resume(folder)
+    await resume(folder)
+    expect(f.started).toHaveLength(attempts)
+    expect(Reflect.get(folder, '_importNotice')).toBe(notice)
+    expect(jest.mocked(showNotice).mock.calls.filter(call => call[1] === 0)).toHaveLength(1)
+    expect(folder.getSyncStatus()).toBe('warning')
     expect(f.plugin.serverSync.requestDocumentSnapshot).not.toHaveBeenCalled()
   } finally { f.cleanup(); jest.useRealTimers() }
+})
+
+it('recognizes a legacy registration at an older filename within the same folder', async () => {
+  const f = fixture()
+  const folder = f.folder('folder', 'Shared', { child: 'Skill.md' })
+  const file = await f.create('Shared/Untitled.md', 'Unsynced local edits')
+  const document = f.document('child', file.path)
+  f.settings.serverShares.files.set(file.path, { shareId: 'child', persistenceId: 'existing-cache' })
+  f.settings.folderImports = { folder: { path: 'Shared', startedAt: 1, documents: {
+    child: { path: 'Shared/Skill.md' },
+  } } }
+  await resume(folder)
+  expect(document.path).toBe('Shared/Skill.md')
+  expect(f.contents.get('Shared/Skill.md')).toBe('Unsynced local edits')
+  expect(f.contents.has('Shared/Untitled.md')).toBe(false)
+  expect(f.settings.serverShares.files.get('Shared/Skill.md')?.persistenceId).toBe('existing-cache')
+  expect(f.settings.serverShares.files.get('Shared/Skill.md')?.importedFrom).toBe('folder')
+  expect(f.settings.folderImports?.folder).toBeUndefined()
+  expect(f.plugin.serverSync.requestDocumentSnapshot).not.toHaveBeenCalled()
+  f.cleanup()
+})
+
+it('does not claim a legacy registration belonging to a nested shared folder', async () => {
+  const f = fixture()
+  jest.spyOn(console, 'error').mockImplementation(() => {})
+  const folder = f.folder('outer', 'Shared', { child: 'note.md' })
+  // Saved roots matter even before that folder's model has been restored.
+  f.settings.serverShares.folders.set('Shared/Nested', { shareId: 'inner', persistenceId: 'inner-db' })
+  const file = await f.create('Shared/Nested/old.md', 'Nested independent content')
+  const document = f.document('child', file.path)
+  f.settings.serverShares.files.set(file.path, { shareId: 'child', persistenceId: 'existing-cache' })
+  await resume(folder)
+  expect(document.path).toBe('Shared/Nested/old.md')
+  expect(f.contents.get(file.path)).toBe('Nested independent content')
+  expect(f.renameFile).not.toHaveBeenCalled()
+  expect(f.files.has('Shared/note.md')).toBe(false)
+  f.cleanup()
+})
+
+it('retries a resolved file conflict and clears its warning and progress notice', async () => {
+  const f = fixture()
+  jest.spyOn(console, 'error').mockImplementation(() => {})
+  const folder = f.folder('folder', 'Shared', { child: 'new.md' })
+  Reflect.set(folder, '_initializationGuardPassed', true)
+  const file = await f.create('Shared/old.md', 'Owned local edits')
+  f.document('child', file.path)
+  f.settings.serverShares.files.set(file.path, { shareId: 'child', persistenceId: 'cache', importedFrom: 'folder' })
+  const collision = await f.create('Shared/new.md', 'Separate local notes')
+  f.settings.serverShares.files.set(collision.path, { shareId: 'other', persistenceId: 'other-cache' })
+  await resume(folder)
+  expect(f.contents.get('Shared/new.md')).toBe('Separate local notes')
+  expect(folder.getSyncStatus()).toBe('warning')
+  const notice = Reflect.get(folder, '_importNotice') as { hide: jest.Mock }
+  await resume(folder)
+  expect(Reflect.get(folder, '_importNotice')).toBe(notice)
+  expect(f.renameFile).not.toHaveBeenCalled()
+  // The owner moves the conflicting local file aside.
+  f.files.delete('Shared/new.md')
+  f.contents.delete('Shared/new.md')
+  f.settings.serverShares.files.delete('Shared/new.md')
+  await resume(folder)
+  expect(f.contents.get('Shared/new.md')).toBe('Owned local edits')
+  expect(f.settings.folderImports?.folder).toBeUndefined()
+  expect(folder.getSyncStatus()).toBe('insync')
+  expect(notice.hide).toHaveBeenCalledTimes(1)
+  f.cleanup()
+})
+
+it('retries a transient download failure using one progress notice', async () => {
+  const f = fixture()
+  jest.spyOn(console, 'error').mockImplementation(() => {})
+  const folder = f.folder('folder', 'Shared', { child: 'note.md' })
+  jest.mocked(f.plugin.serverSync.requestDocumentSnapshot).mockRejectedValueOnce(new Error('Connection lost'))
+  await resume(folder)
+  const notice = Reflect.get(folder, '_importNotice') as { hide: jest.Mock }
+  expect(f.settings.folderImports?.folder).toBeDefined()
+  await resume(folder)
+  expect(f.contents.get('Shared/note.md')).toBe('Remote content for child')
+  expect(f.settings.folderImports?.folder).toBeUndefined()
+  expect(notice.hide).toHaveBeenCalledTimes(1)
+  expect(jest.mocked(showNotice).mock.calls.filter(call => call[1] === 0)).toHaveLength(1)
+  f.cleanup()
 })
 
 it.each(['update', 'delete'])('preserves a separately active same-ID document after a remote folder entry %s', async mode => {

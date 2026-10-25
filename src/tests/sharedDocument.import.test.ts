@@ -203,6 +203,24 @@ test('never overwrites an unrelated local file', async () => {
   } finally { await f.cleanup() }
 })
 
+test.each([false, true])('rejects an unavailable server document before changing local data (file exists: %s)', async existing => {
+  const f = await fixture()
+  const empty = new Y.Doc()
+  try {
+    const target = 'folder/note.md'
+    const file = existing ? await f.create(target, 'Preserved local text') : undefined
+    f.create.mockClear()
+    f.server.requestDocumentSnapshot.mockResolvedValue({ doc: empty, checksum: '', proof: undefined as unknown as SyncProof, isCurrent: () => true })
+    await expect(SharedDocument.fromIdAndPath('doc', target, f.plugin)).rejects.toThrow('no saved state')
+    expect(f.create).not.toHaveBeenCalled()
+    expect(f.modify).not.toHaveBeenCalled()
+    expect(add).not.toHaveBeenCalled()
+    expect(SharedDocument.findById('doc')).toBeUndefined()
+    expect(f.server.sendSyncStep1).not.toHaveBeenCalled()
+    if (file) expect(f.contents.get(file)).toBe('Preserved local text')
+  } finally { empty.destroy(); await f.cleanup() }
+})
+
 test('does not create a file when membership changed while downloading', async () => {
   const f = await fixture()
   try {

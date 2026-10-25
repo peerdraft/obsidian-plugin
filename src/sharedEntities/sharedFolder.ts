@@ -168,6 +168,9 @@ export class SharedFolder extends SharedEntity {
   private _reconcilingImport = false
   private readonly _importRecovery = new Map<string, Mutex>()
   private readonly _importFailures = new Set<string>()
+  // Retry transport failures normally, but leave an unchanged ownership/path
+  // conflict paused until its file, registration, or manifest target changes.
+  private readonly _importConflicts = new Map<string, { file: TAbstractFile | null; signature: string }>()
 
   // Sync-engine state delegated to composed SyncableFolder instance.
   private _syncable!: SyncableFolder
@@ -692,11 +695,52 @@ export class SharedFolder extends SharedEntity {
     return session
   }
 
+  /** Older registrations have no importedFrom marker. Match their ID and
+   * owning root before treating an old filename as this manifest's document. */
+  private ownsRegisteredImport(id: string, localPath: string): boolean {
+    const saved = this.plugin.settings.serverShares.files.get(localPath)
+    if (saved?.shareId !== id || !localPath.startsWith(this.path + '/')) return false
+    if (saved.importedFrom) return saved.importedFrom === this.shareId
+    // Legacy ownership is sufficient for a current member's rename, never for
+    // deleting an unmarked local share after remote membership disappeared.
+    if (!this.getDocsFragment().has(id)) return false
+    const roots = new Set([
+      ...this.plugin.settings.serverShares.folders.keys(),
+      ...SharedFolder.getAll().map(folder => folder.path),
+    ])
+    return !Array.from(roots).some(root => root.startsWith(this.path + '/') && localPath.startsWith(root + '/'))
+  }
+
+  private importConflictState(id: string): { file: TAbstractFile | null; signature: string } | undefined {
+    const relative = this.getDocsFragment().get(id)
+    if (!relative) return
+    let target: string
+    try { target = importedFilePath(this.path, relative) } catch { return }
+    const file = this.plugin.app.vault.getAbstractFileByPath(target) ?? null
+    const saved = this.plugin.settings.serverShares.files.get(target)
+    const model = SharedDocument.findById(id)
+    if (!(model && model.path !== target) && !(file && (!(file instanceof TFile) || (saved && saved.shareId !== id)))) return
+    return { file, signature: JSON.stringify([
+      target, model?.path, saved?.shareId,
+      model ? this.ownsRegisteredImport(id, model.path) : false,
+    ]) }
+  }
+
+  private hasUnchangedImportConflict(id: string): boolean {
+    const previous = this._importConflicts.get(id)
+    if (!previous) return false
+    const current = this.importConflictState(id)
+    if (current && current.file === previous.file && current.signature === previous.signature) return true
+    this._importConflicts.delete(id)
+    return false
+  }
+
   /** Queue both cold-join and live-add work through the same vault-wide budget. */
   queueDocumentImport(id: string): Promise<void> {
     const pending = this._pendingAdds.get(id)
     if (pending) return pending
     if (this._importStopped || !this.getDocsFragment().has(id)) return Promise.resolve()
+    if (this.hasUnchangedImportConflict(id)) return Promise.resolve()
     const queue = folderImportQueue(this.plugin)
     let runningRoot: string | undefined
     const run = queue.schedule(this.shareId + ':' + id, async () => {
@@ -749,8 +793,11 @@ export class SharedFolder extends SharedEntity {
         },
       })
       if (!current()) return
-      if (document.path !== target) throw new Error('Share is already active at another local path')
+      if (document.path !== target) {
+        throw new Error('Share is already active at ' + document.path + '; cannot also import at ' + target)
+      }
       this._importFailures.delete(id)
+      this._importConflicts.delete(id)
       const savedDocument = this.plugin.settings.serverShares.files.get(target)
       if (savedDocument?.shareId === id) savedDocument.importedFrom = this.shareId
       delete session.documents[id]
@@ -765,6 +812,8 @@ export class SharedFolder extends SharedEntity {
         if (target && target !== importedFilePath(this.path, this.getDocsFragment().get(id)!)) return
       } catch { /* Invalid current paths are visible failures, not escaped writes. */ }
       this._importFailures.add(id)
+      const conflict = this.importConflictState(id)
+      if (conflict) this._importConflicts.set(id, conflict)
       console.error('[Peerdraft] Could not import shared document', error)
     }).then(async () => {
       this._pendingAdds.delete(id)
@@ -805,9 +854,10 @@ export class SharedFolder extends SharedEntity {
         for (const [id, entry] of entries) {
           if (this._importStopped) return
           if (this._pendingAdds.has(id)) continue
+          if (this.hasUnchangedImportConflict(id)) continue
           const relative = this.getDocsFragment().get(id)
           const model = SharedDocument.findById(id)
-          const sourceAuthorized = model && (this.plugin.settings.serverShares.files.get(model.path)?.importedFrom === this.shareId ||
+          const sourceAuthorized = model && (this.ownsRegisteredImport(id, model.path) ||
             (entry.path === model.path && (entry.materialized || !!entry.contentHash)))
           const oldPath = sourceAuthorized ? model.path : entry.path
           const target = relative ? importedFilePath(this.path, relative) : undefined
@@ -826,11 +876,15 @@ export class SharedFolder extends SharedEntity {
         const relative = this.getDocsFragment().get(id)
         if (relative && doc && !doc.initialImportInProgress && doc.path === importedFilePath(this.path, relative)) {
           delete session.documents[id]
+          this._importFailures.delete(id)
+          this._importConflicts.delete(id)
         }
       }
       await saveSettingsNow(this.plugin.settings, this.plugin)
       if (this._importStopped) return
-      if (missing.length) this._importNotice = showNotice('Importing ' + this.path + ': 0 / ' + this._importTotal, 0)
+      if (missing.length && !this._importNotice) {
+        this._importNotice = showNotice('Importing ' + this.path + ': ' + (this._importTotal - missing.length) + ' / ' + this._importTotal, 0)
+      }
       await this.plugin.fastRestart?.prepare([this.shareId, ...missing])
       if (this._importStopped) return
       await Promise.all(missing.map(id => this.queueDocumentImport(id)))
@@ -839,7 +893,7 @@ export class SharedFolder extends SharedEntity {
     })().catch(error => {
       if (!this._importStopped) {
         console.error('[Peerdraft] Could not continue folder import', error)
-        showNotice('Import paused in ' + this.path + '. Reload Obsidian to resume.')
+        showNotice('Import paused in ' + this.path + '. Check the connection and developer console for details.')
       }
     })
     this._importTask = task
@@ -885,14 +939,14 @@ export class SharedFolder extends SharedEntity {
     const session = this.plugin.settings.folderImports?.[this.shareId]
     const entry = session?.documents[id]
     const candidate = SharedDocument.findById(id)
-    const sourceAuthorized = candidate && (this.plugin.settings.serverShares.files.get(candidate.path)?.importedFrom === this.shareId ||
+    const sourceAuthorized = candidate && (this.ownsRegisteredImport(id, candidate.path) ||
       (entry?.path === candidate.path && (entry.materialized || !!entry.contentHash)))
     const previousPath = sourceAuthorized ? candidate.path : entry?.path ?? importedFilePath(this.path, previousRelative)
     const model = candidate?.path === previousPath ? candidate : undefined
     const file = this.plugin.app.vault.getAbstractFileByPath(previousPath)
     const saved = this.plugin.settings.serverShares.files.get(previousPath)
     let owned = (entry?.path === previousPath && entry.materialized) ||
-      (saved?.shareId === id && saved.importedFrom === this.shareId)
+      this.ownsRegisteredImport(id, previousPath)
     if (!owned && file instanceof TFile && entry?.contentHash) {
       owned = await textSha256(await this.plugin.app.vault.read(file)) === entry.contentHash
     }
@@ -926,6 +980,7 @@ export class SharedFolder extends SharedEntity {
         }
         if (saved) {
           this.plugin.settings.serverShares.files.delete(previousPath)
+          if (saved.shareId === id) saved.importedFrom = this.shareId
           this.plugin.settings.serverShares.files.set(nextPath, saved)
         }
         model?.updateFileRef(file)
@@ -940,6 +995,7 @@ export class SharedFolder extends SharedEntity {
     if (!nextRelative) {
       if (session) delete session.documents[id]
       this._importFailures.delete(id)
+      this._importConflicts.delete(id)
       await saveSettingsNow(this.plugin.settings, this.plugin)
     } else {
       if (entry) entry.path = importedFilePath(this.path, nextRelative)
@@ -964,6 +1020,7 @@ export class SharedFolder extends SharedEntity {
     await withImportFileOperation(this.plugin, [file.path], () => this.plugin.app.vault.delete(file))
     if (session) delete session.documents[id]
     this._importFailures.delete(id)
+    this._importConflicts.delete(id)
     await saveSettingsNow(this.plugin.settings, this.plugin)
     await this.finishImportIfComplete()
     this.scheduleImportProgress()
@@ -977,7 +1034,9 @@ export class SharedFolder extends SharedEntity {
       this._importTotal = this.getDocsFragment().size
       const remaining = Object.keys(this.plugin.settings.folderImports?.[this.shareId]?.documents ?? {}).length
       this._importNotice?.setMessage('Importing ' + this.path + ': ' + Math.max(0, this._importTotal - remaining) +
-        ' / ' + this._importTotal + (this._importFailures.size ? ' — some files need retry; reload to resume' : ''))
+        ' / ' + this._importTotal + (this._importFailures.size ?
+          (this._importConflicts.size ? ' — paused: local file conflicts; see developer console' :
+            ' — some files failed; retrying on the next connection sync') : ''))
       void this._updateStatusIndicator()
     }, 100)
   }
@@ -1022,6 +1081,7 @@ export class SharedFolder extends SharedEntity {
       await active
       if (!this._importStopped) {
         this._importFailures.clear()
+        this._importConflicts.clear()
         await this.importMissingDocuments()
       }
     }
