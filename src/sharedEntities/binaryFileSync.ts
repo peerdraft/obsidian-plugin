@@ -42,11 +42,14 @@ export class BinaryFileSync {
   private remoteUpdatingPaths: Set<string> = new Set()
   private unsharingPaths: Set<string> = new Set()
   private syncingFiles: Set<string> = new Set()
+  // Failed first uploads can own warning badges without a shared map entry.
+  private statusPaths: Set<string> = new Set()
   // Serializes presign requests: the WebSocket response for BINARY_PRESIGN_UPLOAD
   // carries no request id, so at most one request may be in flight at a time or
   // a concurrent second request's response could be mistaken for the first's.
   private presignQueue: Promise<void> = Promise.resolve()
   private yDocObserver?: (event: Y.YMapEvent<BinaryFileMetadata>) => void
+  private destroyed = false
 
   constructor(
     yDoc: Y.Doc,
@@ -67,6 +70,7 @@ export class BinaryFileSync {
    * Update status indicator for a binary file in the file explorer
    */
   private async updateStatus(relativePath: string): Promise<void> {
+    if (this.destroyed) return
     try {
       const absolutePath = this.getAbsolutePath(relativePath)
       const metadata = this.binaryFilesMap.get(relativePath)
@@ -74,10 +78,12 @@ export class BinaryFileSync {
 
       if (!file) {
         // File doesn't exist locally, remove status
+        this.statusPaths.delete(relativePath)
         await removeStatusClass(absolutePath, this.plugin)
         return
       }
 
+      this.statusPaths.add(relativePath)
       if (this.syncingFiles.has(relativePath)) {
         await setStatusClass(absolutePath, this.plugin, 'syncing')
         return
@@ -86,6 +92,8 @@ export class BinaryFileSync {
       if (metadata) {
         const content = await this.vault.readBinary(file as TFile)
         const hash = await calculateFileHash(content)
+        // A local unshare may finish while the file is being read or hashed.
+        if (this.destroyed) return
         if (hash === metadata.hash) {
           await setStatusClass(absolutePath, this.plugin, 'insync')
         } else {
@@ -104,6 +112,7 @@ export class BinaryFileSync {
    * Mark a file as currently syncing
    */
   private async setSyncing(relativePath: string, isSyncing: boolean): Promise<void> {
+    if (this.destroyed) return
     if (isSyncing) {
       this.syncingFiles.add(relativePath)
     } else {
@@ -119,6 +128,7 @@ export class BinaryFileSync {
     try {
       const absolutePath = this.getAbsolutePath(relativePath)
       this.syncingFiles.delete(relativePath)
+      this.statusPaths.delete(relativePath)
       await removeStatusClass(absolutePath, this.plugin)
     } catch (error) {
       console.error('[BinaryFileSync] Error removing status:', error)
@@ -259,6 +269,7 @@ export class BinaryFileSync {
       // Rename within folder - update Y.Map path
       const oldRelativePath = this.relativePathFromAbsolute(normalizedOldPath)
       const newRelativePath = this.getRelativePath(file)
+      if (this.statusPaths.delete(oldRelativePath)) this.statusPaths.add(newRelativePath)
       const metadata = this.binaryFilesMap.get(oldRelativePath)
       if (metadata) {
         this.yDoc.transact(() => {
@@ -286,6 +297,7 @@ export class BinaryFileSync {
       // Use file.path (new path) because Obsidian re-keys fileItems to the new path after rename
       void removeStatusClass(file.path, this.plugin)
       this.syncingFiles.delete(oldRelativePath)
+      this.statusPaths.delete(oldRelativePath)
     } else if (!wasInFolder && isInFolder) {
       // Moved into folder - schedule upload
       this.scheduleUpload(file)
@@ -465,7 +477,6 @@ export class BinaryFileSync {
       }
 
       const arrayBuffer = response.arrayBuffer
-      void this.setSyncing(relativePath, false)
 
       // Check if file exists locally
       const existingFile = this.vault.getAbstractFileByPath(absolutePath)
@@ -504,9 +515,12 @@ export class BinaryFileSync {
       new Notice(`Downloaded ${relativePath}`)
     } catch (error) {
       this.remoteUpdatingPaths.delete(relativePath)
-      void this.setSyncing(relativePath, false)
       console.error('[BinaryFileSync] Binary file download error:', error)
       new Notice(`Failed to download ${relativePath}: ${(error as Error).message}`)
+    } finally {
+      // The bytes must be on disk before hashing and painting their final status.
+      // This also settles requests that fail before reaching the vault write.
+      await this.setSyncing(relativePath, false)
     }
   }
 
@@ -628,6 +642,13 @@ export class BinaryFileSync {
    * Stop binary file sync - clean up listeners and timeouts
    */
   destroy(): void {
+    if (this.destroyed) return
+    this.destroyed = true
+    // Keep local files and shared metadata, but remove every badge we own,
+    // including pending or failed uploads that have no shared metadata yet.
+    for (const relativePath of new Set([...this.binaryFilesMap.keys(), ...this.syncingFiles, ...this.statusPaths])) {
+      void this.removeStatus(relativePath)
+    }
     // Clear all upload timeouts
     this.uploadTimeouts.forEach((timeoutId) => {
       window.clearTimeout(timeoutId)
