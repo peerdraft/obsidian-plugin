@@ -33,6 +33,26 @@ function createFolder(path: string): TFolder {
   return Object.assign(new TFolder(), { path })
 }
 
+describe('reserved local recovery area', () => {
+  test.each(['_Peerdraft Recovery', '_Peerdraft Recovery/Projects'])('cannot share %s before initialization or scanning', async location => {
+    const root = createFolder(location)
+    Object.defineProperty(root, 'children', { get: () => { throw new Error('Must not walk recovery files') } })
+    // No plugin services are available: the path must be rejected before
+    // constructing an entity, authentication, transport, or walking files.
+    await expect(SharedFolder.fromTFolder(root, {} as PeerdraftPlugin)).resolves.toBeUndefined()
+    expect(showNotice).toHaveBeenLastCalledWith(expect.stringContaining('Recovery copies are kept local'))
+  })
+
+  test.each([
+    ['_Peerdraft Recovery/Joined', ''],
+    [undefined, '_Peerdraft Recovery'],
+  ])('cannot join a folder into recovery before transport', async (location, root) => {
+    const plugin = { settings: { root } } as PeerdraftPlugin
+    await expect(SharedFolder.fromShareURL('https://example.org/team/id', plugin, location)).resolves.toBeUndefined()
+    expect(showNotice).toHaveBeenLastCalledWith(expect.stringContaining('Recovery copies are kept local'))
+  })
+})
+
 function createVault(): {
   files: Map<string, TFile | TFolder>
   createFolder: jest.Mock<Promise<TFolder>, [string]>

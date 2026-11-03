@@ -20,6 +20,7 @@ import { SyncableFolder } from "./syncableFolder";
 import { folderImportQueue, importedFilePath, withImportFileOperation } from '../folderImport';
 import { saveSettingsNow } from '../settings';
 import { textSha256 } from '../fastRestart';
+import { isLocalRecoveryPath } from '../localRecovery';
 
 const handleUpdate = <T>(ev: Y.YMapEvent<T>, tx: Y.Transaction, folder: SharedFolder, plugin: PeerDraftPlugin) => {
 
@@ -230,6 +231,10 @@ export class SharedFolder extends SharedEntity {
   }
 
   static async fromTFolder(root: TFolder, plugin: PeerDraftPlugin) {
+    if (isLocalRecoveryPath(root.path)) {
+      showNotice('Recovery copies are kept local. Move the folder outside _Peerdraft Recovery to share it.')
+      return
+    }
     showNotice(`Inititializing share for ${root.path}.`)
     const sharedFolder = new this(root, plugin)
     sharedFolder.initializeYDoc()
@@ -313,6 +318,10 @@ export class SharedFolder extends SharedEntity {
   }
 
   static async fromShareURL(url: string, plugin: PeerDraftPlugin, location?: string): Promise<SharedFolder | void> {
+    if (isLocalRecoveryPath(location ?? plugin.settings.root)) {
+      showNotice('Recovery copies are kept local. Choose a destination outside _Peerdraft Recovery.')
+      return
+    }
     const id = url.split('/').pop()
     if (!id || !id.match('^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')) {
       showNotice("No valid peerdraft link")
@@ -345,6 +354,10 @@ export class SharedFolder extends SharedEntity {
       folderPath = path.join(plugin.settings.root, initialRootName)
     }
 
+    if (isLocalRecoveryPath(folderPath)) {
+      showNotice('Recovery copies are kept local. Choose a destination outside _Peerdraft Recovery.')
+      return
+    }
     const folder = await SharedFolder.getOrCreatePath(folderPath!, plugin)
 
     if (!folder) {

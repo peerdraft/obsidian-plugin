@@ -66,6 +66,8 @@ export interface SyncableDocumentOptions {
   tryFastRestart?: (document: SyncableDocument) => Promise<SyncableHash | null>
   // An isolated download used only when initial cached file text may already be remote.
   loadInitialServerSnapshot?: () => Promise<SyncableServerSnapshot>
+  // Preserve a real local version before adopting server text without a cache.
+  preserveLocalVersion?: (content: string) => Promise<void>
   // Default 1000 ms. Debounce for yDoc → file flushes.
   fileFlushIntervalMs?: number
   // Optional custom registry for this syncable. Used by test harnesses.
@@ -147,6 +149,7 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
   private readonly serverSyncReady: () => boolean
   private readonly tryFastRestart?: (document: SyncableDocument) => Promise<SyncableHash | null>
   private readonly loadInitialServerSnapshot?: () => Promise<SyncableServerSnapshot>
+  private readonly preserveLocalVersion?: (content: string) => Promise<void>
   private fastSyncPromise?: Promise<SyncableHash>
   private syncLifecycle = 0
   private destroyed = false
@@ -194,6 +197,7 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
     this.serverSyncReady = opts.canStartServerSync ?? (() => true)
     this.tryFastRestart = opts.tryFastRestart
     this.loadInitialServerSnapshot = opts.loadInitialServerSnapshot
+    this.preserveLocalVersion = opts.preserveLocalVersion
     this.fileFlushIntervalMs = opts.fileFlushIntervalMs ?? 1000
     this.registry = opts.registry ?? SyncableDocument._registry
 
@@ -673,7 +677,7 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
    */
   reconcileWithFile(
     readEditorContent?: () => string | undefined,
-    options: { initialState?: 'cached' | 'server' | 'imported'; verifyCachedServer?: boolean } = {},
+    options: { initialState?: 'cached' | 'server' | 'imported'; verifyCachedServer?: boolean; preserveLocalOnServer?: boolean; emptyDiskIsPlaceholder?: boolean } = {},
   ): Promise<boolean> {
     const fileIO = this.fileIO
     if (!fileIO) return Promise.resolve(false)
@@ -689,6 +693,36 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
       if (this.editorAttachedCount() > 0) return true
       const editorContent = readEditorContent?.()
       const dirtyEditor = editorContent !== undefined && editorContent !== fileContent
+      if (options.preserveLocalOnServer) {
+        if (!this.serverSynced) return false
+        const remoteContent = this.yDoc.getText('content').toString()
+        const emptyPlaceholder = options.emptyDiskIsPlaceholder && fileContent === ''
+        const localVersions = [
+          ...(emptyPlaceholder ? [] : [fileContent]),
+          ...(editorContent === undefined || (emptyPlaceholder && editorContent === '') ? [] : [editorContent]),
+        ]
+          .filter((value, index, values) => value !== remoteContent && values.indexOf(value) === index)
+        const lifecycle = this.syncLifecycle
+        const shareId = this._shareId
+        let changed = false
+        const onUpdate = (): void => { changed = true }
+        this.yDoc.on('update', onUpdate)
+        const current = (): boolean => !this.destroyed && lifecycle === this.syncLifecycle && shareId === this._shareId &&
+          this.fileIO === fileIO && fileIO.getMTime() === previousMtime && this.editorAttachedCount() === 0 &&
+          !changed && readEditorContent?.() === editorContent
+        try {
+          for (const content of localVersions) {
+            if (!this.preserveLocalVersion) throw new Error('Local recovery storage is unavailable')
+            await this.preserveLocalVersion(content)
+            if (!current()) return false
+          }
+          if (await fileIO.read() !== fileContent || !current()) return false
+          // The existing Y.Doc already contains the downloaded server history.
+          // Disk/editor differences are recovery material, not publishable edits.
+          this.lastRead = { fileIO, content: fileContent, mtime: previousMtime }
+          return true
+        } finally { this.yDoc.off('update', onUpdate) }
+      }
       if (options.initialState === 'server' && editorContent !== undefined && !dirtyEditor) {
         this.lastRead = { fileIO, content: fileContent, mtime: previousMtime }
         return true

@@ -7,8 +7,13 @@ import type PeerdraftPlugin from '../peerdraftPlugin'
 import { SharedDocument } from '../sharedEntities/sharedDocument'
 import { PeerdraftRecord } from '../utils/peerdraftRecord'
 import { removeStatusClass, setStatusClass } from '../workspace/explorerView'
+import { preserveLocalVersion } from '../localRecovery'
 
 jest.mock('../main', () => ({ __esModule: true, default: class {} }))
+jest.mock('../localRecovery', () => ({
+  ...jest.requireActual('../localRecovery'),
+  preserveLocalVersion: jest.fn(async () => ({ file: { path: '_Peerdraft Recovery/note.md' }, created: true })),
+}))
 jest.mock('../sharedEntities/sharedFolder', () => ({ SharedFolder: class {} }))
 jest.mock('../sharedEntities/canvas', () => ({}))
 jest.mock('../permanentShareStoreFS', () => ({ getDocByPath: jest.fn() }))
@@ -529,18 +534,20 @@ describe('restored text-document readiness', () => {
       expect(f.doc.initializationGuardPassed).toBe(true)
       expect(f.doc.getContentFragment().toString()).toBe('Newer server text')
       expect(f.editor.setValue).toHaveBeenCalledWith('Newer server text')
+      expect(preserveLocalVersion).toHaveBeenCalledWith(f.plugin.app.vault, 'note.md', 'Offline local edit')
     } finally { await f.cleanup() }
   })
 
-  test.each(['Unsaved local editor text', ''])('preserves open editor text before collaboration attachment (%p)', async localText => {
+  test.each(['Unsaved local editor text', ''])('recovers open editor text before attaching downloaded server content (%p)', async localText => {
     const f = await restoredFixture(localText)
     jest.mocked(getLeafIdsByPath).mockReturnValue(['leaf'])
     try {
       f.doc.syncable._setServerSynced(true)
       await flushStartup()
       expect(f.doc.initializationGuardPassed).toBe(true)
-      expect(f.doc.getContentFragment().toString()).toBe(localText)
-      expect(f.editor.setValue).not.toHaveBeenCalled()
+      expect(f.doc.getContentFragment().toString()).toBe('Cached old text')
+      expect(preserveLocalVersion).toHaveBeenCalledWith(f.plugin.app.vault, 'note.md', localText)
+      expect(f.editor.setValue).toHaveBeenCalledWith('Cached old text')
       expect(f.editor.cm.dispatch).toHaveBeenCalledTimes(1)
     } finally { await f.cleanup() }
   })

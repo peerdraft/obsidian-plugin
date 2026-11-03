@@ -623,3 +623,25 @@ test.each(['complete', 'abort', 'error', 'destroy'])('import completion waits fo
     }
   } finally { await f.cleanup() }
 })
+
+
+describe('reserved recovery share creation', () => {
+  test.each(['_Peerdraft Recovery/Note.md', '_Peerdraft Recovery/Projects/Note.md'])(
+    'rejects sharing %s before constructing, authenticating, or reading the file', async location => {
+      const file = Object.assign(new TFile(), { path: location })
+      await expect(SharedDocument.fromTFile(file, { permanent: true }, {} as PeerdraftPlugin)).resolves.toBeNull()
+      expect(showNotice).toHaveBeenLastCalledWith(expect.stringContaining('Recovery copies are kept local'))
+    },
+  )
+
+  test('rejects an imported document destination before requesting its snapshot', async () => {
+    await expect(SharedDocument.fromIdAndPath('id', '_Peerdraft Recovery/Note.md', {} as PeerdraftPlugin))
+      .rejects.toThrow('Recovery copies cannot be shared')
+  })
+
+  test('rejects joining with a recovery download root before transport', async () => {
+    const plugin = { settings: { root: '_Peerdraft Recovery/Projects' } } as PeerdraftPlugin
+    await expect(SharedDocument.fromShareURL('https://example.org/s/id', plugin)).resolves.toBeUndefined()
+    expect(showNotice).toHaveBeenLastCalledWith(expect.stringContaining('Recovery copies are kept local'))
+  })
+})

@@ -5,6 +5,7 @@ import { prepareCommunication } from "./cookie"
 import { getJWT } from "./login"
 import { PeerdraftWebsocketProvider } from "./peerdraftWebSocketProvider"
 import { FastRestartManager, type FastRestartDocument, type SyncProof } from "./fastRestart"
+import { savedSharesOutsideRecovery } from "./localRecovery"
 import { importFileOperationActive } from './folderImport'
 import { RestartResyncQueue } from "./restartResyncQueue"
 import { ServerAPI } from "./serverAPI"
@@ -141,7 +142,9 @@ export default class PeerdraftPlugin extends Plugin {
       async () => {
         if (stopped) return
         this.serverSync = new PeerdraftWebsocketProvider(this.settings.sync, { jwt: getJWT(plugin.settings.oid) ?? undefined, version: plugin.manifest.version, connect: false })
-        const savedDocumentIds = (): string[] => Array.from(plugin.settings.serverShares.files.values(), data => data.shareId)
+        const savedFiles = () => savedSharesOutsideRecovery(plugin.settings.serverShares.files.entries())
+        const savedFolders = () => savedSharesOutsideRecovery(plugin.settings.serverShares.folders.entries())
+        const savedDocumentIds = (): string[] => savedFiles().map(([, data]) => data.shareId)
         const restartResync = new RestartResyncQueue(
           id => SharedDocument.findById(id),
           () => stopped,
@@ -188,8 +191,8 @@ export default class PeerdraftPlugin extends Plugin {
 
         const failedPaths = new Set<string>()
         const pendingPaths = (): string[] => [
-          ...Array.from(plugin.settings.serverShares.files.keys()).filter(path => !SharedDocument.findByPath(path)),
-          ...Array.from(plugin.settings.serverShares.folders.keys()).filter(path => !SharedFolder.findByPath(path)),
+          ...savedFiles().map(([path]) => path).filter(path => !SharedDocument.findByPath(path)),
+          ...savedFolders().map(([path]) => path).filter(path => !SharedFolder.findByPath(path)),
         ].filter(path => !failedPaths.has(path))
 
         this.serverSync.on('connection-close', () => {
@@ -235,7 +238,7 @@ export default class PeerdraftPlugin extends Plugin {
             if (!stopped) await this.fastRestart?.prepare(savedDocumentIds())
           },
           restoreFiles: () => restoreSharesInParallel(
-            plugin.settings.serverShares.files.entries(),
+            savedFiles(),
             async ([path, data]) => {
               // Reserved import paths are materialized only after a complete
               // download. A crash must not turn one into an empty placeholder.
@@ -248,7 +251,7 @@ export default class PeerdraftPlugin extends Plugin {
             ([path], error) => reportRestoreError(path, error),
           ),
           restoreFolders: () => restoreSharesInParallel(
-            plugin.settings.serverShares.folders.entries(),
+            savedFolders(),
             async ([path, data]) => {
               await SharedFolder.fromPermanentShareFolder({ path, persistenceId: data.persistenceId, shareId: data.shareId }, plugin)
               if (!SharedFolder.findByPath(path)) throw new Error('Saved folder could not be restored')

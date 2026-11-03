@@ -25,6 +25,7 @@ import { addCanvasExtension, type CanvasView, type Node } from 'src/ui/canvas';
 import JSONC from "tiny-jsonc"
 import { SyncableDocument, type SyncableFileIO, type SyncableClock } from './syncableDocument';
 import { canonicalStateUpdate, sha256 } from '../fastRestart';
+import { isLocalRecoveryPath, preserveLocalVersion } from '../localRecovery';
 
 class VaultFileIO implements SyncableFileIO {
   constructor(private file: TFile, private plugin: PeerDraftPlugin) {}
@@ -63,6 +64,8 @@ export class SharedDocument extends SharedEntity {
   private _initialCacheCheckComplete = false
   private _initialImportPending = false
   private _importedInitialFile = false
+  private _recoverLocalWithoutCache = false
+  private _restoreCreatedPlaceholder = false
   private _initialImportTask?: Promise<void>
   private _initializeFromLocal?: () => Promise<boolean>
   private _initializationRetryTimeout?: number
@@ -155,6 +158,7 @@ export class SharedDocument extends SharedEntity {
       path: pd.path
     }, plugin)
     doc._importedInitialFile = !!pd.importedComplete && hadExistingFile
+    doc._restoreCreatedPlaceholder = !hadExistingFile
     doc.setIsPermanentInternal(true)
     doc.setShareIdInternal(pd.shareId)
     doc.isCanvas = "canvas" === (file as TFile).extension
@@ -167,6 +171,7 @@ export class SharedDocument extends SharedEntity {
     if (doc.indexedDBProvider) {
       if (!doc.indexedDBProvider.synced) await doc.indexedDBProvider.whenSynced
     }
+    doc._recoverLocalWithoutCache = !(doc._syncable.indexedDBLoaded && !doc._syncable.indexedDBWasEmpty)
     await doc._startInitialServerSync(() => {
       plugin.activeStreamClient.add([doc.shareId])
       doc._syncable._setNewDocConfirmed(true)
@@ -176,6 +181,10 @@ export class SharedDocument extends SharedEntity {
   }
 
   static async fromShareURL(url: string, plugin: PeerDraftPlugin): Promise<SharedDocument | void> {
+    if (isLocalRecoveryPath(plugin.settings.root)) {
+      showNotice('Recovery copies are kept local. Choose a destination outside _Peerdraft Recovery.')
+      return
+    }
     const id = url.split('/').pop()
     if (!id || !id.match('^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')) {
       showNotice("No valid peerdraft link")
@@ -237,6 +246,12 @@ export class SharedDocument extends SharedEntity {
 
     const parent = plugin.settings.root || plugin.app.fileManager.getNewFileParent('', initialFileName).path
     const filePath = path.join(parent, initialFileName)
+    if (isLocalRecoveryPath(filePath)) {
+      await doc.destroy()
+      yDoc.destroy()
+      showNotice('Recovery copies are kept local. Choose a destination outside _Peerdraft Recovery.')
+      return
+    }
     const folder = await SharedFolder.getOrCreatePath(path.dirname(filePath), plugin)
     const file = await plugin.app.vault.create(filePath, doc.getValue())
     doc._file = file
@@ -283,6 +298,7 @@ export class SharedDocument extends SharedEntity {
     } = {},
   ): Promise<SharedDocument> {
     const normalizedPath = normalizePath(location)
+    if (isLocalRecoveryPath(normalizedPath)) throw new Error('Recovery copies cannot be shared: ' + normalizedPath)
     const ensureCurrent = (): void => {
       if (options.isCurrent && !options.isCurrent()) throw new Error('Shared folder entry changed during import')
     }
@@ -450,6 +466,10 @@ export class SharedDocument extends SharedEntity {
   }
 
   static async fromTFile(file: TFile, opts: { permanent?: boolean, folder?: string }, plugin: PeerDraftPlugin) {
+    if (isLocalRecoveryPath(file.path)) {
+      showNotice('Recovery copies are kept local. Move the file outside _Peerdraft Recovery to share it.')
+      return null
+    }
     const MAX_FILE_SIZE = 1 * 1024 * 1024; // 1MB in bytes
     if (file.stat.size > MAX_FILE_SIZE) {
       showNotice(`File is too large to share (${(file.stat.size / (1024 * 1024)).toFixed(2)}MB). Maximum size is 1MB.`);
@@ -597,6 +617,16 @@ export class SharedDocument extends SharedEntity {
           isCurrent: () => !this._destroyed && this.shareId === shareId && this._file === file &&
             this.path === location && file.path === location && snapshot.isCurrent(),
         }
+      },
+      preserveLocalVersion: async (content: string) => {
+        const file = this._file
+        const location = this.path
+        const saved = await preserveLocalVersion(plugin.app.vault, location, content)
+        if (this._destroyed || this._file !== file || this.path !== location || file.path !== location ||
+          plugin.app.vault.getAbstractFileByPath(location) !== file) {
+          throw new Error('Local note changed during recovery')
+        }
+        if (saved.created) showNotice('Your local version was preserved: ' + saved.file.path, 10000)
       },
       logger: { log: (...args: unknown[]) => plugin.log(args.map((a) => String(a)).join(' ')) }
     })
@@ -769,7 +799,12 @@ export class SharedDocument extends SharedEntity {
             : 'server'
           const reconciled = await this._syncable.reconcileWithFile(
             () => this._readInitialEditorContent(),
-            { initialState: this._importedInitialFile ? 'imported' : initialState, verifyCachedServer: initialState === 'cached' },
+            {
+              initialState: this._importedInitialFile ? 'imported' : initialState,
+              verifyCachedServer: initialState === 'cached',
+              preserveLocalOnServer: this._recoverLocalWithoutCache && initialState === 'server',
+              emptyDiskIsPlaceholder: this._restoreCreatedPlaceholder,
+            },
           )
           if (this._destroyed) return false
           if (!reconciled) {

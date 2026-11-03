@@ -3,6 +3,11 @@ import type { Settings } from '../settings'
 import { migrateSettings, saveSettingsNow } from '../settings'
 import { promptForName } from '../ui/enterText'
 import { showNotice } from '../ui'
+import { SharedDocument } from '../sharedEntities/sharedDocument'
+import { SharedFolder } from '../sharedEntities/sharedFolder'
+import { PeerdraftWebsocketProvider } from '../peerdraftWebSocketProvider'
+import { FastRestartManager } from '../fastRestart'
+import { setStatusClasses } from '../workspace/explorerView'
 
 // Exercise the actual plugin's load hook; substitute Obsidian UI, transports,
 // settings storage and editor integrations. The lifecycle ordering is real.
@@ -25,10 +30,10 @@ jest.mock('../peerdraftWebSocketProvider', () => ({
 jest.mock('../serverAPI', () => ({ ServerAPI: class {} }))
 jest.mock('../signalingSocketGuard', () => ({ installSignalingSocketGuard: () => () => {} }))
 jest.mock('../sharedEntities/sharedDocument', () => ({ SharedDocument: {
-  getAll: () => [], findByPath: () => undefined,
+  getAll: () => [], findByPath: () => undefined, fromPermanentShareDocument: jest.fn(),
 } }))
 jest.mock('../sharedEntities/sharedFolder', () => ({ SharedFolder: {
-  getAll: () => [], findByPath: () => undefined,
+  getAll: () => [], findByPath: () => undefined, fromPermanentShareFolder: jest.fn(),
 } }))
 jest.mock('../sharedEntities/sharedEntityFactory', () => ({}))
 jest.mock('../sharedEntities/renameWithinFolder', () => ({}))
@@ -234,5 +239,32 @@ it('does not show a stale error if the name prompt fails after unload', async ()
     expect(showNotice).not.toHaveBeenCalled()
   } finally {
     log.mockRestore()
+  }
+})
+
+
+it('ignores saved recovery shares for restore, checkpoints, and status without changing settings', async () => {
+  const f = fixture(false, 'Existing name')
+  const stored = settings('Existing name')
+  stored.serverShares.files.set('_Peerdraft Recovery/Projects/Note.md', { shareId: 'recovery-note', persistenceId: 'note-cache' })
+  stored.serverShares.folders.set('_Peerdraft Recovery/Projects', { shareId: 'recovery-folder', persistenceId: 'folder-cache' })
+  jest.mocked(migrateSettings).mockResolvedValue(stored)
+  const connected = jest.spyOn(PeerdraftWebsocketProvider.prototype, 'connected').mockResolvedValue(undefined)
+  const prepare = jest.spyOn(FastRestartManager.prototype, 'prepare').mockResolvedValue(undefined)
+  try {
+    await f.plugin.onload()
+    f.openWorkspace()
+    await flush()
+    expect(prepare).toHaveBeenCalledWith([])
+    expect(setStatusClasses).toHaveBeenCalledWith([], f.plugin, 'syncing')
+    expect(SharedDocument.fromPermanentShareDocument).not.toHaveBeenCalled()
+    expect(SharedFolder.fromPermanentShareFolder).not.toHaveBeenCalled()
+    expect(showNotice).not.toHaveBeenCalled()
+    expect(stored.serverShares.files.size).toBe(1)
+    expect(stored.serverShares.folders.size).toBe(1)
+  } finally {
+    f.unload()
+    connected.mockRestore()
+    prepare.mockRestore()
   }
 })
