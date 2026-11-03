@@ -583,6 +583,21 @@ export class SharedDocument extends SharedEntity {
         const document = plugin.getFastRestartDocument(this.shareId)
         return document ? plugin.fastRestart!.tryVerify(document) : null
       } : undefined,
+      loadInitialServerSnapshot: async () => {
+        const shareId = this.shareId
+        const file = this._file
+        const location = this.path
+        const snapshot = await plugin.serverSync.requestDocumentSnapshot(shareId)
+        if (!snapshot.checksum && Y.encodeStateAsUpdate(snapshot.doc).length === 2) {
+          snapshot.doc.destroy()
+          throw new Error('Server returned no saved state for ' + location)
+        }
+        return {
+          doc: snapshot.doc,
+          isCurrent: () => !this._destroyed && this.shareId === shareId && this._file === file &&
+            this.path === location && file.path === location && snapshot.isCurrent(),
+        }
+      },
       logger: { log: (...args: unknown[]) => plugin.log(args.map((a) => String(a)).join(' ')) }
     })
 
@@ -754,7 +769,7 @@ export class SharedDocument extends SharedEntity {
             : 'server'
           const reconciled = await this._syncable.reconcileWithFile(
             () => this._readInitialEditorContent(),
-            { initialState: this._importedInitialFile ? 'imported' : initialState },
+            { initialState: this._importedInitialFile ? 'imported' : initialState, verifyCachedServer: initialState === 'cached' },
           )
           if (this._destroyed) return false
           if (!reconciled) {

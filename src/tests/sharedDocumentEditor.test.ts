@@ -103,7 +103,13 @@ async function restoredFixture(editorContent?: string, beforeRestore?: (context:
     manifest: { version: '2.24.0' },
     log: jest.fn(), registerEvent: jest.fn(),
     activeStreamClient: { add: jest.fn() },
-    serverSync: { on: jest.fn(), off: jest.fn(), sendSyncStep1: jest.fn(), sendUpdate: jest.fn(), wsconnected: true },
+    serverSync: { on: jest.fn(), off: jest.fn(), sendSyncStep1: jest.fn(), sendUpdate: jest.fn(), wsconnected: true,
+      requestDocumentSnapshot: jest.fn(async () => {
+        const snapshot = new Y.Doc()
+        snapshot.getText('content').insert(0, 'Cached old text')
+        return { doc: snapshot, checksum: 'cached-hash', isCurrent: () => true }
+      }),
+    },
     pws: { markdown: { get: () => ({ path: 'note.md', isPreview: false, once: jest.fn() }) } },
     app: { vault: { getAbstractFileByPath: () => file, read, modify, on: jest.fn() },
       workspace: { getLeafById: () => ({ view }), getLeavesOfType: () => editorContent === undefined ? [] : [{ view }] } },
@@ -463,15 +469,16 @@ describe('restored text-document readiness', () => {
       jest.mocked(plugin.registerEvent).mockImplementation(() => { throw new Error('Listener registration unavailable') })
     })
     try {
-      expect(f.read).toHaveBeenCalledTimes(1)
+      // Initial cached mismatch verification rereads disk after its snapshot.
+      expect(f.read).toHaveBeenCalledTimes(2)
       expect(f.doc.initializationGuardPassed).toBe(false)
       expect(f.doc.getSyncStatus()).toBe('warning')
       await jest.advanceTimersByTimeAsync(1000)
-      expect(f.read).toHaveBeenCalledTimes(2)
-      await jest.advanceTimersByTimeAsync(1999)
-      expect(f.read).toHaveBeenCalledTimes(2)
-      await jest.advanceTimersByTimeAsync(1)
       expect(f.read).toHaveBeenCalledTimes(3)
+      await jest.advanceTimersByTimeAsync(1999)
+      expect(f.read).toHaveBeenCalledTimes(3)
+      await jest.advanceTimersByTimeAsync(1)
+      expect(f.read).toHaveBeenCalledTimes(4)
       expect(f.doc.getContentFragment().toString()).toBe('Offline local edit')
       expect(f.doc.initializationGuardPassed).toBe(false)
       expect(f.modify).not.toHaveBeenCalled()

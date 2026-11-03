@@ -76,14 +76,18 @@ async function fixture(content = 'Complete downloaded text') {
   })
   const modify = jest.fn(async (file: TFile, text: string): Promise<void> => { contents.set(file, text); file.stat.mtime++ })
   const { calculateHash } = jest.requireActual('../tools') as typeof import('../tools')
+  let snapshotRequests = 0
   const server = {
     wsconnected: true,
     on: jest.fn((event: string, handler: (id: string, checksum: string) => void) => { if (event === 'synced') handlers.add(handler) }),
     off: jest.fn((event: string, handler: (id: string, checksum: string) => void) => { if (event === 'synced') handlers.delete(handler) }),
-    requestDocumentSnapshot: jest.fn(async () => ({
-      doc: downloaded, checksum: calculateHash(source.getText('content').toString()), proof,
-      isCurrent: () => true,
-    })),
+    requestDocumentSnapshot: jest.fn(async () => {
+      // Each real download owns an isolated document; only the first is exposed
+      // so existing import-proof tests can mutate their in-flight response.
+      const doc = snapshotRequests++ === 0 ? downloaded : new Y.Doc()
+      if (doc !== downloaded) Y.applyUpdate(doc, Y.encodeStateAsUpdate(source))
+      return { doc, checksum: calculateHash(source.getText('content').toString()), proof, isCurrent: () => true }
+    }),
     sendSyncStep1: jest.fn((entity: SyncableDocument) => {
       queueMicrotask(() => { for (const handler of Array.from(handlers)) handler(entity.shareId, entity.calculateHash()) })
     }),

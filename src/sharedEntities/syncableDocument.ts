@@ -37,6 +37,11 @@ export interface SyncableLogger {
   log(...args: unknown[]): void
 }
 
+export interface SyncableServerSnapshot {
+  doc: Y.Doc
+  isCurrent(): boolean
+}
+
 export interface SyncableDocumentOptions {
   yDoc: Y.Doc
   shareId?: string
@@ -59,6 +64,8 @@ export interface SyncableDocumentOptions {
   canStartServerSync?: () => boolean
   // Optional verified restart shortcut; null keeps the ordinary handshake.
   tryFastRestart?: (document: SyncableDocument) => Promise<SyncableHash | null>
+  // An isolated download used only when initial cached file text may already be remote.
+  loadInitialServerSnapshot?: () => Promise<SyncableServerSnapshot>
   // Default 1000 ms. Debounce for yDoc → file flushes.
   fileFlushIntervalMs?: number
   // Optional custom registry for this syncable. Used by test harnesses.
@@ -139,6 +146,7 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
   private readonly canWriteFile: () => boolean
   private readonly serverSyncReady: () => boolean
   private readonly tryFastRestart?: (document: SyncableDocument) => Promise<SyncableHash | null>
+  private readonly loadInitialServerSnapshot?: () => Promise<SyncableServerSnapshot>
   private fastSyncPromise?: Promise<SyncableHash>
   private syncLifecycle = 0
   private destroyed = false
@@ -185,6 +193,7 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
     this.canWriteFile = opts.canWriteFile ?? (() => true)
     this.serverSyncReady = opts.canStartServerSync ?? (() => true)
     this.tryFastRestart = opts.tryFastRestart
+    this.loadInitialServerSnapshot = opts.loadInitialServerSnapshot
     this.fileFlushIntervalMs = opts.fileFlushIntervalMs ?? 1000
     this.registry = opts.registry ?? SyncableDocument._registry
 
@@ -664,7 +673,7 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
    */
   reconcileWithFile(
     readEditorContent?: () => string | undefined,
-    options: { initialState?: 'cached' | 'server' | 'imported' } = {},
+    options: { initialState?: 'cached' | 'server' | 'imported'; verifyCachedServer?: boolean } = {},
   ): Promise<boolean> {
     const fileIO = this.fileIO
     if (!fileIO) return Promise.resolve(false)
@@ -677,23 +686,58 @@ export class SyncableDocument extends ObservableV2<Events> implements SyncableEn
       const fileContent = await fileIO.read()
       if (this.fileIO !== fileIO || fileIO.getMTime() !== previousMtime) return false
       const previouslyRead = this.lastRead
-      this.lastRead = { fileIO, content: fileContent, mtime: previousMtime }
       if (this.editorAttachedCount() > 0) return true
       const editorContent = readEditorContent?.()
       const dirtyEditor = editorContent !== undefined && editorContent !== fileContent
-      if (options.initialState === 'server' && editorContent !== undefined && !dirtyEditor) return true
+      if (options.initialState === 'server' && editorContent !== undefined && !dirtyEditor) {
+        this.lastRead = { fileIO, content: fileContent, mtime: previousMtime }
+        return true
+      }
       // A complete imported file unchanged since reconciliation is no longer a
       // source of local edits. Preserve a newer remote update while the guard
       // or cache initialization finishes; its text will be flushed afterward.
       if (options.initialState === 'imported' && !dirtyEditor && previouslyRead?.fileIO === fileIO &&
         previouslyRead.mtime === previousMtime && previouslyRead.content === fileContent) return true
       if (!dirtyEditor && isSelfEcho) return true
+      const localContent = dirtyEditor ? editorContent : fileContent
+      if (options.verifyCachedServer && this.indexedDBLoaded && !this.indexedDBWasEmpty &&
+        !this.serverSynced && localContent !== this.yDoc.getText('content').toString()) {
+        if (!this.loadInitialServerSnapshot) throw new Error('Initial server snapshot loader is unavailable')
+        const lifecycle = this.syncLifecycle
+        const shareId = this._shareId
+        let documentChanged = false
+        const onUpdate = (): void => { documentChanged = true }
+        this.yDoc.on('update', onUpdate)
+        let snapshot: SyncableServerSnapshot | undefined
+        try {
+          snapshot = await this.loadInitialServerSnapshot()
+          if (snapshot.doc === this.yDoc) throw new Error('Initial server snapshot must be isolated')
+          const current = (): boolean => !this.destroyed && lifecycle === this.syncLifecycle && shareId === this._shareId &&
+            this.fileIO === fileIO && fileIO.getMTime() === previousMtime && this.editorAttachedCount() === 0 &&
+            !documentChanged && snapshot!.isCurrent() && readEditorContent?.() === editorContent
+          if (!current()) return false
+          // Disk content can change without a distinct mtime (for example a restore).
+          if (await fileIO.read() !== fileContent || !current()) return false
+          if (snapshot.doc.getText('content').toString() === localContent) {
+            // Reuse remote character identities instead of recreating edits already
+            // represented there. Keep genuine cached operations for the handshake.
+            Y.applyUpdate(this.yDoc, Y.encodeStateAsUpdate(snapshot.doc), this.serverSync)
+            this.lastRead = { fileIO, content: fileContent, mtime: previousMtime }
+            this.emit('reconciled', [this.calculateHash()])
+            return true
+          }
+        } finally {
+          this.yDoc.off('update', onUpdate)
+          if (snapshot?.doc !== this.yDoc) snapshot?.doc.destroy()
+        }
+      }
       await this.reconcileFileContentUnlocked(
         fileIO,
-        dirtyEditor ? editorContent : fileContent,
+        localContent,
         dirtyEditor,
         options.initialState === 'imported',
       )
+      this.lastRead = { fileIO, content: fileContent, mtime: previousMtime }
       return this.fileIO === fileIO
     })
   }
